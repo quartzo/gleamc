@@ -1327,8 +1327,8 @@ fn surface_of(ty: types.Ty) -> Type {
     Con("Nil", []) -> ast.TNil
     Con(name, []) -> TNamed(name)
     Con(name, args) -> TApp(name, list.map(args, surface_of))
-    Var(_) -> TNamed("Nil")
-    types.Rig(_) -> TNamed("Nil")
+    Var(_) -> ast.TNil
+    types.Rig(_) -> ast.TNil
     Fun(params, ret) -> TFun(list.map(params, surface_of), surface_of(ret))
     Tup(items) -> TTuple(list.map(items, surface_of))
   }

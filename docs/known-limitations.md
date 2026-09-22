@@ -98,8 +98,8 @@ later during checking.
   `to_result`, `from_result`, `flatten`, `lazy_unwrap`, plus the non-official
   `unwrap_or` (import required; the prelude does not expose `Some`/`None`).
   Missing: `all`, `values`, `lazy_or`, etc.
-- `gleam/result`: `unwrap_or`, `map`, `unwrap`, `try`, `then`, `map_error`.
-  Missing: `all`, `values`, etc.
+- `gleam/result`: `unwrap`, `unwrap_or`, `map`, `try`, `then`, `map_error`,
+  `is_ok`, `is_error`, `flatten`, `all`. Missing: `unwrap_error`, `values`, etc.
 
 ## Toolchain
 
