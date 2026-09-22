@@ -7,6 +7,8 @@
 //// (`mod_fn`); cross-module calls `mod.fn(...)` become `mod_fn(...)`.
 //// Custom type names are global and must be unique across modules.
 
+import gleam/dict
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleamc/ast.{
@@ -17,13 +19,20 @@ import gleamc/ast.{
 }
 
 pub fn merge(modules: List(#(String, Module))) -> Module {
-  let aliases =
-    list_filter_map(modules, fn(entry) {
-      let #(name, _) = entry
-      case name {
-        "" -> Error(Nil)
-        _ -> Ok(name)
-      }
+  // alias -> the function names that module actually defines; used to decide
+  // whether `mod.fn(...)` is a real module call or a builtin.
+  let exports =
+    list.fold(modules, dict.new(), fn(acc, entry) {
+      let #(name, module) = entry
+      let Module(defs) = module
+      let fns =
+        list_filter_map(defs, fn(definition) {
+          case definition {
+            DFunction(function) -> Ok(function.name)
+            _ -> Error(Nil)
+          }
+        })
+      dict.insert(acc, name, fns)
     })
   let definitions =
     list_flat_map(modules, fn(entry) {
@@ -40,7 +49,7 @@ pub fn merge(modules: List(#(String, Module))) -> Module {
         case definition {
           DImport(_) -> Error(Nil)
           DFunction(_) ->
-            Ok(rewrite_definition(definition, name, local_fns, aliases))
+            Ok(rewrite_definition(definition, name, local_fns, exports))
           _ -> Ok(definition)
         }
       })
@@ -48,7 +57,7 @@ pub fn merge(modules: List(#(String, Module))) -> Module {
   Module(definitions)
 }
 
-fn rewrite_definition(definition, module, local_fns, aliases) -> Definition {
+fn rewrite_definition(definition, module, local_fns, exports) -> Definition {
   case definition {
     DFunction(function) ->
       DFunction(Function(
@@ -56,7 +65,7 @@ fn rewrite_definition(definition, module, local_fns, aliases) -> Definition {
         qualify(module, function.name),
         function.params,
         function.ret,
-        rewrite_expr(function.body, module, local_fns, aliases),
+        rewrite_expr(function.body, module, local_fns, exports),
       ))
     _ -> definition
   }
@@ -76,62 +85,62 @@ fn qualify(module, name) -> String {
   }
 }
 
-fn rewrite_expr(expr, module, local_fns, aliases) -> Expr {
+fn rewrite_expr(expr, module, local_fns, exports) -> Expr {
   case expr {
     EInt(_) | EFloat(_) | EString(_) | EBool(_) | ENil | EVar(_) -> expr
     ETuple(elements) ->
       ETuple(
         list_map(elements, fn(element) {
-          rewrite_expr(element, module, local_fns, aliases)
+          rewrite_expr(element, module, local_fns, exports)
         }),
       )
     ECtor(name, args) ->
       ECtor(
         name,
-        list_map(args, fn(arg) { rewrite_expr(arg, module, local_fns, aliases) }),
+        list_map(args, fn(arg) { rewrite_expr(arg, module, local_fns, exports) }),
       )
     ECall(fun, args) ->
       ECall(
-        rewrite_target(fun, module, local_fns, aliases),
-        list_map(args, fn(arg) { rewrite_expr(arg, module, local_fns, aliases) }),
+        rewrite_target(fun, module, local_fns, exports),
+        list_map(args, fn(arg) { rewrite_expr(arg, module, local_fns, exports) }),
       )
     EBinop(op, left, right) ->
       EBinop(
         op,
-        rewrite_expr(left, module, local_fns, aliases),
-        rewrite_expr(right, module, local_fns, aliases),
+        rewrite_expr(left, module, local_fns, exports),
+        rewrite_expr(right, module, local_fns, exports),
       )
     EUnop(op, operand) ->
-      EUnop(op, rewrite_expr(operand, module, local_fns, aliases))
+      EUnop(op, rewrite_expr(operand, module, local_fns, exports))
     EBlock(statements) ->
       EBlock(
         list_map(statements, fn(statement) {
-          rewrite_statement(statement, module, local_fns, aliases)
+          rewrite_statement(statement, module, local_fns, exports)
         }),
       )
     ECase(subject, arms) ->
       ECase(
-        rewrite_expr(subject, module, local_fns, aliases),
+        rewrite_expr(subject, module, local_fns, exports),
         list_map(arms, fn(arm) {
           let Arm(pattern, guard, body) = arm
           Arm(
             pattern,
-            rewrite_guard(guard, module, local_fns, aliases),
-            rewrite_expr(body, module, local_fns, aliases),
+            rewrite_guard(guard, module, local_fns, exports),
+            rewrite_expr(body, module, local_fns, exports),
           )
         }),
       )
     EField(obj, name) ->
-      EField(rewrite_expr(obj, module, local_fns, aliases), name)
+      EField(rewrite_expr(obj, module, local_fns, exports), name)
     ELabelled(label, value) ->
-      ELabelled(label, rewrite_expr(value, module, local_fns, aliases))
+      ELabelled(label, rewrite_expr(value, module, local_fns, exports))
     ELambda(params, body) ->
-      ELambda(params, rewrite_expr(body, module, local_fns, aliases))
+      ELambda(params, rewrite_expr(body, module, local_fns, exports))
     EClosure(code, captures, env_ty, fn_ty) ->
       EClosure(
         code,
         list_map(captures, fn(cap) {
-          rewrite_expr(cap, module, local_fns, aliases)
+          rewrite_expr(cap, module, local_fns, exports)
         }),
         env_ty,
         fn_ty,
@@ -140,22 +149,22 @@ fn rewrite_expr(expr, module, local_fns, aliases) -> Expr {
   }
 }
 
-fn rewrite_guard(guard, module, local_fns, aliases) {
+fn rewrite_guard(guard, module, local_fns, exports) {
   case guard {
-    Some(expr) -> Some(rewrite_expr(expr, module, local_fns, aliases))
+    Some(expr) -> Some(rewrite_expr(expr, module, local_fns, exports))
     None -> None
   }
 }
 
-fn rewrite_statement(statement, module, local_fns, aliases) -> Statement {
+fn rewrite_statement(statement, module, local_fns, exports) -> Statement {
   case statement {
     Let(pattern, value) ->
-      Let(pattern, rewrite_expr(value, module, local_fns, aliases))
-    Stmt(expr) -> Stmt(rewrite_expr(expr, module, local_fns, aliases))
+      Let(pattern, rewrite_expr(value, module, local_fns, exports))
+    Stmt(expr) -> Stmt(rewrite_expr(expr, module, local_fns, exports))
   }
 }
 
-fn rewrite_target(fun, module, local_fns, aliases) -> Expr {
+fn rewrite_target(fun, module, local_fns, exports) -> Expr {
   case fun {
     EVar(name) ->
       case list_contains(local_fns, name) {
@@ -165,11 +174,11 @@ fn rewrite_target(fun, module, local_fns, aliases) -> Expr {
     EField(EVar(alias), name) ->
       // `mod.func` -> `mod_func`; `mod.Constructor` is left for the
       // constructor-qualification pass.
-      case list_contains(aliases, alias) && is_lower_name(name) {
+      case is_lower_name(name) && module_exports(exports, alias, name) {
         True -> EVar(qualify(alias, name))
         False -> fun
       }
-    _ -> rewrite_expr(fun, module, local_fns, aliases)
+    _ -> rewrite_expr(fun, module, local_fns, exports)
   }
 }
 
@@ -206,6 +215,13 @@ fn list_append(a, b) {
   case a {
     [] -> b
     [head, ..tail] -> [head, ..list_append(tail, b)]
+  }
+}
+
+fn module_exports(exports, alias, name) -> Bool {
+  case dict.get(exports, alias) {
+    Ok(fns) -> list_contains(fns, name)
+    Error(_) -> False
   }
 }
 

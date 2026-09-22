@@ -34,3 +34,4 @@ erl_crash.dump
 /diffs/result
 /diffs/listops
 /diffs/strings2
+/diffs/strjoin
