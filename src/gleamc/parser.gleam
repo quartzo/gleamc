@@ -559,9 +559,9 @@ fn parse_pipe(tokens) {
 }
 
 fn pipe_loop(left, tokens) {
-  case peek(tokens) {
-    Symbol("|>") -> {
-      let rest = drop_token(tokens)
+  case leading_operator(tokens) {
+    Ok(#("|>", op_tokens)) -> {
+      let rest = drop_token(op_tokens)
       use #(right, rest2) <- and_then(parse_binop(rest, 0))
       case apply_pipe(left, right) {
         Ok(combined) -> pipe_loop(combined, rest2)
@@ -587,19 +587,35 @@ fn parse_binop(tokens, min_prec) {
 }
 
 fn binop_loop(left, tokens, min_prec) {
-  case peek(tokens) {
-    Symbol(op) -> {
+  case leading_operator(tokens) {
+    Ok(#(op, op_tokens)) -> {
       let prec = precedence(op)
       case prec >= min_prec && prec >= 0 {
         True -> {
-          let rest = drop_token(tokens)
+          let rest = drop_token(op_tokens)
           use #(right, rest2) <- and_then(parse_binop(rest, prec + 1))
           binop_loop(EBinop(op, left, right), rest2, min_prec)
         }
         False -> Ok(#(left, tokens))
       }
     }
-    _ -> Ok(#(left, tokens))
+    Error(_) -> Ok(#(left, tokens))
+  }
+}
+
+/// An operator is allowed to start on the next line (continuation style), as
+/// produced by `gleam format`.
+fn leading_operator(tokens) {
+  case peek(tokens) {
+    Symbol(op) -> Ok(#(op, tokens))
+    NewlineKind -> {
+      let rest = skip_newlines(tokens)
+      case peek(rest) {
+        Symbol(op) -> Ok(#(op, rest))
+        _ -> Error(Nil)
+      }
+    }
+    _ -> Error(Nil)
   }
 }
 
@@ -766,11 +782,16 @@ fn parse_tuple(tokens) {
 }
 
 fn tuple_elems(tokens, acc) {
-  use #(e, rest) <- and_then(parse_expr(tokens))
-  case peek(rest) {
-    Symbol(",") -> tuple_elems(drop_token(rest), [e, ..acc])
-    Symbol(")") -> Ok(#(ETuple(list.reverse([e, ..acc])), drop_token(rest)))
-    _ -> fail(rest, "expected `,` or `)` in tuple")
+  case peek(tokens) {
+    Symbol(")") -> Ok(#(ETuple(list.reverse(acc)), drop_token(tokens)))
+    _ -> {
+      use #(e, rest) <- and_then(parse_expr(tokens))
+      case peek(rest) {
+        Symbol(",") -> tuple_elems(drop_token(rest), [e, ..acc])
+        Symbol(")") -> Ok(#(ETuple(list.reverse([e, ..acc])), drop_token(rest)))
+        _ -> fail(rest, "expected `,` or `)` in tuple")
+      }
+    }
   }
 }
 
@@ -916,6 +937,11 @@ fn parse_list_literal(tokens) {
 
 fn list_lit_elems(tokens, acc) {
   case peek(tokens) {
+    Symbol("]") ->
+      Ok(#(
+        build_list_expr(list.reverse(acc), ECtor("ListEmpty", [])),
+        drop_token(tokens),
+      ))
     Symbol("..") -> {
       use #(tail, rest2) <- and_then(parse_expr(drop_token(tokens)))
       use rest3 <- and_then(expect_symbol(rest2, "]"))
@@ -951,6 +977,11 @@ fn parse_list_pattern(tokens) {
 
 fn list_pat_elems(tokens, acc) {
   case peek(tokens) {
+    Symbol("]") ->
+      Ok(#(
+        build_list_pat(list.reverse(acc), PCtor("ListEmpty", [])),
+        drop_token(tokens),
+      ))
     Symbol("..") -> {
       use #(tail, rest2) <- and_then(parse_pattern(drop_token(tokens)))
       use rest3 <- and_then(expect_symbol(rest2, "]"))
@@ -1008,10 +1039,15 @@ fn parse_tuple_pattern(tokens) {
 }
 
 fn tuple_pat_elems(tokens, acc) {
-  use #(p, rest) <- and_then(parse_pattern(tokens))
-  case peek(rest) {
-    Symbol(",") -> tuple_pat_elems(drop_token(rest), [p, ..acc])
-    Symbol(")") -> Ok(#(PTuple(list.reverse([p, ..acc])), drop_token(rest)))
-    _ -> fail(rest, "expected `,` or `)` in tuple")
+  case peek(tokens) {
+    Symbol(")") -> Ok(#(PTuple(list.reverse(acc)), drop_token(tokens)))
+    _ -> {
+      use #(p, rest) <- and_then(parse_pattern(tokens))
+      case peek(rest) {
+        Symbol(",") -> tuple_pat_elems(drop_token(rest), [p, ..acc])
+        Symbol(")") -> Ok(#(PTuple(list.reverse([p, ..acc])), drop_token(rest)))
+        _ -> fail(rest, "expected `,` or `)` in tuple")
+      }
+    }
   }
 }
