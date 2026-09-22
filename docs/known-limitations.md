@@ -45,9 +45,9 @@ adding list support, and are now covered by `diffs/lists.gleam`:
 
 ## Type system
 
-- No `Eq`/`Ord` typeclasses. `==` and `!=` work for concrete types through
-  monomorphization; `<`, `<=`, `>`, `>=` are `Int` only and the `*.`/`<.` family
-  is `Float` only.
+- No `Eq`/`Ord` typeclasses. `==` and `!=` are structural for all data
+  (ADTs, tuples, lists, `String`) via generated per-type equality glue; `<`,
+  `<=`, `>`, `>=` are `Int` only and the `*.`/`<.` family is `Float` only.
 - No module-qualified types beyond a plain named type or `TApp`
   (`Type` / `Type(a)`); there is no `module.Type` in annotations.
 - No `const` values.

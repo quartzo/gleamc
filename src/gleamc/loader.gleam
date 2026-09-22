@@ -33,7 +33,7 @@ pub fn load(entry_path: String) -> Result(List(#(String, Module)), String) {
 /// The implicit prelude: `gleam/option` and `gleam/result` are always
 /// available (types and constructors) without an explicit import.
 fn attach_prelude(modules) {
-  list.fold(["option", "result", "list"], modules, fn(acc, name) {
+  list.fold(["result", "list"], modules, fn(acc, name) {
     case
       list.any(acc, fn(entry) {
         let #(alias, _) = entry

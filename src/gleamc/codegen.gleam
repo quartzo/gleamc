@@ -29,6 +29,7 @@ pub fn emit(
   let recursive = ownership.recursive_types(ctors)
   let tuple_types = collect_tuple_types(functions, custom_types)
   let glue_types = collect_glue_types(functions, custom_types, ctors)
+  let eq_types = collect_eq_types(custom_types, tuple_types, ctors)
 
   let preamble = "#include \"gleam_runtime.h\"\n\n"
 
@@ -97,6 +98,15 @@ pub fn emit(
       "\n",
     )
 
+  let eq_prototypes =
+    string.join(list.map(eq_types, fn(ty) { eq_prototype(ty, recursive) }), "")
+
+  let eq_definitions =
+    string.join(
+      list.map(eq_types, fn(ty) { eq_definition(ty, recursive, ctors) }),
+      "\n",
+    )
+
   let prototypes =
     string.join(
       list.map(functions, fn(function) { emit_prototype(function, recursive) }),
@@ -117,8 +127,10 @@ pub fn emit(
   preamble
   <> type_code
   <> glue_prototypes
+  <> eq_prototypes
   <> "\n"
   <> glue_definitions
+  <> eq_definitions
   <> prototypes
   <> string.join(value_wrappers, "")
   <> definitions
@@ -160,6 +172,7 @@ pub fn type_key(ty: Type) -> String {
     ast.TBool -> "b"
     ast.TNil -> "nil"
     ast.TVar(name) -> name
+    TNamed("Nil") -> "nil"
     TNamed(name) -> name
     ast.TApp(name, args) ->
       name <> "_" <> string.join(list.map(args, type_key), "_")
@@ -180,6 +193,7 @@ pub fn c_type(ty: Type, recursive: Dict(String, Bool)) -> String {
     TString -> "GleamcString"
     ast.TNil -> "int"
     ast.TVar(name) -> name
+    TNamed("Nil") -> "int"
     TNamed(name) ->
       case is_recursive(recursive, name) {
         True -> name <> "*"
@@ -201,6 +215,7 @@ fn mangle_type(ty: Type) -> String {
     TString -> "str"
     ast.TNil -> "nil"
     ast.TVar(name) -> name
+    TNamed("Nil") -> "nil"
     TNamed(name) -> name
     ast.TApp(name, args) ->
       name <> "_" <> string.join(list.map(args, mangle_type), "_")
@@ -618,6 +633,189 @@ fn field_struct(variant_name, fields, recursive) -> String {
 // ---------------------------------------------------------------------------
 // retain/drop glue
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// structural equality glue
+// ---------------------------------------------------------------------------
+
+/// Collects every ADT and tuple type that may be compared for equality, so a
+/// recursive `int Gleamc_eq_<type>(a, b)` can be generated for each of them.
+fn collect_eq_types(custom_types, tuple_types, ctors) -> List(Type) {
+  let seeds =
+    list.append(
+      list.map(custom_types, fn(custom) {
+        let CustomType(_, name, _, _) = custom
+        TNamed(name)
+      }),
+      tuple_types,
+    )
+  expand_eq(seeds, ctors, [])
+}
+
+fn expand_eq(pending, ctors, acc) {
+  case pending {
+    [] -> acc
+    [ty, ..rest] -> {
+      case eq_key(ty) {
+        Error(_) -> expand_eq(rest, ctors, acc)
+        Ok(key) ->
+          case list.any(acc, fn(existing) { type_key(existing) == key }) {
+            True -> expand_eq(rest, ctors, acc)
+            False ->
+              expand_eq(list.append(rest, eq_fields(ty, ctors)), ctors, [
+                ty,
+                ..acc
+              ])
+          }
+      }
+    }
+  }
+}
+
+fn eq_key(ty: Type) -> Result(String, Nil) {
+  case ty {
+    TString | ast.TInt | ast.TFloat | ast.TBool | ast.TNil -> Error(Nil)
+    TNamed("Nil") -> Error(Nil)
+    TNamed(_) | TTuple(_) -> Ok(type_key(ty))
+    _ -> Error(Nil)
+  }
+}
+
+fn eq_fields(ty: Type, ctors) -> List(Type) {
+  case ty {
+    TTuple(types) -> types
+    TNamed(name) ->
+      list.flat_map(type_variants(name, ctors), fn(pair) {
+        let #(_, fields) = pair
+        fields
+      })
+    _ -> []
+  }
+}
+
+fn eq_fn(ty: Type) -> String {
+  "Gleamc_eq_" <> mangle_glue(ty)
+}
+
+fn eq_prototype(ty: Type, recursive) -> String {
+  let c = c_type(ty, recursive)
+  "int " <> eq_fn(ty) <> "(" <> c <> " a, " <> c <> " b);\n"
+}
+
+fn eq_definition(ty: Type, recursive, ctors) -> String {
+  case ty {
+    ast.TFun(_, _) ->
+      "int "
+      <> eq_fn(ty)
+      <> "("
+      <> c_type(ty, recursive)
+      <> " a, "
+      <> c_type(ty, recursive)
+      <> " b) {\n    return a.code == b.code && a.env == b.env;\n}\n"
+    TTuple(types) -> {
+      let comparisons =
+        list.index_map(types, fn(inner, index) {
+          eq_expr(
+            inner,
+            "a._" <> int.to_string(index),
+            "b._" <> int.to_string(index),
+          )
+        })
+      let body = case list.is_empty(comparisons) {
+        True -> "1"
+        False -> string.join(comparisons, " && ")
+      }
+      "int "
+      <> eq_fn(ty)
+      <> "("
+      <> c_type(ty, recursive)
+      <> " a, "
+      <> c_type(ty, recursive)
+      <> " b) {\n    return "
+      <> body
+      <> ";\n}\n"
+    }
+    TNamed(name) -> named_eq(ty, name, recursive, ctors)
+    _ -> ""
+  }
+}
+
+fn named_eq(ty: Type, name, recursive, ctors) -> String {
+  let is_rec = is_recursive(recursive, name)
+  let access = case is_rec {
+    True -> "->"
+    False -> "."
+  }
+  let cases =
+    string.join(
+      list.map(type_variants(name, ctors), fn(variant) {
+        let #(variant_name, fields) = variant
+        let comparisons =
+          list.index_map(fields, fn(inner, index) {
+            eq_expr(
+              inner,
+              "a" <> access <> variant_name <> "._" <> int.to_string(index),
+              "b" <> access <> variant_name <> "._" <> int.to_string(index),
+            )
+          })
+        let body = case list.is_empty(comparisons) {
+          True -> "1"
+          False -> string.join(comparisons, " && ")
+        }
+        "        case TAG_"
+        <> name
+        <> "_"
+        <> variant_name
+        <> ": return "
+        <> body
+        <> ";"
+      }),
+      "\n",
+    )
+  let header = case is_rec {
+    True ->
+      "    if (a == b) return 1;\n    if (a == NULL || b == NULL) return 0;\n    if (a->tag != b->tag) return 0;\n"
+    False -> "    if (a.tag != b.tag) return 0;\n"
+  }
+  let tag_access = case is_rec {
+    True -> "a->tag"
+    False -> "a.tag"
+  }
+  "int "
+  <> eq_fn(ty)
+  <> "("
+  <> c_type(ty, recursive)
+  <> " a, "
+  <> c_type(ty, recursive)
+  <> " b) {\n"
+  <> header
+  <> "    switch ("
+  <> tag_access
+  <> ") {\n"
+  <> cases
+  <> "\n    }\n    return 1;\n}\n"
+}
+
+fn eq_expr(ty, left, right) -> String {
+  case ty {
+    TString -> "gleamc_string_eq(" <> left <> ", " <> right <> ")"
+    ast.TInt | ast.TFloat | ast.TBool | ast.TNil ->
+      "(" <> left <> " == " <> right <> ")"
+    ast.TFun(_, _) ->
+      "("
+      <> left
+      <> ".code == "
+      <> right
+      <> ".code && "
+      <> left
+      <> ".env == "
+      <> right
+      <> ".env)"
+    TNamed("Nil") -> "(" <> left <> " == " <> right <> ")"
+    TTuple(_) | TNamed(_) -> eq_fn(ty) <> "(" <> left <> ", " <> right <> ")"
+    _ -> "(" <> left <> " == " <> right <> ")"
+  }
+}
 
 fn collect_glue_types(functions, _custom_types, ctors) -> List(Type) {
   let seeds =
@@ -1115,19 +1313,33 @@ fn emit_term(by_name, term) {
 fn binop_c(op, operand_ty, left, right) -> String {
   case op {
     "<>" -> "gleamc_string_concat(" <> left <> ", " <> right <> ")"
-    "==" ->
-      case operand_ty {
-        TString -> "gleamc_string_eq(" <> left <> ", " <> right <> ")"
-        _ -> "(" <> left <> " == " <> right <> ")"
-      }
-    "!=" ->
-      case operand_ty {
-        TString -> "(!gleamc_string_eq(" <> left <> ", " <> right <> "))"
-        _ -> "(" <> left <> " != " <> right <> ")"
-      }
+    "==" -> eq_c(operand_ty, left, right)
+    "!=" -> "(!" <> eq_c(operand_ty, left, right) <> ")"
     "&&" -> "(" <> left <> " && " <> right <> ")"
     "||" -> "(" <> left <> " || " <> right <> ")"
     _ -> "(" <> left <> " " <> normalize_op(op) <> " " <> right <> ")"
+  }
+}
+
+/// Equality for one operand type: primitives compare directly, Strings use the
+/// runtime helper, and everything else (ADTs, tuples, closures) calls the
+/// generated structural equality glue.
+fn eq_c(ty, left, right) -> String {
+  case ty {
+    TString -> "gleamc_string_eq(" <> left <> ", " <> right <> ")"
+    ast.TInt | ast.TFloat | ast.TBool | ast.TNil ->
+      "(" <> left <> " == " <> right <> ")"
+    ast.TFun(_, _) ->
+      "("
+      <> left
+      <> ".code == "
+      <> right
+      <> ".code && "
+      <> left
+      <> ".env == "
+      <> right
+      <> ".env)"
+    _ -> eq_fn(ty) <> "(" <> left <> ", " <> right <> ")"
   }
 }
 

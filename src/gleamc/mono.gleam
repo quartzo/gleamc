@@ -432,7 +432,13 @@ fn mono_expr(
     }
     EBinop(op, left, right) -> {
       use #(left2, state) <- result_try(mono_expr(state, locals, left))
-      use #(right2, state) <- result_try(mono_expr(state, locals, right))
+      let #(left_ty, state) = type_of(state, locals, left)
+      use #(right2, state) <- result_try(mono_expr_ex(
+        state,
+        locals,
+        Some(left_ty),
+        right,
+      ))
       Ok(#(EBinop(op, left2, right2), state))
     }
     EUnop(op, operand) -> {
