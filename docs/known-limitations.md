@@ -69,8 +69,9 @@ adding list support, and are now covered by `diffs/lists.gleam`:
 - `float.to_string` matches Gleam's shortest round-trip formatting for the
   cases exercised by `diffs/floats.gleam`; `nan`/`inf` print as `nan`/`inf` and
   are not verified against Gleam.
-- No dead-code elimination. Monomorphic helper functions (including prelude
-  functions) may be emitted even when unused.
+- Dead-code elimination keeps only functions reachable from `main` (or, for a
+  library with no `main`, from the public API). Unused custom types are still
+  emitted.
 - `fold_right` is not tail recursive (same as the official implementation).
 
 ## Standard library coverage

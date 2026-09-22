@@ -10,6 +10,7 @@ import gleamc/aliases
 import gleamc/ast.{type CustomType, type Module, DCustomType, Module}
 import gleamc/checker
 import gleamc/codegen
+import gleamc/dce
 import gleamc/ir
 import gleamc/lower
 import gleamc/merge
@@ -51,6 +52,7 @@ fn cascade(modules: List(#(String, Module))) {
   use merged <- result.try(aliases.expand(merged))
   // 1. monomorphise the generic program (validates via the HM checker)
   use mono_module <- result.try(mono.monomorphize(merged))
+  let mono_module = dce.prune(mono_module)
   // 2. the monomorphic backend runs on the specialised AST
   use checked <- result.try(map_err(
     checker.check(mono_module),
