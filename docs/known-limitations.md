@@ -77,13 +77,14 @@ adding list support, and are now covered by `diffs/lists.gleam`:
 
 The `std/` directory implements a subset of the official API. Imports of
 official modules that cannot be resolved are skipped, so unsupported calls fail
-later during checking.
+later during checking. Prelude modules may import other modules; their imports
+are resolved when the prelude is attached.
 
 - `gleam/list`: `length`, `reverse`, `map`, `map2`, `filter`, `fold`,
   `fold_right`, `any`, `all`, `each`, `append`, `flatten`, `flat_map`, `take`,
   `drop`, `contains`, `repeat`, `first`, `last`, `find`, `zip`, `unzip`,
-  `index_map`, `unique`, plus the non-official extras `sum` and `at`. Missing:
-  `sort`, `index_fold`, `filter_map`, and others.
+  `index_map`, `filter_map`, `unique`, plus the non-official extras `sum` and
+  `at`. Missing: `sort`, `index_fold`, and others.
 - `gleam/string`: `length`, `append`, `uppercase`, `lowercase`, `reverse`,
   `contains`, `starts_with`, `ends_with`, `trim`, `replace`, `concat`, `join`,
   `split`, `slice`. Missing: `to_graphemes`, `pad_leading`, and others.

@@ -261,3 +261,14 @@ fn unique_loop(list: List(a), seen: List(a)) -> List(a) {
     ListEmpty -> ListEmpty
   }
 }
+
+pub fn filter_map(list: List(a), with: fn(a) -> Result(b, e)) -> List(b) {
+  case list {
+    ListCons(head, rest) ->
+      case with(head) {
+        Ok(value) -> ListCons(value, filter_map(rest, with))
+        Error(_) -> filter_map(rest, with)
+      }
+    ListEmpty -> ListEmpty
+  }
+}

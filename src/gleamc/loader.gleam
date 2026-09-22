@@ -23,35 +23,94 @@ pub fn load(entry_path: String) -> Result(List(#(String, Module)), String) {
             load_imports(root, imports_of(entry), dict.new(), [#("", entry)])
           {
             Error(err) -> Error(err)
-            Ok(modules) -> Ok(attach_prelude(modules))
+            Ok(modules) -> attach_prelude(root, modules)
           }
         }
       }
   }
 }
 
-/// The implicit prelude: `gleam/option` and `gleam/result` are always
-/// available (types and constructors) without an explicit import.
-fn attach_prelude(modules) {
-  list.fold(["result", "list"], modules, fn(acc, name) {
-    case
-      list.any(acc, fn(entry) {
-        let #(alias, _) = entry
-        alias == name
-      })
-    {
-      True -> acc
-      False ->
-        case ffi.read_file("std/" <> name <> ".gleam") {
-          Error(_) -> acc
-          Ok(source) ->
-            case parser.parse(source) {
-              Error(_) -> acc
-              Ok(module) -> list.append(acc, [#(name, module)])
-            }
-        }
-    }
+/// The implicit prelude: `gleam/result` and `gleam/list` are always available
+/// (types and constructors) without an explicit import. Their own imports are
+/// resolved too, so a prelude module may depend on another prelude module.
+fn attach_prelude(root, modules) -> Result(List(#(String, Module)), String) {
+  load_prelude(root, ["result", "list"], modules)
+}
+
+fn load_prelude(root, names, acc) -> Result(List(#(String, Module)), String) {
+  case names {
+    [] -> Ok(acc)
+    [name, ..rest] ->
+      case prelude_present(acc, name) {
+        True -> load_prelude(root, rest, acc)
+        False ->
+          case ffi.read_file("std/" <> name <> ".gleam") {
+            Error(_) -> load_prelude(root, rest, acc)
+            Ok(source) ->
+              case parser.parse(source) {
+                Error(err) -> Error(parser.describe_error(err))
+                Ok(module) ->
+                  case
+                    load_deps(
+                      root,
+                      imports_of(module),
+                      dict.from_list([#(name, True)]),
+                      [#(name, module), ..acc],
+                    )
+                  {
+                    Error(err) -> Error(err)
+                    Ok(acc2) -> load_prelude(root, rest, acc2)
+                  }
+              }
+          }
+      }
+  }
+}
+
+fn prelude_present(modules, name) -> Bool {
+  list.any(modules, fn(entry) {
+    let #(alias, _) = entry
+    alias == name
   })
+}
+
+/// Like `load_imports`, but prepends to the accumulated list without reversing
+/// (the prelude is added on top of the already ordered user modules).
+fn load_deps(
+  root,
+  imports,
+  visited,
+  acc,
+) -> Result(List(#(String, Module)), String) {
+  case imports {
+    [] -> Ok(acc)
+    [import_decl, ..rest] -> {
+      let Import(path, _) = import_decl
+      let key = string.join(path, "/")
+      case dict.get(visited, key) {
+        Ok(_) -> load_deps(root, rest, visited, acc)
+        Error(_) -> {
+          let visited = dict.insert(visited, key, True)
+          case read_module(root, key) {
+            Error(_) -> load_deps(root, rest, visited, acc)
+            Ok(source) ->
+              case parser.parse(source) {
+                Error(err) -> Error(parser.describe_error(err))
+                Ok(module) -> {
+                  let alias = last_segment(path)
+                  load_deps(
+                    root,
+                    list.append(rest, imports_of(module)),
+                    visited,
+                    [#(alias, module), ..acc],
+                  )
+                }
+              }
+          }
+        }
+      }
+    }
+  }
 }
 
 fn load_imports(
