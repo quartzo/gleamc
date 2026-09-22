@@ -19,7 +19,13 @@ silently unavailable.
 
 ## Known bugs
 
-None currently open. Two monomorphization bugs were found and fixed while
+- A closure that captures a collection/ADT value (not a scalar) and uses it in
+  a call to a generic function mis-specialises the captured type. For example
+  `list.map(xs, fn(a) { list.length(xs) + a })` is rejected. Scalar captures
+  work. Workaround: pass the captured value as an
+  explicit parameter instead of capturing it.
+
+Two monomorphization bugs were found and fixed while
 adding list support, and are now covered by `diffs/lists.gleam`:
 
 - Nested generic specialization (`List(List(Int))`) left inner type arguments
@@ -76,8 +82,9 @@ are resolved when the prelude is attached.
   `fold_right`, `any`, `all`, `each`, `append`, `flatten`, `flat_map`, `take`,
   `drop`, `contains`, `repeat`, `first`, `last`, `find`, `zip`, `unzip`,
   `index_map`, `index_fold`, `filter_map`, `sort`, `intersperse`, `take_while`,
-  `drop_while`, `window`, `chunk`, `unique`, plus the non-official extras `sum`
-  and `at`. Missing: `permutations`, `sized_chunk`, and others.
+  `drop_while`, `window`, `chunk`, `sized_chunk`, `unique`, plus the non-official
+  extras `sum` and `at`. Missing: `permutations`, and others
+  (`permutations` triggers a known closure-capture bug, below).
 - `gleam/string`: `length`, `append`, `uppercase`, `lowercase`, `reverse`,
   `contains`, `starts_with`, `ends_with`, `trim`, `replace`, `concat`, `join`,
   `split`, `slice`, `repeat`, `pad_start`, `pad_end`, `trim_start`, `trim_end`,

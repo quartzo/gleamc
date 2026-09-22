@@ -634,10 +634,11 @@ fn prepare_captures(state, locals, fname, captured, body) {
     [] -> Ok(#(body, [], "", state))
     _ -> {
       let env_ty = "__Env_" <> fname
-      let with_types =
-        list.map(captured, fn(name) {
-          #(name, scheme_surface_type(locals, name))
-        })
+      use #(with_types, state) <- result_try(specialize_captures(
+        state,
+        locals,
+        captured,
+      ))
       let replacements =
         list.fold(
           list.index_map(with_types, fn(pair, index) {
@@ -661,11 +662,26 @@ fn prepare_captures(state, locals, fname, captured, body) {
   }
 }
 
-fn scheme_surface_type(locals, name) {
+fn specialize_captures(state, locals, captured) {
+  case captured {
+    [] -> Ok(#([], state))
+    [name, ..rest] -> {
+      use #(specialized, state) <- result_try(mono_type(
+        state,
+        dict.new(),
+        scheme_surface_type(state, locals, name),
+      ))
+      use #(rest2, state) <- result_try(specialize_captures(state, locals, rest))
+      Ok(#([#(name, specialized), ..rest2], state))
+    }
+  }
+}
+
+fn scheme_surface_type(state: State, locals, name) {
   case dict.get(locals, name) {
     Ok(scheme) -> {
       let Scheme(_, ty) = scheme
-      surface_of(types.zonk(ty, types.empty()))
+      surface_of(types.zonk(ty, state.subst))
     }
     Error(_) -> ast.TNil
   }

@@ -389,3 +389,25 @@ fn chunk_loop(
       }
   }
 }
+
+pub fn sized_chunk(list: List(a), count: Int) -> List(List(a)) {
+  case count <= 0 {
+    True -> []
+    False -> sized_chunk_loop(list, count, [])
+  }
+}
+
+fn sized_chunk_loop(
+  list: List(a),
+  count: Int,
+  acc: List(List(a)),
+) -> List(List(a)) {
+  case list {
+    [] -> list.reverse(acc)
+    _ ->
+      sized_chunk_loop(list.drop(list, count), count, [
+        list.take(list, count),
+        ..acc
+      ])
+  }
+}
