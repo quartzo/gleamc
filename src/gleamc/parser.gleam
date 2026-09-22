@@ -578,9 +578,9 @@ fn statement(tokens) {
 }
 
 fn let_stmt(tokens) {
-  use #(pat, rest) <- and_then(parse_pattern(tokens))
+  use #(pat, rest) <- and_then(parse_pattern(skip_newlines(tokens)))
   use rest1 <- and_then(expect_symbol(rest, "="))
-  use #(value, rest2) <- and_then(parse_expr(rest1))
+  use #(value, rest2) <- and_then(parse_expr(skip_newlines(rest1)))
   Ok(#(Let(pat, value), rest2))
 }
 
@@ -1122,9 +1122,19 @@ fn list_pat_elems(tokens, acc) {
         drop_token(tokens),
       ))
     Symbol("..") -> {
-      use #(tail, rest2) <- and_then(parse_pattern(drop_token(tokens)))
-      use rest3 <- and_then(expect_symbol(rest2, "]"))
-      Ok(#(build_list_pat(list.reverse(acc), tail), rest3))
+      let after = drop_token(tokens)
+      case peek(after) {
+        Symbol("]") ->
+          Ok(#(
+            build_list_pat(list.reverse(acc), PWildcard),
+            drop_token(after),
+          ))
+        _ -> {
+          use #(tail, rest2) <- and_then(parse_pattern(after))
+          use rest3 <- and_then(expect_symbol(rest2, "]"))
+          Ok(#(build_list_pat(list.reverse(acc), tail), rest3))
+        }
+      }
     }
     _ -> {
       use #(p, rest) <- and_then(parse_pattern(tokens))

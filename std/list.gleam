@@ -434,3 +434,54 @@ fn remove_first(elements: List(a), element: a) -> List(a) {
       }
   }
 }
+
+pub fn scan(list: List(a), from: b, with: fn(b, a) -> b) -> List(b) {
+  scan_loop(list, from, with, [])
+}
+
+fn scan_loop(
+  list: List(a),
+  acc: b,
+  with: fn(b, a) -> b,
+  out: List(b),
+) -> List(b) {
+  case list {
+    [] -> list.reverse(out)
+    [head, ..rest] -> {
+      let next = with(acc, head)
+      scan_loop(rest, next, with, [next, ..out])
+    }
+  }
+}
+
+pub fn transpose(rows: List(List(a))) -> List(List(a)) {
+  case any_non_empty(rows) {
+    False -> []
+    True -> {
+      let heads =
+        list.filter_map(rows, fn(row) {
+          case row {
+            [] -> Error(Nil)
+            [head, ..] -> Ok(head)
+          }
+        })
+      let tails =
+        list.filter_map(rows, fn(row) {
+          case row {
+            [] -> Error(Nil)
+            [_, ..rest] -> Ok(rest)
+          }
+        })
+      [heads, ..transpose(tails)]
+    }
+  }
+}
+
+fn any_non_empty(rows: List(List(a))) -> Bool {
+  list.any(rows, fn(row) {
+    case row {
+      [] -> False
+      _ -> True
+    }
+  })
+}
