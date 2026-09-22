@@ -75,6 +75,6 @@ pub fn merged_generic_test() {
 
 pub fn duplicate_constructor_test() {
   let source =
-    "type A {\n  Empty\n}\n\ntype B {\n  Empty\n}\n\npub fn main() { 1 }"
+    "type A {\n  Empty\n}\n\ntype B {\n  Empty\n}\n\npub fn main() { Nil }"
   let assert Error(_) = check(source)
 }
