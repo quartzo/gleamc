@@ -84,9 +84,9 @@ later during checking.
   `drop`, `contains`, `repeat`, `first`, `last`, `find`, `zip`, `unzip`,
   `index_map`, `unique`, plus the non-official extras `sum` and `at`. Missing:
   `sort`, `index_fold`, `filter_map`, and others.
-- `gleam/string`: `length`, `append`, `uppercase`, `lowercase`, `reverse`.
-  Missing: `concat`, `join`, `split`, `trim`, `contains`, `replace`, and
-  others.
+- `gleam/string`: `length`, `append`, `uppercase`, `lowercase`, `reverse`,
+  `contains`, `starts_with`, `ends_with`, `trim`, `replace`. Missing: `concat`,
+  `join`, `split`, `slice`, and others.
 - `gleam/int`: `to_string`, `min`, `max`, `absolute_value` (arithmetic is
   built in). Missing: `parse`, `to_base_string`, etc.
 - `gleam/float`: `to_string`, `min`, `max`, `absolute_value`, `floor`,

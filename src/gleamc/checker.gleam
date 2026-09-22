@@ -808,6 +808,56 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         TInt,
         "float.truncate",
       )
+    "string", "contains" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TString],
+        TBool,
+        "string.contains",
+      )
+    "string", "starts_with" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TString],
+        TBool,
+        "string.starts_with",
+      )
+    "string", "ends_with" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TString],
+        TBool,
+        "string.ends_with",
+      )
+    "string", "trim" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TString,
+        "string.trim",
+      )
+    "string", "replace" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TString, TString],
+        TString,
+        "string.replace",
+      )
     "string", "length" ->
       check_builtin(
         env,

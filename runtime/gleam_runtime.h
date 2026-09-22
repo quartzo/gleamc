@@ -113,6 +113,17 @@ GleamcString Gleamc_string_uppercase(GleamcString s);
 GleamcString Gleamc_string_lowercase(GleamcString s);
 GleamcString Gleamc_string_reverse(GleamcString s);
 
+/* std::string (predicates / transforms) */
+bool Gleamc_string_contains(GleamcString haystack, GleamcString needle);
+bool Gleamc_string_starts_with(GleamcString value, GleamcString prefix);
+bool Gleamc_string_ends_with(GleamcString value, GleamcString suffix);
+GleamcString Gleamc_string_trim(GleamcString value);
+GleamcString Gleamc_string_replace(
+    GleamcString value,
+    GleamcString pattern,
+    GleamcString substitute
+);
+
 /* std::int */
 int64_t Gleamc_int_min(int64_t a, int64_t b);
 int64_t Gleamc_int_max(int64_t a, int64_t b);

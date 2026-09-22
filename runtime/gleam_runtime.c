@@ -117,6 +117,80 @@ GleamcString Gleamc_string_reverse(GleamcString s) {
     return (GleamcString){buf, out};
 }
 
+bool Gleamc_string_contains(GleamcString haystack, GleamcString needle) {
+    if (needle.len == 0) return true;
+    if (needle.len > haystack.len) return false;
+    for (size_t i = 0; i + needle.len <= haystack.len; i++) {
+        if (memcmp(haystack.data + i, needle.data, needle.len) == 0) return true;
+    }
+    return false;
+}
+
+bool Gleamc_string_starts_with(GleamcString value, GleamcString prefix) {
+    if (prefix.len > value.len) return false;
+    return memcmp(value.data, prefix.data, prefix.len) == 0;
+}
+
+bool Gleamc_string_ends_with(GleamcString value, GleamcString suffix) {
+    if (suffix.len > value.len) return false;
+    return memcmp(value.data + (value.len - suffix.len), suffix.data, suffix.len) == 0;
+}
+
+static int is_space_byte(char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
+}
+
+GleamcString Gleamc_string_trim(GleamcString value) {
+    size_t start = 0;
+    size_t end = value.len;
+    while (start < end && is_space_byte(value.data[start])) start++;
+    while (end > start && is_space_byte(value.data[end - 1])) end--;
+    size_t len = end - start;
+    char* buf = (char*)gleamc_alloc(len + 1);
+    memcpy(buf, value.data + start, len);
+    buf[len] = '\0';
+    return (GleamcString){buf, len};
+}
+
+GleamcString Gleamc_string_replace(
+    GleamcString value,
+    GleamcString pattern,
+    GleamcString substitute
+) {
+    if (pattern.len == 0) {
+        char* copy = (char*)gleamc_alloc(value.len + 1);
+        memcpy(copy, value.data, value.len);
+        copy[value.len] = '\0';
+        return (GleamcString){copy, value.len};
+    }
+    size_t matches = 0;
+    for (size_t i = 0; i + pattern.len <= value.len;) {
+        if (memcmp(value.data + i, pattern.data, pattern.len) == 0) {
+            matches++;
+            i += pattern.len;
+        } else {
+            i++;
+        }
+    }
+    long delta = (long)substitute.len - (long)pattern.len;
+    size_t new_len = (size_t)((long)value.len + (long)matches * delta);
+    char* buf = (char*)gleamc_alloc(new_len + 1);
+    size_t out = 0;
+    size_t i = 0;
+    while (i < value.len) {
+        if (i + pattern.len <= value.len &&
+            memcmp(value.data + i, pattern.data, pattern.len) == 0) {
+            memcpy(buf + out, substitute.data, substitute.len);
+            out += substitute.len;
+            i += pattern.len;
+        } else {
+            buf[out++] = value.data[i++];
+        }
+    }
+    buf[out] = '\0';
+    return (GleamcString){buf, out};
+}
+
 static GleamcString from_cstr(const char* text) {
     return gleamc_string_lit(text, strlen(text));
 }
