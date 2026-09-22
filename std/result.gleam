@@ -20,3 +20,21 @@ pub fn map(result: Result(a, e), with: fn(a) -> b) -> Result(b, e) {
 pub fn unwrap(result: Result(a, e), default: a) -> a {
   unwrap_or(result, default)
 }
+
+pub fn try(result: Result(a, e), with: fn(a) -> Result(b, e)) -> Result(b, e) {
+  case result {
+    Ok(value) -> with(value)
+    Error(reason) -> Error(reason)
+  }
+}
+
+pub fn then(result: Result(a, e), with: fn(a) -> Result(b, e)) -> Result(b, e) {
+  try(result, with)
+}
+
+pub fn map_error(result: Result(a, e), with: fn(e) -> f) -> Result(a, f) {
+  case result {
+    Ok(value) -> Ok(value)
+    Error(reason) -> Error(with(reason))
+  }
+}

@@ -79,11 +79,11 @@ The `std/` directory implements a subset of the official API. Imports of
 official modules that cannot be resolved are skipped, so unsupported calls fail
 later during checking.
 
-- `gleam/list`: `length`, `reverse`, `map`, `filter`, `fold`, `fold_right`,
-  `any`, `all`, `each`, `append`, `flatten`, `flat_map`, `take`, `drop`,
-  `contains`, `repeat`, `first`, `zip`, plus the non-official extras `sum` and
-  `at`. Missing: `map2`, `last`, `find`, `sort`, `unique`, `index_fold`, and
-  others.
+- `gleam/list`: `length`, `reverse`, `map`, `map2`, `filter`, `fold`,
+  `fold_right`, `any`, `all`, `each`, `append`, `flatten`, `flat_map`, `take`,
+  `drop`, `contains`, `repeat`, `first`, `last`, `find`, `zip`, `unzip`,
+  `index_map`, `unique`, plus the non-official extras `sum` and `at`. Missing:
+  `sort`, `index_fold`, `filter_map`, and others.
 - `gleam/string`: `length`, `append`, `uppercase`, `lowercase`, `reverse`.
   Missing: `concat`, `join`, `split`, `trim`, `contains`, `replace`, and
   others.
@@ -94,10 +94,11 @@ later during checking.
   etc.
 - `gleam/bool`: `to_string` only.
 - `gleam/io`: `println`, `print` only. Missing: `debug`.
-- `gleam/option`: `unwrap_or`, `map`, `is_some`, `unwrap`. Missing: `then`,
-  `unwrap_or_else`, etc.
-- `gleam/result`: `unwrap_or`, `map`, `unwrap`. Missing: `try`, `map_error`,
+- `gleam/option`: `unwrap_or`, `map`, `is_some`, `unwrap` (import required;
+  the prelude does not expose `Some`/`None`). Missing: `then`, `unwrap_or_else`,
   etc.
+- `gleam/result`: `unwrap_or`, `map`, `unwrap`, `try`, `then`, `map_error`.
+  Missing: `all`, `values`, etc.
 
 ## Toolchain
 

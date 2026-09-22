@@ -185,3 +185,79 @@ pub fn zip(list: List(a), other: List(b)) -> List(#(a, b)) {
     ListEmpty -> ListEmpty
   }
 }
+
+pub fn map2(list: List(a), other: List(b), with: fn(a, b) -> c) -> List(c) {
+  case list {
+    ListCons(x, xs) ->
+      case other {
+        ListCons(y, ys) -> ListCons(with(x, y), map2(xs, ys, with))
+        ListEmpty -> ListEmpty
+      }
+    ListEmpty -> ListEmpty
+  }
+}
+
+pub fn index_map(list: List(a), with: fn(a, Int) -> b) -> List(b) {
+  index_map_loop(list, with, 0)
+}
+
+fn index_map_loop(list: List(a), with: fn(a, Int) -> b, index: Int) -> List(b) {
+  case list {
+    ListCons(head, rest) ->
+      ListCons(with(head, index), index_map_loop(rest, with, index + 1))
+    ListEmpty -> ListEmpty
+  }
+}
+
+pub fn last(list: List(a)) -> Result(a, Nil) {
+  case list {
+    ListCons(head, rest) ->
+      case rest {
+        ListEmpty -> Ok(head)
+        _ -> last(rest)
+      }
+    ListEmpty -> Error(Nil)
+  }
+}
+
+pub fn find(list: List(a), satisfying: fn(a) -> Bool) -> Result(a, Nil) {
+  case list {
+    ListCons(head, rest) ->
+      case satisfying(head) {
+        True -> Ok(head)
+        False -> find(rest, satisfying)
+      }
+    ListEmpty -> Error(Nil)
+  }
+}
+
+pub fn unzip(list: List(#(a, b))) -> #(List(a), List(b)) {
+  unzip_helper(list, ListEmpty, ListEmpty)
+}
+
+fn unzip_helper(
+  list: List(#(a, b)),
+  acc_a: List(a),
+  acc_b: List(b),
+) -> #(List(a), List(b)) {
+  case list {
+    ListCons(#(a, b), rest) ->
+      unzip_helper(rest, ListCons(a, acc_a), ListCons(b, acc_b))
+    ListEmpty -> #(reverse(acc_a), reverse(acc_b))
+  }
+}
+
+pub fn unique(list: List(a)) -> List(a) {
+  unique_loop(list, ListEmpty)
+}
+
+fn unique_loop(list: List(a), seen: List(a)) -> List(a) {
+  case list {
+    ListCons(head, rest) ->
+      case contains(seen, head) {
+        True -> unique_loop(rest, seen)
+        False -> ListCons(head, unique_loop(rest, ListCons(head, seen)))
+      }
+    ListEmpty -> ListEmpty
+  }
+}

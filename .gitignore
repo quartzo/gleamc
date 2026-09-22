@@ -31,3 +31,5 @@ erl_crash.dump
 /diffs/lists
 /diffs/equality
 /diffs/mathops
+/diffs/result
+/diffs/listops

@@ -503,8 +503,16 @@ fn lift_lambda(
       let counter = state.counter
       let fname = "__lambda_" <> int.to_string(counter)
       let state = State(..state, counter: counter + 1)
-      let param_surfaces = list.map(param_tys, surface_of)
-      let ret_surface = surface_of(ret_ty)
+      use #(param_surfaces, state) <- result_try(mono_types(
+        state,
+        dict.new(),
+        list.map(param_tys, surface_of),
+      ))
+      use #(ret_surface, state) <- result_try(mono_type(
+        state,
+        dict.new(),
+        surface_of(ret_ty),
+      ))
       let fn_ty = TFun(param_surfaces, ret_surface)
       use #(body_caps, captures2, env_ty, state) <- result_try(prepare_captures(
         state,

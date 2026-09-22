@@ -167,3 +167,32 @@ pub fn parse_list_pattern_test() {
     )),
   ])) = parser.parse("fn f(xs: List(Int)) { case xs { [a] -> a } }")
 }
+
+pub fn parse_list_spread_expr_test() {
+  let assert Ok(Module([
+    DFunction(Function(
+      _,
+      "f",
+      [],
+      _,
+      EBlock([Stmt(ECtor("ListCons", [EInt(1), EVar("rest")]))]),
+    )),
+  ])) = parser.parse("fn f() { [1, ..rest] }")
+}
+
+pub fn parse_list_spread_pattern_test() {
+  let assert Ok(Module([
+    DFunction(Function(
+      _,
+      "f",
+      [#("xs", _)],
+      _,
+      EBlock([
+        Stmt(ECase(
+          EVar("xs"),
+          [Arm(PCtor("ListCons", [PVar("a"), PVar("rest")]), _, EVar("a"))],
+        )),
+      ]),
+    )),
+  ])) = parser.parse("fn f(xs: List(Int)) { case xs { [a, ..rest] -> a } }")
+}

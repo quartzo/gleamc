@@ -885,20 +885,24 @@ fn parse_list_literal(tokens) {
 }
 
 fn list_lit_elems(tokens, acc) {
-  use #(e, rest) <- and_then(parse_expr(tokens))
-  case peek(rest) {
-    Symbol(",") -> list_lit_elems(drop_token(rest), [e, ..acc])
+  case peek(tokens) {
     Symbol("..") -> {
-      use #(tail, rest2) <- and_then(parse_expr(drop_token(rest)))
+      use #(tail, rest2) <- and_then(parse_expr(drop_token(tokens)))
       use rest3 <- and_then(expect_symbol(rest2, "]"))
-      Ok(#(build_list_expr(list.reverse([e, ..acc]), tail), rest3))
+      Ok(#(build_list_expr(list.reverse(acc), tail), rest3))
     }
-    Symbol("]") ->
-      Ok(#(
-        build_list_expr(list.reverse([e, ..acc]), ECtor("ListEmpty", [])),
-        drop_token(rest),
-      ))
-    _ -> fail(rest, "expected `,`, `..` or `]` in list")
+    _ -> {
+      use #(e, rest) <- and_then(parse_expr(tokens))
+      case peek(rest) {
+        Symbol(",") -> list_lit_elems(drop_token(rest), [e, ..acc])
+        Symbol("]") ->
+          Ok(#(
+            build_list_expr(list.reverse([e, ..acc]), ECtor("ListEmpty", [])),
+            drop_token(rest),
+          ))
+        _ -> fail(rest, "expected `,` or `]` in list")
+      }
+    }
   }
 }
 
@@ -916,20 +920,24 @@ fn parse_list_pattern(tokens) {
 }
 
 fn list_pat_elems(tokens, acc) {
-  use #(p, rest) <- and_then(parse_pattern(tokens))
-  case peek(rest) {
-    Symbol(",") -> list_pat_elems(drop_token(rest), [p, ..acc])
+  case peek(tokens) {
     Symbol("..") -> {
-      use #(tail, rest2) <- and_then(parse_pattern(drop_token(rest)))
+      use #(tail, rest2) <- and_then(parse_pattern(drop_token(tokens)))
       use rest3 <- and_then(expect_symbol(rest2, "]"))
-      Ok(#(build_list_pat(list.reverse([p, ..acc]), tail), rest3))
+      Ok(#(build_list_pat(list.reverse(acc), tail), rest3))
     }
-    Symbol("]") ->
-      Ok(#(
-        build_list_pat(list.reverse([p, ..acc]), PCtor("ListEmpty", [])),
-        drop_token(rest),
-      ))
-    _ -> fail(rest, "expected `,`, `..` or `]` in pattern")
+    _ -> {
+      use #(p, rest) <- and_then(parse_pattern(tokens))
+      case peek(rest) {
+        Symbol(",") -> list_pat_elems(drop_token(rest), [p, ..acc])
+        Symbol("]") ->
+          Ok(#(
+            build_list_pat(list.reverse([p, ..acc]), PCtor("ListEmpty", [])),
+            drop_token(rest),
+          ))
+        _ -> fail(rest, "expected `,` or `]` in pattern")
+      }
+    }
   }
 }
 
