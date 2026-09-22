@@ -59,5 +59,6 @@ erl_crash.dump
 /diffs/list3
 /diffs/stdlib4
 /diffs/list4
+/diffs/dict
 /diffs/guards2
 /diffs/alias

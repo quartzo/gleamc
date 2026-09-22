@@ -94,4 +94,5 @@ pub fn table() -> Dict(String, FfiSig) {
   |> dict.insert("bit_array.byte", FfiSig([Borrow, Borrow], OwnedResult))
   |> dict.insert("bit_array.append", FfiSig([Borrow, Borrow], OwnedResult))
   |> dict.insert("bit_array.bit_size", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("gleamc.key_compare", FfiSig([Borrow, Borrow], OwnedResult))
 }

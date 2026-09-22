@@ -974,6 +974,18 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         TString,
         "string.replace",
       )
+    "gleamc", "key_compare" -> {
+      use arg_types <- result.try(infer_all(env, signatures, ctors, args))
+      case arg_types {
+        [a, b] ->
+          case type_equal(a, b) {
+            True -> Ok(TInt)
+            False ->
+              Error(CheckError("gleamc.key_compare expects matching types"))
+          }
+        _ -> Error(CheckError("gleamc.key_compare expects 2 arguments"))
+      }
+    }
     "bit_array", "from_string" ->
       check_builtin(
         env,

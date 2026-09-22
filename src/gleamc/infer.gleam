@@ -256,6 +256,10 @@ fn builtins() -> Dict(String, Scheme) {
   |> dict.insert("float.raw_power", Scheme(none, Fun([f, f], f)))
   |> dict.insert("float.raw_square_root", Scheme(none, Fun([f], f)))
   |> dict.insert("int.raw_to_base_string", Scheme(none, Fun([i, i], s)))
+  |> dict.insert(
+    "gleamc.key_compare",
+    Scheme([9001], Fun([Var(9001), Var(9001)], i)),
+  )
   |> dict.insert("int.to_float", Scheme(none, Fun([i], f)))
   |> dict.insert("string.compare_bytes", Scheme(none, Fun([s, s], i)))
   |> dict.insert("float.min", Scheme(none, Fun([f, f], f)))

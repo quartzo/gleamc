@@ -30,6 +30,7 @@ pub fn emit(
   let tuple_types = collect_tuple_types(functions, custom_types)
   let glue_types = collect_glue_types(functions, custom_types, ctors)
   let eq_types = collect_eq_types(custom_types, tuple_types, ctors)
+  let cmp_types = collect_cmp_types(functions, ctors)
 
   let preamble = "#include \"gleam_runtime.h\"\n\n"
 
@@ -121,6 +122,18 @@ pub fn emit(
       "\n",
     )
 
+  let cmp_prototypes =
+    string.join(
+      list.map(cmp_types, fn(ty) { cmp_prototype(ty, recursive) }),
+      "",
+    )
+
+  let cmp_definitions =
+    string.join(
+      list.map(cmp_types, fn(ty) { cmp_definition(ty, recursive, ctors) }),
+      "\n",
+    )
+
   let prototypes =
     string.join(
       list.map(functions, fn(function) { emit_prototype(function, recursive) }),
@@ -141,9 +154,11 @@ pub fn emit(
   preamble
   <> type_code
   <> eq_prototypes
+  <> cmp_prototypes
   <> "\n"
   <> glue_definitions
   <> eq_definitions
+  <> cmp_definitions
   <> prototypes
   <> string.join(value_wrappers, "")
   <> definitions
@@ -1274,6 +1289,19 @@ fn emit_op(by_name, recursive) {
       ir.OpBuiltin(dest, builtin, args, _) ->
         case builtin {
           "panic" -> "    Gleamc_panic(" <> call_args(by_name, args) <> ");"
+          "gleamc.key_compare" -> {
+            let first = case args {
+              [arg, ..] -> arg
+              [] -> ir.Lit(ir.LUnit)
+            }
+            "    "
+            <> dest
+            <> " = "
+            <> cmp_fn(operand_type(by_name, first))
+            <> "("
+            <> call_args(by_name, args)
+            <> ");"
+          }
           _ ->
             "    "
             <> dest
@@ -1736,5 +1764,177 @@ fn max_int(a: Int, b: Int) -> Int {
   case a > b {
     True -> a
     False -> b
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ordering glue
+// ---------------------------------------------------------------------------
+
+fn collect_cmp_types(functions, ctors) -> List(Type) {
+  let seeds =
+    list.flat_map(functions, fn(function) {
+      let ir.Function(_, _, _, blocks, locals) = function
+      let by_name = locals_map(locals)
+      list.flat_map(blocks, fn(block) {
+        let ir.Block(_, ops, _) = block
+        list.flat_map(ops, fn(op) {
+          case op {
+            ir.OpBuiltin(_, "gleamc.key_compare", args, _) ->
+              case args {
+                [first, ..] -> [operand_type(by_name, first)]
+                _ -> []
+              }
+            _ -> []
+          }
+        })
+      })
+    })
+  expand_cmp(seeds, ctors, [])
+}
+
+fn expand_cmp(pending, ctors, acc) {
+  case pending {
+    [] -> acc
+    [ty, ..rest] ->
+      case cmp_key(ty) {
+        Error(_) -> expand_cmp(rest, ctors, acc)
+        Ok(key) ->
+          case list.any(acc, fn(existing) { type_key(existing) == key }) {
+            True -> expand_cmp(rest, ctors, acc)
+            False ->
+              expand_cmp(list.append(rest, cmp_fields(ty, ctors)), ctors, [
+                ty,
+                ..acc
+              ])
+          }
+      }
+  }
+}
+
+fn cmp_key(ty: Type) -> Result(String, Nil) {
+  case ty {
+    ast.TInt | ast.TFloat | ast.TBool | TString | ast.TNil -> Ok(type_key(ty))
+    TNamed(_) | TTuple(_) | ast.TFun(_, _) -> Ok(type_key(ty))
+    _ -> Error(Nil)
+  }
+}
+
+fn cmp_fields(ty: Type, ctors) -> List(Type) {
+  case ty {
+    TTuple(types) -> types
+    TNamed(name) ->
+      list.flat_map(type_variants(name, ctors), fn(pair) {
+        let #(_, fields) = pair
+        fields
+      })
+    _ -> []
+  }
+}
+
+fn cmp_fn(ty: Type) -> String {
+  "Gleamc_cmp_" <> mangle_glue(ty)
+}
+
+fn cmp_header(ty, recursive) -> String {
+  let c = c_type(ty, recursive)
+  "int " <> cmp_fn(ty) <> "(" <> c <> " a, " <> c <> " b)"
+}
+
+fn cmp_prototype(ty: Type, recursive) -> String {
+  cmp_header(ty, recursive) <> ";\n"
+}
+
+fn cmp_definition(ty: Type, recursive, ctors) -> String {
+  case ty {
+    TString ->
+      cmp_header(ty, recursive)
+      <> " { return (int)Gleamc_string_compare_bytes(a, b); }\n"
+    ast.TInt | ast.TFloat ->
+      cmp_header(ty, recursive) <> " { return (a > b) - (a < b); }\n"
+    ast.TBool -> cmp_header(ty, recursive) <> " { return (int)a - (int)b; }\n"
+    ast.TNil ->
+      cmp_header(ty, recursive) <> " { (void)a; (void)b; return 0; }\n"
+    ast.TFun(_, _) ->
+      cmp_header(ty, recursive) <> " { (void)a; (void)b; return 0; }\n"
+    TTuple(types) -> {
+      let comparisons =
+        list.index_map(types, fn(inner, index) {
+          let left = "a._" <> int.to_string(index)
+          let right = "b._" <> int.to_string(index)
+          "    c = " <> cmp_expr(inner, left, right) <> "; if (c) return c;\n"
+        })
+      cmp_header(ty, recursive)
+      <> " {\n    int c;\n"
+      <> string.join(comparisons, "")
+      <> "    return 0;\n}\n"
+    }
+    TNamed(name) -> named_cmp(ty, name, recursive, ctors)
+    _ -> ""
+  }
+}
+
+fn named_cmp(ty: Type, name, recursive, ctors) -> String {
+  let is_rec = is_recursive(recursive, name)
+  let access = case is_rec {
+    True -> "->"
+    False -> "."
+  }
+  let cases =
+    string.join(
+      list.map(type_variants(name, ctors), fn(variant) {
+        let #(variant_name, fields) = variant
+        let comparisons =
+          list.index_map(fields, fn(inner, index) {
+            let base = variant_name <> "._" <> int.to_string(index)
+            "            c = "
+            <> cmp_expr(inner, "a" <> access <> base, "b" <> access <> base)
+            <> "; if (c) return c;"
+          })
+        "        case TAG_"
+        <> name
+        <> "_"
+        <> variant_name
+        <> ": {\n"
+        <> string.join(comparisons, "\n")
+        <> "\n            return 0;\n        }"
+      }),
+      "\n",
+    )
+  let header = case is_rec {
+    True ->
+      "    if (a == b) return 0;\n    if (a == NULL) return -1;\n    if (b == NULL) return 1;\n"
+    False -> ""
+  }
+  let tag_access = case is_rec {
+    True -> "a->tag"
+    False -> "a.tag"
+  }
+  let other_tag = case is_rec {
+    True -> "b->tag"
+    False -> "b.tag"
+  }
+  cmp_header(ty, recursive)
+  <> " {\n"
+  <> header
+  <> "    if ("
+  <> tag_access
+  <> " != "
+  <> other_tag
+  <> ") return (int)"
+  <> tag_access
+  <> " - (int)"
+  <> other_tag
+  <> ";\n    switch ("
+  <> tag_access
+  <> ") {\n"
+  <> cases
+  <> "\n    }\n    return 0;\n}\n"
+}
+
+fn cmp_expr(ty, left, right) -> String {
+  case ty {
+    ast.TFun(_, _) -> "0"
+    _ -> cmp_fn(ty) <> "(" <> left <> ", " <> right <> ")"
   }
 }

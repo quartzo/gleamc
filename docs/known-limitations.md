@@ -106,6 +106,11 @@ are resolved when the prelude is attached.
   `<<...>>` literals and patterns (no `:size`/`:unit`, no bit-level ops, no
   `slice`/`base64_encode`).
 - `gleam/function`: `identity` only.
+- `gleam/dict`: `new`, `is_empty`, `size`, `from_list`, `to_list`, `keys`,
+  `values`, `get`, `has_key`, `insert`, `delete`, `upsert`, `map_values`,
+  `fold`, `filter`, `each`. Entries are kept sorted by key (matching the
+  official Erlang backend's `to_list` order) using generated per-type
+  comparison glue. Missing: `take`, `drop`, `merge`, `combine`, `group`.
 - `gleam/order`: `Order` type plus `to_int`, `negate`, `compare`, `reverse`,
   `break_tie`, `lazy_break_tie`.
 - `gleam/option`: `unwrap`, `map`, `is_some`, `is_none`, `then`, `or`,

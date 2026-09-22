@@ -914,10 +914,32 @@ fn mono_call(
   case fun {
     EVar(name) ->
       case dict.get(state.globals, name) {
-        Error(_) -> {
-          use #(args2, state) <- result_try(mono_exprs(state, locals, args))
-          Ok(#(ECall(EVar(name), args2), state))
-        }
+        Error(_) ->
+          case dict.get(locals, name) {
+            Error(_) -> {
+              use #(args2, state) <- result_try(mono_exprs(state, locals, args))
+              Ok(#(ECall(EVar(name), args2), state))
+            }
+            Ok(scheme) -> {
+              // Calling a local function value: use its parameter types as
+              // expected types so its arguments resolve (e.g. `None`).
+              let #(_, local_ty, counter) =
+                types.instantiate_vars(scheme, state.counter)
+              let state = State(..state, counter: counter)
+              let #(param_tys, _) = fun_parts(local_ty)
+              let expected =
+                list.map(param_tys, fn(param_ty) {
+                  types.zonk(param_ty, state.subst)
+                })
+              use #(args2, state) <- result_try(mono_args_expect(
+                state,
+                locals,
+                expected,
+                args,
+              ))
+              Ok(#(ECall(EVar(name), args2), state))
+            }
+          }
         Ok(scheme) -> {
           use #(type_args, state) <- result_try(callee_type_args(
             state,
