@@ -94,9 +94,10 @@ later during checking.
   etc.
 - `gleam/bool`: `to_string` only.
 - `gleam/io`: `println`, `print` only. Missing: `debug`.
-- `gleam/option`: `unwrap_or`, `map`, `is_some`, `unwrap` (import required;
-  the prelude does not expose `Some`/`None`). Missing: `then`, `unwrap_or_else`,
-  etc.
+- `gleam/option`: `unwrap`, `map`, `is_some`, `is_none`, `then`, `or`,
+  `to_result`, `from_result`, `flatten`, `lazy_unwrap`, plus the non-official
+  `unwrap_or` (import required; the prelude does not expose `Some`/`None`).
+  Missing: `all`, `values`, `lazy_or`, etc.
 - `gleam/result`: `unwrap_or`, `map`, `unwrap`, `try`, `then`, `map_error`.
   Missing: `all`, `values`, etc.
 

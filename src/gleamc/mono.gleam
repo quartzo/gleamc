@@ -299,6 +299,22 @@ fn mono_params(state: State, surface_map, params) {
   }
 }
 
+fn rank_of_surface(state: State, ty) -> Int {
+  let found = case ty {
+    TApp(name, args) ->
+      case dict.get(state.type_names, key(name, args)) {
+        Ok(specialized) -> dict.get(state.type_rank, specialized)
+        Error(_) -> Error(Nil)
+      }
+    TNamed(name) -> dict.get(state.type_rank, name)
+    _ -> Error(Nil)
+  }
+  case found {
+    Ok(rank) -> rank
+    Error(_) -> 0
+  }
+}
+
 fn specialise_type(state: State, name, type_args) {
   case dict.get(state.surface_types, name) {
     Error(_) -> Ok(state)
@@ -313,13 +329,19 @@ fn specialise_type(state: State, name, type_args) {
         Ok(found) -> found
         Error(_) -> name
       }
+      // Rank so that a specialised type is emitted after the types it embeds
+      // (e.g. `Option(Option(Int))` after `Option(Int)`).
+      let arg_rank =
+        list.fold(type_args, 0, fn(acc, arg) {
+          int.max(acc, rank_of_surface(state, arg))
+        })
       let state =
         State(
           ..state,
           type_rank: dict.insert(
             state.type_rank,
             specialized,
-            order_of(state, name),
+            order_of(state, name) * 100_000 + arg_rank + 1,
           ),
         )
       use #(variants2, state) <- result_try(mono_variants(
@@ -450,7 +472,7 @@ fn mono_expr(
       Ok(#(EField(obj2, name), state))
     }
     EBlock(statements) -> mono_block(state, locals, statements)
-    ECall(fun, args) -> mono_call(state, locals, fun, args)
+    ECall(fun, args) -> mono_call(state, locals, fun, args, None)
     ECtor(name, args) -> mono_ctor(state, locals, name, args)
     ECase(subject, arms) -> mono_case(state, locals, subject, arms)
     ELambda(_, _) -> Error("lambda requires an expected function type")
@@ -477,6 +499,7 @@ fn mono_expr_ex(state, locals, expected, expr) {
       Ok(#(ECase(subject2, arms2), state))
     }
     EBlock(statements) -> mono_block_ex(state, locals, expected, statements)
+    ECall(fun, args) -> mono_call(state, locals, fun, args, expected)
     ELambda(names, body) -> lift_lambda(state, locals, names, body, expected)
     EClosure(_, _, _, _) -> Ok(#(expr, state))
     EEnvGet(_, _, _) -> Ok(#(expr, state))
@@ -779,7 +802,13 @@ fn mono_exprs(state: State, locals: Dict(String, Scheme), exprs) {
   }
 }
 
-fn mono_call(state: State, locals: Dict(String, Scheme), fun, args) {
+fn mono_call(
+  state: State,
+  locals: Dict(String, Scheme),
+  fun,
+  args,
+  expected_opt,
+) {
   case fun {
     EVar(name) ->
       case dict.get(state.globals, name) {
@@ -793,6 +822,7 @@ fn mono_call(state: State, locals: Dict(String, Scheme), fun, args) {
             locals,
             scheme,
             args,
+            expected_opt,
           ))
           let state = request_fn(state, name, type_args)
           let specialized = fn_specialised_name(state, name, type_args)
@@ -974,6 +1004,7 @@ fn callee_type_args(
   locals: Dict(String, Scheme),
   scheme,
   args,
+  expected_opt,
 ) -> Result(#(List(Type), State), String) {
   let Scheme(vars, _) = scheme
   case vars {
@@ -981,10 +1012,20 @@ fn callee_type_args(
     _ -> {
       let #(fresh_vars, fresh_ty, counter) =
         types.instantiate_vars(scheme, state.counter)
-      let #(param_tys, _) = fun_parts(fresh_ty)
+      let #(param_tys, ret) = fun_parts(fresh_ty)
       let state = State(..state, counter: counter)
       let #(arg_tys, state) = arg_types(state, locals, args)
       use subst <- result_try(unify_seq(param_tys, arg_tys, state.subst))
+      // The expected return type (when known) helps resolve type arguments
+      // that only appear in the result, e.g. `then(.., fn(_) { None })`.
+      let subst = case expected_opt {
+        Some(expected) ->
+          case map_unify(ret, expected, subst) {
+            Ok(updated) -> updated
+            Error(_) -> subst
+          }
+        None -> subst
+      }
       let state = State(..state, subst: subst)
       let type_args =
         list.map(fresh_vars, fn(fresh_var) { types.zonk(fresh_var, subst) })
