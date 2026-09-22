@@ -102,7 +102,8 @@ their imports are resolved when the prelude is attached.
   `drop_start`, `drop_end`, `first`, `last`, `is_empty`, `to_graphemes`
   (code-point based, not full grapheme clusters), `split_once`, `crop`,
   `remove_prefix`, `remove_suffix`, `capitalise`, `pop_grapheme`, `to_option`,
-  `byte_size`, `compare`, `inspect`. Missing: `utf_codepoints`, etc.
+  `byte_size`, `compare`, `inspect`, `to_utf_codepoints`, `from_utf_codepoints`,
+  `utf_codepoint`, `utf_codepoint_to_int` (`UtfCodepoint` opaque type).
 - `gleam/int`: `to_string`, `parse`, `base_parse`, `to_base_string`,
   `to_float`, `compare`, `min`, `max`, `absolute_value` (arithmetic is built
   in).

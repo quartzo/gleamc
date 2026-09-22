@@ -301,6 +301,8 @@ fn builtins() -> Dict(String, Scheme) {
   |> dict.insert("io.debug", Scheme([9003], Fun([Var(9003)], n)))
   |> dict.insert("int.to_float", Scheme(none, Fun([i], f)))
   |> dict.insert("string.compare_bytes", Scheme(none, Fun([s, s], i)))
+  |> dict.insert("string.raw_codepoint_at", Scheme(none, Fun([s, i], i)))
+  |> dict.insert("string.raw_codepoint_to_string", Scheme(none, Fun([i], s)))
   |> dict.insert("float.min", Scheme(none, Fun([f, f], f)))
   |> dict.insert("float.max", Scheme(none, Fun([f, f], f)))
   |> dict.insert("float.absolute_value", Scheme(none, Fun([f], f)))

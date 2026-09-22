@@ -262,3 +262,57 @@ pub fn compare(a: String, b: String) -> Order {
 pub fn inspect(term: a) -> String {
   gleamc.show(term)
 }
+
+pub opaque type UtfCodepoint {
+  UtfCodepoint(value: Int)
+}
+
+pub fn utf_codepoint(value: Int) -> Result(UtfCodepoint, Nil) {
+  case value > 1_114_111 {
+    True -> Error(Nil)
+    False ->
+      case value >= 55_296 && value <= 57_343 {
+        True -> Error(Nil)
+        False ->
+          case value < 0 {
+            True -> Error(Nil)
+            False -> Ok(UtfCodepoint(value))
+          }
+      }
+  }
+}
+
+pub fn utf_codepoint_to_int(cp: UtfCodepoint) -> Int {
+  case cp {
+    UtfCodepoint(value) -> value
+  }
+}
+
+pub fn to_utf_codepoints(value: String) -> List(UtfCodepoint) {
+  to_utf_codepoints_loop(value, 0, string.length(value), [])
+}
+
+fn to_utf_codepoints_loop(
+  value: String,
+  index: Int,
+  count: Int,
+  acc: List(UtfCodepoint),
+) -> List(UtfCodepoint) {
+  case index >= count {
+    True -> list.reverse(acc)
+    False ->
+      to_utf_codepoints_loop(value, index + 1, count, [
+        UtfCodepoint(string.raw_codepoint_at(value, index)),
+        ..acc
+      ])
+  }
+}
+
+pub fn from_utf_codepoints(cps: List(UtfCodepoint)) -> String {
+  case cps {
+    [] -> ""
+    [cp, ..rest] ->
+      string.raw_codepoint_to_string(utf_codepoint_to_int(cp))
+      <> from_utf_codepoints(rest)
+  }
+}

@@ -157,6 +157,8 @@ GleamcString Gleamc_string_trim_end(GleamcString value);
 GleamcString Gleamc_string_slice(GleamcString value, int64_t idx, int64_t len);
 int64_t Gleamc_string_byte_size(GleamcString value);
 int64_t Gleamc_string_compare_bytes(GleamcString a, GleamcString b);
+int64_t Gleamc_string_raw_codepoint_at(GleamcString value, size_t index);
+GleamcString Gleamc_string_raw_codepoint_to_string(int64_t codepoint);
 GleamcString Gleamc_string_replace(
     GleamcString value,
     GleamcString pattern,

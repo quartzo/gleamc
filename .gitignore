@@ -62,5 +62,6 @@ erl_crash.dump
 /diffs/dict
 /diffs/dict2
 /diffs/inspect
+/diffs/utf
 /diffs/guards2
 /diffs/alias

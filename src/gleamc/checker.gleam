@@ -832,6 +832,26 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         TFloat,
         "int.to_float",
       )
+    "string", "raw_codepoint_at" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TInt],
+        TInt,
+        "string.raw_codepoint_at",
+      )
+    "string", "raw_codepoint_to_string" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TInt],
+        TString,
+        "string.raw_codepoint_to_string",
+      )
     "string", "compare_bytes" ->
       check_builtin(
         env,

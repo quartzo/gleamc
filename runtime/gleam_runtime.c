@@ -1,6 +1,8 @@
 /* gleamc kernel implementation (see gleam_runtime.h). */
 #include "gleam_runtime.h"
 
+static size_t codepoint_offset(GleamcString s, int64_t index);
+
 #include <math.h>
 
 static size_t _gleamc_live = 0;
@@ -170,6 +172,58 @@ void Gleamc_panic(GleamcString message) {
 
 int64_t Gleamc_string_byte_size(GleamcString value) {
     return (int64_t)value.len;
+}
+
+static uint32_t decode_codepoint_at(GleamcString s, size_t i) {
+    unsigned char c = (unsigned char)s.data[i];
+    if (c < 0x80) return c;
+    if ((c & 0xE0) == 0xC0 && i + 1 < s.len) {
+        return ((uint32_t)(c & 0x1F) << 6) | (s.data[i + 1] & 0x3F);
+    }
+    if ((c & 0xF0) == 0xE0 && i + 2 < s.len) {
+        return ((uint32_t)(c & 0x0F) << 12) | ((s.data[i + 1] & 0x3F) << 6) |
+               (s.data[i + 2] & 0x3F);
+    }
+    if ((c & 0xF8) == 0xF0 && i + 3 < s.len) {
+        return ((uint32_t)(c & 0x07) << 18) | ((s.data[i + 1] & 0x3F) << 12) |
+               ((s.data[i + 2] & 0x3F) << 6) | (s.data[i + 3] & 0x3F);
+    }
+    return 0xFFFD;
+}
+
+int64_t Gleamc_string_raw_codepoint_at(GleamcString value, size_t index) {
+    size_t offset = codepoint_offset(value, (int64_t)index);
+    if (offset >= value.len) return -1;
+    return (int64_t)decode_codepoint_at(value, offset);
+}
+
+GleamcString Gleamc_string_raw_codepoint_to_string(int64_t codepoint) {
+    if (codepoint < 0) codepoint = 0xFFFD;
+    unsigned char buf[4];
+    int n = 0;
+    if (codepoint <= 0x7F) {
+        buf[0] = (unsigned char)codepoint;
+        n = 1;
+    } else if (codepoint <= 0x7FF) {
+        buf[0] = (unsigned char)(0xC0 | (codepoint >> 6));
+        buf[1] = (unsigned char)(0x80 | (codepoint & 0x3F));
+        n = 2;
+    } else if (codepoint <= 0xFFFF) {
+        buf[0] = (unsigned char)(0xE0 | (codepoint >> 12));
+        buf[1] = (unsigned char)(0x80 | ((codepoint >> 6) & 0x3F));
+        buf[2] = (unsigned char)(0x80 | (codepoint & 0x3F));
+        n = 3;
+    } else {
+        buf[0] = (unsigned char)(0xF0 | (codepoint >> 18));
+        buf[1] = (unsigned char)(0x80 | ((codepoint >> 12) & 0x3F));
+        buf[2] = (unsigned char)(0x80 | ((codepoint >> 6) & 0x3F));
+        buf[3] = (unsigned char)(0x80 | (codepoint & 0x3F));
+        n = 4;
+    }
+    char* out = (char*)gleamc_alloc((size_t)n + 1);
+    memcpy(out, buf, (size_t)n);
+    out[n] = '\0';
+    return (GleamcString){out, (size_t)n};
 }
 
 int64_t Gleamc_string_compare_bytes(GleamcString a, GleamcString b) {

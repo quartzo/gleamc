@@ -130,6 +130,11 @@ fn rewrite_expr(expr, module, local_fns, exports) -> Expr {
           )
         }),
       )
+    EField(EVar(alias), name) ->
+      case is_lower_name(name) && module_exports(exports, alias, name) {
+        True -> EVar(qualify(alias, name))
+        False -> EField(EVar(alias), name)
+      }
     EField(obj, name) ->
       EField(rewrite_expr(obj, module, local_fns, exports), name)
     ELabelled(label, value) ->

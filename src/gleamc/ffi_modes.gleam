@@ -70,6 +70,14 @@ pub fn table() -> Dict(String, FfiSig) {
   )
   |> dict.insert("int.to_float", FfiSig([Borrow], OwnedResult))
   |> dict.insert("string.compare_bytes", FfiSig([Borrow, Borrow], OwnedResult))
+  |> dict.insert(
+    "string.raw_codepoint_at",
+    FfiSig([Borrow, Borrow], OwnedResult),
+  )
+  |> dict.insert(
+    "string.raw_codepoint_to_string",
+    FfiSig([Borrow], OwnedResult),
+  )
   |> dict.insert("string.contains", FfiSig([Borrow, Borrow], OwnedResult))
   |> dict.insert("string.starts_with", FfiSig([Borrow, Borrow], OwnedResult))
   |> dict.insert("string.ends_with", FfiSig([Borrow, Borrow], OwnedResult))
