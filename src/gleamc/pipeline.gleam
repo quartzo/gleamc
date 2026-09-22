@@ -14,6 +14,7 @@ import gleamc/ir
 import gleamc/lower
 import gleamc/merge
 import gleamc/mono
+import gleamc/opacity
 import gleamc/ownership
 import gleamc/parser
 import gleamc/qualify
@@ -44,6 +45,7 @@ pub fn compile_ir_modules(
 }
 
 fn cascade(modules: List(#(String, Module))) {
+  use _ <- result.try(opacity.check(modules))
   let merged = merge.merge(modules) |> qualify.qualify_ctors
   // 0. expand type aliases before specialisation
   use merged <- result.try(aliases.expand(merged))

@@ -62,7 +62,7 @@ fn collect(defs, signatures, ctors) {
       collect(rest, signatures, ctors)
     }
     [DCustomType(custom), ..rest] -> {
-      let CustomType(_, name, _generics, variants) = custom
+      let CustomType(_, name, _generics, variants, _) = custom
       let ctors =
         list.fold(variants, ctors, fn(acc, variant) {
           let Variant(variant_name, fields) = variant

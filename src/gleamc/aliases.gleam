@@ -53,7 +53,7 @@ fn expand_definition(definition, aliases) -> Result(Definition, String) {
       Ok(DFunction(Function(is_pub, name, params, ret, body)))
     }
     DCustomType(custom) -> {
-      let CustomType(is_pub, name, generics, variants) = custom
+      let CustomType(is_pub, name, generics, variants, is_opaque) = custom
       use variants <- result.try(
         list.try_map(variants, fn(variant) {
           let Variant(variant_name, fields) = variant
@@ -67,7 +67,7 @@ fn expand_definition(definition, aliases) -> Result(Definition, String) {
           Ok(Variant(variant_name, fields))
         }),
       )
-      Ok(DCustomType(CustomType(is_pub, name, generics, variants)))
+      Ok(DCustomType(CustomType(is_pub, name, generics, variants, is_opaque)))
     }
     DImport(_) -> Ok(definition)
   }

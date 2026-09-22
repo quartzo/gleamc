@@ -74,7 +74,7 @@ fn initial_state(module: Module, program: infer.Program) -> State {
     list.fold(definitions, dict.new(), fn(acc, def) {
       case def {
         DCustomType(custom) -> {
-          let CustomType(_, name, _, _) = custom
+          let CustomType(_, name, _, _, _) = custom
           dict.insert(acc, name, custom)
         }
         _ -> acc
@@ -88,7 +88,7 @@ fn initial_state(module: Module, program: infer.Program) -> State {
         let #(def, index) = pair
         case def {
           DCustomType(custom) -> {
-            let CustomType(_, name, _, _) = custom
+            let CustomType(_, name, _, _, _) = custom
             dict.insert(acc, name, index)
           }
           _ -> acc
@@ -319,7 +319,7 @@ fn specialise_type(state: State, name, type_args) {
   case dict.get(state.surface_types, name) {
     Error(_) -> Ok(state)
     Ok(custom) -> {
-      let CustomType(is_pub, _, generics, variants) = custom
+      let CustomType(is_pub, _, generics, variants, _) = custom
       let surface_map =
         list.fold(list.zip(generics, type_args), dict.new(), fn(acc, pair) {
           let #(generic, arg) = pair
@@ -352,7 +352,7 @@ fn specialise_type(state: State, name, type_args) {
       ))
       Ok(
         State(..state, type_out: [
-          CustomType(is_pub, specialized, [], variants2),
+          CustomType(is_pub, specialized, [], variants2, False),
           ..state.type_out
         ]),
       )
@@ -1353,7 +1353,7 @@ fn order_of(state: State, name: String) -> Int {
 }
 
 fn type_rank(state: State, custom: CustomType) -> Int {
-  let CustomType(_, name, _, _) = custom
+  let CustomType(_, name, _, _, _) = custom
   case dict.get(state.type_rank, name) {
     Ok(rank) -> rank
     Error(_) -> 9999

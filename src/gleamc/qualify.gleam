@@ -30,7 +30,7 @@ fn collect_ctors(definitions) -> Dict(String, Bool) {
   list.fold(definitions, dict.new(), fn(acc, definition) {
     case definition {
       DCustomType(custom) -> {
-        let CustomType(_, _, _, variants) = custom
+        let CustomType(_, _, _, variants, _) = custom
         list.fold(variants, acc, fn(acc, variant) {
           let Variant(name, _) = variant
           dict.insert(acc, name, True)

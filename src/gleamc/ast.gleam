@@ -97,6 +97,7 @@ pub type CustomType {
     name: String,
     generics: List(String),
     variants: List(Variant),
+    is_opaque: Bool,
   )
 }
 

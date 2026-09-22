@@ -42,11 +42,11 @@ pub fn emit(
     string.join(
       list.map(
         list.filter(custom_types, fn(custom) {
-          let CustomType(_, name, _, _) = custom
+          let CustomType(_, name, _, _, _) = custom
           is_recursive(recursive, name)
         }),
         fn(custom) {
-          let CustomType(_, name, _, _) = custom
+          let CustomType(_, name, _, _, _) = custom
           "typedef struct " <> name <> " " <> name <> ";\n"
         },
       ),
@@ -64,7 +64,7 @@ pub fn emit(
         )
       }),
       list.map(custom_types, fn(custom) {
-        let CustomType(_, name, _, _) = custom
+        let CustomType(_, name, _, _, _) = custom
         #(
           name,
           custom_dep_keys(custom, recursive),
@@ -194,7 +194,7 @@ fn tuple_dep_keys(ty, recursive) -> List(String) {
 }
 
 fn custom_dep_keys(custom, recursive) -> List(String) {
-  let CustomType(_, _, _, variants) = custom
+  let CustomType(_, _, _, variants, _) = custom
   list.flat_map(variants, fn(variant) {
     let Variant(_, fields) = variant
     list.filter_map(fields, fn(field) {
@@ -580,7 +580,7 @@ fn collect_tuple_types(
     })
   let from_ctors =
     list.flat_map(custom_types, fn(custom) {
-      let CustomType(_, _, _, variants) = custom
+      let CustomType(_, _, _, variants, _) = custom
       list.flat_map(variants, fn(variant) {
         let Variant(_, fields) = variant
         list.map(fields, fn(field) {
@@ -669,7 +669,7 @@ fn emit_tuple_type(ty: Type, recursive) -> String {
 }
 
 fn emit_custom_type(custom: CustomType, recursive) -> String {
-  let CustomType(_, name, _, variants) = custom
+  let CustomType(_, name, _, variants, _) = custom
   let tags =
     list.map(variants, fn(variant) {
       let Variant(variant_name, _) = variant
@@ -732,7 +732,7 @@ fn collect_eq_types(custom_types, tuple_types, ctors) -> List(Type) {
   let seeds =
     list.append(
       list.map(custom_types, fn(custom) {
-        let CustomType(_, name, _, _) = custom
+        let CustomType(_, name, _, _, _) = custom
         TNamed(name)
       }),
       tuple_types,

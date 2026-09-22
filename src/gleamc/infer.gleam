@@ -110,7 +110,7 @@ fn collect(definitions, st: St) {
 }
 
 fn collect_type(custom: CustomType, types_map, ctors, st: St) {
-  let CustomType(_, type_name, generics, variants) = custom
+  let CustomType(_, type_name, generics, variants, _) = custom
   let #(mapping, param_ids, st) =
     list.fold(generics, #(dict.new(), [], st), fn(acc, name) {
       let #(map, ids, st) = acc

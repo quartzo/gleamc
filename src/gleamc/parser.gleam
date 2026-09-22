@@ -143,12 +143,16 @@ fn definitions(tokens, acc) {
       let rest = skip_newlines(drop_token(tokens))
       case peek(rest) {
         Keyword("fn") -> definition_fn(rest, True, acc)
-        Keyword("type") -> definition_type(rest, True, acc)
+        Keyword("type") -> definition_type(rest, True, False, acc)
+        Keyword("opaque") ->
+          definition_type(skip_newlines(drop_token(rest)), True, True, acc)
         _ -> fail(rest, "expected `fn` or `type` after `pub`")
       }
     }
     Keyword("fn") -> definition_fn(tokens, False, acc)
-    Keyword("type") -> definition_type(tokens, False, acc)
+    Keyword("type") -> definition_type(tokens, False, False, acc)
+    Keyword("opaque") ->
+      definition_type(skip_newlines(drop_token(tokens)), False, True, acc)
     _ ->
       fail(tokens, "expected a declaration (`import`, `pub fn`, `fn`, `type`)")
   }
@@ -196,7 +200,7 @@ fn params(tokens, acc) {
   }
 }
 
-fn definition_type(tokens, is_pub, acc) {
+fn definition_type(tokens, is_pub, is_opaque, acc) {
   use rest <- and_then(expect_keyword(tokens, "type"))
   use #(name, rest1) <- and_then(expect_upname(skip_newlines(rest)))
   let #(generics, rest1) = parse_generics(skip_newlines(rest1))
@@ -213,7 +217,7 @@ fn definition_type(tokens, is_pub, acc) {
       use rest3 <- and_then(expect_symbol(rest2, "{"))
       use #(variants, rest4) <- and_then(variants(skip_newlines(rest3), []))
       definitions(skip_newlines(rest4), [
-        DCustomType(CustomType(is_pub, name, generics, variants)),
+        DCustomType(CustomType(is_pub, name, generics, variants, is_opaque)),
         ..acc
       ])
     }

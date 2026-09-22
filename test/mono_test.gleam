@@ -9,7 +9,7 @@ fn definition_names(module: Module) -> List(String) {
     case definition {
       DFunction(function) -> Ok(function.name)
       DCustomType(custom) -> {
-        let CustomType(_, name, _, _) = custom
+        let CustomType(_, name, _, _, _) = custom
         Ok(name)
       }
       _ -> Error(Nil)

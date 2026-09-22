@@ -24,6 +24,7 @@ pub fn parse_generic_type_decl_test() {
       "Option",
       ["a"],
       [Variant("Some", [#("value", TVar("a"))]), Variant("None", [])],
+      False,
     )),
   ])) = parser.parse("pub type Option(a) {\n  Some(value: a)\n  None\n}")
 }
@@ -38,6 +39,7 @@ pub fn parse_multi_param_generic_test() {
         Variant("Ok", [#("value", TVar("a"))]),
         Variant("Error", [#("reason", TVar("e"))]),
       ],
+      False,
     )),
   ])) =
     parser.parse("type Result(a, e) {\n  Ok(value: a)\n  Error(reason: e)\n}")
@@ -92,6 +94,7 @@ pub fn parse_custom_type_test() {
       "Color",
       [],
       [Variant("Red", []), Variant("Green", [])],
+      False,
     )),
   ])) = parser.parse("pub type Color {\n  Red\n  Green\n}")
 }
@@ -103,6 +106,7 @@ pub fn parse_custom_type_fields_test() {
       "Maybe",
       [],
       [Variant("Just", [#("value", TInt)]), Variant("None", [])],
+      False,
     )),
   ])) = parser.parse("type Maybe {\n  Just(value: Int)\n  None\n}")
 }

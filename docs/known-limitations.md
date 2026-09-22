@@ -38,7 +38,6 @@ adding list support, and are now covered by `diffs/lists.gleam`:
 - Exhaustiveness for tuple subjects (including multiple `case` subjects, which
   desugar to a tuple) is assumed rather than analysed, so a non-exhaustive
   tuple `case` is not reported.
-- `opaque` is a reserved keyword but opaque types are not enforced.
 
 ## Type system
 
