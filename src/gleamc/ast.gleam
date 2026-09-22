@@ -59,6 +59,9 @@ pub type Expr {
   /// `panic` / `todo` — aborts at runtime. `ty` is filled during
   /// monomorphisation so the backend can type the surrounding expression.
   EPanic(message: String, ty: Type)
+  /// `Ctor(..base, field: value)` — record update (desugared during
+  /// monomorphisation into a full constructor call).
+  EUpdate(name: String, base: Expr, fields: List(#(String, Expr)))
 }
 
 pub type Statement {

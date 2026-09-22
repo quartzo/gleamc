@@ -8,9 +8,10 @@ import gleam/option.{None, Some}
 import gleamc/ast.{
   type Module, Arm, CustomType, DCustomType, DFunction, DImport, EBinop, EBlock,
   EBool, ECall, ECase, ECtor, EField, EFloat, EInt, ELabelled, ELambda, ENil,
-  EPanic, EString, ETuple, EUnop, EVar, Function, Import, Let, Module, PBool,
-  PCtor, PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard, Stmt,
-  TApp, TBool, TFloat, TFun, TInt, TNamed, TNil, TString, TTuple, TVar, Variant,
+  EPanic, EString, ETuple, EUnop, EUpdate, EVar, Function, Import, Let, Module,
+  PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard,
+  Stmt, TApp, TBool, TFloat, TFun, TInt, TNamed, TNil, TString, TTuple, TVar,
+  Variant,
 }
 import gleamc/lexer
 import gleamc/token.{
@@ -732,15 +733,21 @@ fn parse_atom(tokens) {
     [Token(UpNameKind("True"), _, _), ..rest] -> Ok(#(EBool(True), rest))
     [Token(UpNameKind("False"), _, _), ..rest] -> Ok(#(EBool(False), rest))
     [Token(UpNameKind("Nil"), _, _), ..rest] -> Ok(#(ENil, rest))
-    [Token(UpNameKind(name), _, _), ..rest] -> {
+    [Token(UpNameKind(name), _, _), ..rest] ->
       case peek(rest) {
         Symbol("(") -> {
-          use #(args, rest2) <- and_then(call_args(drop_token(rest), []))
-          Ok(#(ECtor(name, args), rest2))
+          let after = drop_token(rest)
+          case peek(after) {
+            Symbol("..") ->
+              parse_record_update(name, skip_newlines(drop_token(after)))
+            _ -> {
+              use #(args, rest2) <- and_then(call_args(after, []))
+              Ok(#(ECtor(name, args), rest2))
+            }
+          }
         }
         _ -> Ok(#(ECtor(name, []), rest))
       }
-    }
     [Token(NameKind("panic"), _, _), ..rest] -> parse_panic(rest, "panic")
     [Token(NameKind("todo"), _, _), ..rest] -> parse_panic(rest, "todo")
     [Token(NameKind(name), _, _), ..rest] -> Ok(#(EVar(name), rest))
@@ -763,6 +770,39 @@ fn parse_atom(tokens) {
               }
           }
       }
+  }
+}
+
+fn parse_record_update(name, tokens) {
+  use #(base, rest) <- and_then(parse_expr(tokens))
+  let rest1 = skip_newlines(rest)
+  case peek(rest1) {
+    Symbol(",") -> {
+      use #(fields, rest2) <- and_then(
+        update_fields(skip_newlines(drop_token(rest1)), []),
+      )
+      Ok(#(EUpdate(name, base, fields), rest2))
+    }
+    Symbol(")") -> Ok(#(EUpdate(name, base, []), drop_token(rest1)))
+    _ -> fail(rest1, "expected `,` or `)` in record update")
+  }
+}
+
+fn update_fields(tokens, acc) {
+  case peek(tokens) {
+    Symbol(")") -> Ok(#(list.reverse(acc), drop_token(tokens)))
+    _ -> {
+      use #(label, rest) <- and_then(expect_name(tokens))
+      use rest1 <- and_then(expect_symbol(rest, ":"))
+      use #(value, rest2) <- and_then(parse_expr(skip_newlines(rest1)))
+      let acc2 = [#(label, value), ..acc]
+      let nxt = skip_newlines(rest2)
+      case peek(nxt) {
+        Symbol(",") -> update_fields(skip_newlines(drop_token(nxt)), acc2)
+        Symbol(")") -> Ok(#(list.reverse(acc2), drop_token(nxt)))
+        _ -> fail(nxt, "expected `,` or `)` in record update")
+      }
+    }
   }
 }
 

@@ -14,8 +14,8 @@ import gleamc/ast.{
   type Expr, type Function, type Module, type Pattern, type Statement, type Type,
   Arm, DFunction, EBinop, EBlock, EBool, ECall, ECase, EClosure, ECtor, EEnvGet,
   EField, EFloat, EInt, ELabelled, ELambda, ENil, EPanic, EString, ETuple, EUnop,
-  EVar, Let, Module, PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString,
-  PTuple, PVar, PWildcard, Stmt, TBool, TFun, TNamed, TString, TTuple,
+  EUpdate, EVar, Let, Module, PBool, PCtor, PFloat, PInt, PLabelled, PNil,
+  PString, PTuple, PVar, PWildcard, Stmt, TBool, TFun, TNamed, TString, TTuple,
 }
 import gleamc/checker
 import gleamc/infer
@@ -319,6 +319,8 @@ fn lower_expr(
     ELambda(_, _) -> Error(LowerError("lambda not lifted before lowering"))
     EClosure(code, captures, env_ty, fn_ty) ->
       lower_closure(b, code, captures, env_ty, fn_ty)
+    EUpdate(_, _, _) ->
+      Error(LowerError("record update must be desugared before lowering"))
     EPanic(message, _) -> {
       let ty = infer(b, expr)
       let #(dest, b1) = fresh_local(b, "panic", ty)

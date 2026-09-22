@@ -14,8 +14,8 @@ import gleam/string
 import gleamc/ast.{
   type Definition, type Expr, type Module, type Statement, Arm, DFunction,
   DImport, EBinop, EBlock, EBool, ECall, ECase, EClosure, ECtor, EEnvGet, EField,
-  EFloat, EInt, ELabelled, ELambda, ENil, EPanic, EString, ETuple, EUnop, EVar,
-  Function, Let, Module, Stmt,
+  EFloat, EInt, ELabelled, ELambda, ENil, EPanic, EString, ETuple, EUnop,
+  EUpdate, EVar, Function, Let, Module, Stmt,
 }
 
 pub fn merge(modules: List(#(String, Module))) -> Module {
@@ -147,6 +147,15 @@ fn rewrite_expr(expr, module, local_fns, exports) -> Expr {
       )
     EEnvGet(_, _, _) -> expr
     EPanic(_, _) -> expr
+    EUpdate(name, base, fields) ->
+      EUpdate(
+        name,
+        rewrite_expr(base, module, local_fns, exports),
+        list_map(fields, fn(field) {
+          let #(label, value) = field
+          #(label, rewrite_expr(value, module, local_fns, exports))
+        }),
+      )
   }
 }
 

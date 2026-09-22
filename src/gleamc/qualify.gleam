@@ -12,7 +12,7 @@ import gleamc/ast.{
   type Definition, type Expr, type Module, type Statement, Arm, CustomType,
   DCustomType, DFunction, EBinop, EBlock, EBool, ECall, ECase, EClosure, ECtor,
   EEnvGet, EField, EFloat, EInt, ELabelled, ELambda, ENil, EPanic, EString,
-  ETuple, EUnop, EVar, Function, Let, Module, Stmt, Variant,
+  ETuple, EUnop, EUpdate, EVar, Function, Let, Module, Stmt, Variant,
 }
 
 pub fn qualify_ctors(module: Module) -> Module {
@@ -80,6 +80,15 @@ fn qualify_expr(expr, ctors) -> Expr {
       }
     EInt(_) | EFloat(_) | EString(_) | EVar(_) | ENil | EEnvGet(_, _, _) -> expr
     EPanic(_, _) -> expr
+    EUpdate(name, base, fields) ->
+      EUpdate(
+        name,
+        qualify_expr(base, ctors),
+        list.map(fields, fn(field) {
+          let #(label, value) = field
+          #(label, qualify_expr(value, ctors))
+        }),
+      )
     EBool(_) -> expr
     ETuple(elements) ->
       ETuple(list.map(elements, fn(e) { qualify_expr(e, ctors) }))

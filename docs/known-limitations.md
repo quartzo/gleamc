@@ -33,9 +33,7 @@ adding list support, and are now covered by `diffs/lists.gleam`:
 
 - Type aliases (`pub type X = ...`) are rejected with
   `type aliases not supported yet`.
-- String interpolation (`"${expr}"`); only escapes are handled.
 - Bit arrays (`<<...>>`).
-- Record update syntax (`Type(..record, field: value)`).
 - Guards: only a single boolean guard via `if` (alias `when`). Pattern guards
   and `let` inside guards are not supported.
 - Exhaustiveness for tuple subjects (including multiple `case` subjects, which

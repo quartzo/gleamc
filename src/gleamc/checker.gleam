@@ -14,9 +14,9 @@ import gleamc/ast.{
   type Expr, type Module, type Pattern, type Type, Arm, CustomType, DCustomType,
   DFunction, DImport, EBinop, EBlock, EBool, ECall, ECase, EClosure, ECtor,
   EEnvGet, EField, EFloat, EInt, ELabelled, ELambda, ENil, EPanic, EString,
-  ETuple, EUnop, EVar, Function, Let, Module, PBool, PCtor, PFloat, PInt,
-  PLabelled, PNil, PString, PTuple, PVar, PWildcard, Stmt, TApp, TBool, TFloat,
-  TFun, TInt, TNamed, TNil, TString, TTuple, TVar, Variant,
+  ETuple, EUnop, EUpdate, EVar, Function, Let, Module, PBool, PCtor, PFloat,
+  PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard, Stmt, TApp, TBool,
+  TFloat, TFun, TInt, TNamed, TNil, TString, TTuple, TVar, Variant,
 }
 
 pub type Signature {
@@ -144,6 +144,8 @@ pub fn infer(
     EClosure(_, _, _, fn_ty) -> Ok(fn_ty)
     EEnvGet(_, _, ty) -> Ok(ty)
     EPanic(_, ty) -> Ok(ty)
+    EUpdate(_, _, _) ->
+      Error(CheckError("record update must be desugared before checking"))
   }
 }
 

@@ -12,9 +12,9 @@ import gleamc/ast.{
   type CustomType, type Expr, type Function, type Module, type Pattern,
   type Type, type Variant, Arm, CustomType, DCustomType, DFunction, EBinop,
   EBlock, EBool, ECall, ECase, EClosure, ECtor, EEnvGet, EField, EFloat, EInt,
-  ELabelled, ELambda, ENil, EPanic, EString, ETuple, EUnop, EVar, Function, Let,
-  Module, PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar,
-  PWildcard, Stmt, Variant,
+  ELabelled, ELambda, ENil, EPanic, EString, ETuple, EUnop, EUpdate, EVar,
+  Function, Let, Module, PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString,
+  PTuple, PVar, PWildcard, Stmt, Variant,
 }
 import gleamc/types.{
   type Scheme, type Subst, type Ty, Con, Fun, Rig, Scheme, Tup, Var,
@@ -345,6 +345,48 @@ pub fn infer(env: Env, st: St, expr: Expr) -> Result(#(Ty, St), InferError) {
       let #(ty, counter) = types.fresh(st.counter)
       Ok(#(ty, St(..st, counter: counter)))
     }
+    EUpdate(name, base, fields) ->
+      case dict.get(env.ctors, name) {
+        Error(_) -> Error(InferError("unknown record `" <> name <> "`"))
+        Ok(CtorDef(_, field_names, _)) -> {
+          use _ <- result_try(check_update_fields(fields, field_names))
+          let args =
+            list.map(field_names, fn(field_name) {
+              case find_update_field(fields, field_name) {
+                Ok(value) -> value
+                Error(_) -> EField(base, field_name)
+              }
+            })
+          infer(env, st, ECtor(name, args))
+        }
+      }
+  }
+}
+
+fn find_update_field(fields, name) {
+  case
+    list.find(fields, fn(field) {
+      let #(label, _) = field
+      label == name
+    })
+  {
+    Ok(field) -> {
+      let #(_, value) = field
+      Ok(value)
+    }
+    Error(_) -> Error(Nil)
+  }
+}
+
+fn check_update_fields(fields, field_names) {
+  case fields {
+    [] -> Ok(Nil)
+    [#(label, _), ..rest] ->
+      case list.contains(field_names, label) {
+        True -> check_update_fields(rest, field_names)
+        False ->
+          Error(InferError("unknown field `" <> label <> "` in record update"))
+      }
   }
 }
 

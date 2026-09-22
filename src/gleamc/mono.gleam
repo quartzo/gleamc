@@ -15,9 +15,9 @@ import gleamc/ast.{
   type CustomType, type Expr, type Function, type Module, type Pattern,
   type Type, Arm, CustomType, DCustomType, DFunction, EBinop, EBlock, EBool,
   ECall, ECase, EClosure, ECtor, EEnvGet, EField, EFloat, EInt, ELabelled,
-  ELambda, ENil, EPanic, EString, ETuple, EUnop, EVar, Function, Let, Module,
-  PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard,
-  Stmt, TApp, TFun, TNamed, TTuple, TVar, Variant,
+  ELambda, ENil, EPanic, EString, ETuple, EUnop, EUpdate, EVar, Function, Let,
+  Module, PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar,
+  PWildcard, Stmt, TApp, TFun, TNamed, TTuple, TVar, Variant,
 }
 import gleamc/infer
 import gleamc/types.{type Scheme, Con, Fun, Scheme, Tup, Var}
@@ -479,6 +479,8 @@ fn mono_expr(
     EClosure(_, _, _, _) -> Ok(#(expr, state))
     EEnvGet(_, _, _) -> Ok(#(expr, state))
     EPanic(_, _) -> Ok(#(expr, state))
+    EUpdate(name, base, fields) ->
+      mono_update(state, locals, None, name, base, fields)
   }
 }
 
@@ -579,6 +581,44 @@ fn lift_lambda(
       ))
     }
     _ -> Error("lambda requires an expected function type")
+  }
+}
+
+/// `Ctor(..base, field: value)` desugars to a block that evaluates `base` once
+/// and reconstructs the constructor with the updated fields.
+fn mono_update(state: State, locals, expected, name, base, fields) {
+  case dict.get(state.ctors, name) {
+    Error(_) -> Error("unknown record `" <> name <> "`")
+    Ok(def) -> {
+      let infer.CtorDef(_, field_names, _) = def
+      let counter = state.counter
+      let temp = "__record_" <> int.to_string(counter)
+      let state = State(..state, counter: counter + 1)
+      let args =
+        list.map(field_names, fn(field_name) {
+          case find_update_field(fields, field_name) {
+            Ok(value) -> value
+            Error(_) -> EField(EVar(temp), field_name)
+          }
+        })
+      let expanded = EBlock([Let(PVar(temp), base), Stmt(ECtor(name, args))])
+      mono_expr_ex(state, locals, expected, expanded)
+    }
+  }
+}
+
+fn find_update_field(fields, name) {
+  case
+    list.find(fields, fn(field) {
+      let #(label, _) = field
+      label == name
+    })
+  {
+    Ok(field) -> {
+      let #(_, value) = field
+      Ok(value)
+    }
+    Error(_) -> Error(Nil)
   }
 }
 
