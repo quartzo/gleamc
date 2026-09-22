@@ -5,6 +5,9 @@ static size_t codepoint_offset(GleamcString s, int64_t index);
 
 #include <math.h>
 
+#include <unicode/ustring.h>
+#include <utf8proc.h>
+
 static size_t _gleamc_live = 0;
 
 static void _gleamc_report_leaks(void) {
@@ -236,11 +239,52 @@ int64_t Gleamc_string_compare_bytes(GleamcString a, GleamcString b) {
     return 0;
 }
 
+static size_t grapheme_offset(GleamcString s, int64_t index) {
+    if (index <= 0) return 0;
+    utf8proc_int32_t state = 0;
+    utf8proc_int32_t prev = 0;
+    int first = 1;
+    int64_t count = 0;
+    size_t i = 0;
+    while (i < s.len) {
+        size_t start = i;
+        utf8proc_int32_t cp;
+        utf8proc_ssize_t n = utf8proc_iterate(
+            (const utf8proc_uint8_t*)s.data + i,
+            (utf8proc_ssize_t)(s.len - i),
+            &cp
+        );
+        if (n < 0) { cp = 0xFFFD; n = 1; }
+        if (first || utf8proc_grapheme_break_stateful(prev, cp, &state)) {
+            count++;
+            if (count > index) return start;
+        }
+        first = 0;
+        prev = cp;
+        i += (size_t)n;
+    }
+    return s.len;
+}
+
 int64_t Gleamc_string_length(GleamcString s) {
-    /* counts UTF-8 codepoints (ASCII == graphemes) */
+    /* counts Unicode grapheme clusters (UAX #29, via utf8proc) */
+    utf8proc_int32_t state = 0;
+    utf8proc_int32_t prev = 0;
+    int first = 1;
     int64_t n = 0;
-    for (size_t i = 0; i < s.len; i++) {
-        if (((unsigned char)s.data[i] & 0xC0) != 0x80) n++;
+    size_t i = 0;
+    while (i < s.len) {
+        utf8proc_int32_t cp;
+        utf8proc_ssize_t consumed = utf8proc_iterate(
+            (const utf8proc_uint8_t*)s.data + i,
+            (utf8proc_ssize_t)(s.len - i),
+            &cp
+        );
+        if (consumed < 0) { cp = 0xFFFD; consumed = 1; }
+        if (first || utf8proc_grapheme_break_stateful(prev, cp, &state)) n++;
+        first = 0;
+        prev = cp;
+        i += (size_t)consumed;
     }
     return n;
 }
@@ -249,68 +293,83 @@ GleamcString Gleamc_string_append(GleamcString a, GleamcString b) {
     return gleamc_string_concat(a, b);
 }
 
-static char ascii_upper(char c) {
-    return (c >= 'a' && c <= 'z') ? (char)(c - 32) : c;
-}
-
-static char ascii_lower(char c) {
-    return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
-}
-
-/* True when `s` is an RC block this call uniquely owns, so it may be mutated
- * in place. Shared blocks (refcount > 1) and immortal literals
- * (GLEAMC_RC_STATIC) are excluded. */
-static bool string_can_mutate(GleamcString s) {
-    if (s.data == NULL) return false;
-    GleamcHdr* h = (GleamcHdr*)((uint8_t*)s.data - sizeof(GleamcHdr));
-    return h->refcount == 1;
-}
-
-/* `uppercase`/`lowercase` preserve length, so a uniquely owned string can be
- * rewritten in place. The FFI declares the argument `Owned`; when the caller
- * still needs it the ownership pass retains first, the refcount becomes > 1
- * and this falls back to allocating a copy (releasing the transferred ref). */
-GleamcString Gleamc_string_uppercase(GleamcString s) {
-    if (string_can_mutate(s)) {
-        char* buf = (char*)s.data;
-        for (size_t i = 0; i < s.len; i++) buf[i] = ascii_upper(buf[i]);
-        return s;
-    }
-    char* buf = (char*)gleamc_alloc(s.len + 1);
-    for (size_t i = 0; i < s.len; i++) buf[i] = ascii_upper(s.data[i]);
-    buf[s.len] = '\0';
-    GleamcString result = {buf, s.len};
+/* Full Unicode case mapping via ICU (handles expansions like ss -> SS). The
+ * FFI declares the argument `Owned`, so the input reference is consumed. */
+static GleamcString unicode_case_map(GleamcString s, int upper) {
+    UErrorCode error = U_ZERO_ERROR;
+    int32_t u16_len = 0;
+    u_strFromUTF8(NULL, 0, &u16_len, (const char*)s.data, (int32_t)s.len, &error);
+    error = U_ZERO_ERROR;
+    UChar* u16 = (UChar*)malloc(((size_t)u16_len + 1) * sizeof(UChar));
+    int32_t u16_len2 = 0;
+    u_strFromUTF8(u16, u16_len + 1, &u16_len2, (const char*)s.data, (int32_t)s.len, &error);
+    error = U_ZERO_ERROR;
+    int32_t mapped_len = upper
+        ? u_strToUpper(NULL, 0, u16, u16_len2, NULL, &error)
+        : u_strToLower(NULL, 0, u16, u16_len2, NULL, &error);
+    error = U_ZERO_ERROR;
+    UChar* mapped = (UChar*)malloc(((size_t)mapped_len + 1) * sizeof(UChar));
+    int32_t mapped_len2 = upper
+        ? u_strToUpper(mapped, mapped_len + 1, u16, u16_len2, NULL, &error)
+        : u_strToLower(mapped, mapped_len + 1, u16, u16_len2, NULL, &error);
+    error = U_ZERO_ERROR;
+    int32_t bytes_len = 0;
+    u_strToUTF8(NULL, 0, &bytes_len, mapped, mapped_len2, &error);
+    error = U_ZERO_ERROR;
+    char* buf = (char*)gleamc_alloc((size_t)bytes_len + 1);
+    int32_t bytes_len2 = 0;
+    u_strToUTF8(buf, bytes_len + 1, &bytes_len2, mapped, mapped_len2, &error);
+    buf[bytes_len2] = '\0';
+    free(u16);
+    free(mapped);
     gleamc_string_release(s);
-    return result;
+    return (GleamcString){buf, (size_t)bytes_len2};
+}
+
+GleamcString Gleamc_string_uppercase(GleamcString s) {
+    return unicode_case_map(s, 1);
 }
 
 GleamcString Gleamc_string_lowercase(GleamcString s) {
-    if (string_can_mutate(s)) {
-        char* buf = (char*)s.data;
-        for (size_t i = 0; i < s.len; i++) buf[i] = ascii_lower(buf[i]);
-        return s;
-    }
-    char* buf = (char*)gleamc_alloc(s.len + 1);
-    for (size_t i = 0; i < s.len; i++) buf[i] = ascii_lower(s.data[i]);
-    buf[s.len] = '\0';
-    GleamcString result = {buf, s.len};
-    gleamc_string_release(s);
-    return result;
+    return unicode_case_map(s, 0);
 }
 
 GleamcString Gleamc_string_reverse(GleamcString s) {
-    /* reverses codepoints, not combining sequences (ASCII == graphemes) */
+    /* reverses grapheme clusters */
+    size_t* starts = (size_t*)malloc((s.len + 1) * sizeof(size_t));
+    if (starts == NULL) return (GleamcString){s.data, s.len};
+    int64_t count = 0;
+    utf8proc_int32_t state = 0;
+    utf8proc_int32_t prev = 0;
+    int first = 1;
+    size_t i = 0;
+    while (i < s.len) {
+        size_t start = i;
+        utf8proc_int32_t cp;
+        utf8proc_ssize_t n = utf8proc_iterate(
+            (const utf8proc_uint8_t*)s.data + i,
+            (utf8proc_ssize_t)(s.len - i),
+            &cp
+        );
+        if (n < 0) { cp = 0xFFFD; n = 1; }
+        if (first || utf8proc_grapheme_break_stateful(prev, cp, &state)) {
+            starts[count++] = start;
+        }
+        first = 0;
+        prev = cp;
+        i += (size_t)n;
+    }
+    starts[count] = s.len;
     char* buf = (char*)gleamc_alloc(s.len + 1);
     size_t out = 0;
-    size_t i = s.len;
-    while (i > 0) {
-        size_t j = i - 1;
-        while (j > 0 && ((unsigned char)s.data[j] & 0xC0) == 0x80) j--;
-        memcpy(buf + out, s.data + j, i - j);
-        out += i - j;
-        i = j;
+    for (int64_t g = count - 1; g >= 0; g--) {
+        size_t a = starts[g];
+        size_t b = starts[g + 1];
+        memcpy(buf + out, s.data + a, b - a);
+        out += b - a;
     }
     buf[out] = '\0';
+    free(starts);
     return (GleamcString){buf, out};
 }
 
@@ -397,8 +456,8 @@ GleamcString Gleamc_string_slice(GleamcString value, int64_t idx, int64_t len) {
     if (idx > count) idx = count;
     int64_t end = idx + len;
     if (end > count) end = count;
-    size_t start = codepoint_offset(value, idx);
-    size_t finish = codepoint_offset(value, end);
+    size_t start = grapheme_offset(value, idx);
+    size_t finish = grapheme_offset(value, end);
     size_t n = finish - start;
     char* buf = (char*)gleamc_alloc(n + 1);
     memcpy(buf, value.data + start, n);

@@ -63,9 +63,9 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   by design (no cycle collector, no GC).
 - Closures with captured variables are supported (environment structs). Values
   captured by a closure must be representable by the environment glue.
-- Unicode is not fully handled in `String`: `uppercase`/`lowercase` are
-  ASCII-only, `reverse` reverses code points (not grapheme clusters), and
-  `length` counts code points (not grapheme clusters). ASCII matches Gleam.
+- `String` is Unicode-aware: `length`, `reverse`, `slice` and friends operate
+  on grapheme clusters (UAX #29 via `utf8proc`), and `uppercase`/`lowercase`
+  use full Unicode case mapping (ICU), matching the official toolchain.
 - `float.to_string` matches Gleam's shortest round-trip formatting for the
   cases exercised by `diffs/floats.gleam`; `nan`/`inf` print as `nan`/`inf` and
   are not verified against Gleam.
