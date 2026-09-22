@@ -40,3 +40,4 @@ erl_crash.dump
 /diffs/intparse
 /diffs/result2
 /diffs/filtermap
+/diffs/sort

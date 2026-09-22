@@ -83,8 +83,8 @@ are resolved when the prelude is attached.
 - `gleam/list`: `length`, `reverse`, `map`, `map2`, `filter`, `fold`,
   `fold_right`, `any`, `all`, `each`, `append`, `flatten`, `flat_map`, `take`,
   `drop`, `contains`, `repeat`, `first`, `last`, `find`, `zip`, `unzip`,
-  `index_map`, `filter_map`, `unique`, plus the non-official extras `sum` and
-  `at`. Missing: `sort`, `index_fold`, and others.
+  `index_map`, `filter_map`, `sort`, `unique`, plus the non-official extras
+  `sum` and `at`. Missing: `index_fold`, `intersperse`, and others.
 - `gleam/string`: `length`, `append`, `uppercase`, `lowercase`, `reverse`,
   `contains`, `starts_with`, `ends_with`, `trim`, `replace`, `concat`, `join`,
   `split`, `slice`. Missing: `to_graphemes`, `pad_leading`, and others.
@@ -95,6 +95,8 @@ are resolved when the prelude is attached.
   etc.
 - `gleam/bool`: `to_string` only.
 - `gleam/io`: `println`, `print` only. Missing: `debug`.
+- `gleam/order`: `Order` type plus `to_int`, `negate`. Other helpers
+  (`compare`, `reverse`, `break_tie`) are not implemented.
 - `gleam/option`: `unwrap`, `map`, `is_some`, `is_none`, `then`, `or`,
   `to_result`, `from_result`, `flatten`, `lazy_unwrap`, plus the non-official
   `unwrap_or` (import required; the prelude does not expose `Some`/`None`).

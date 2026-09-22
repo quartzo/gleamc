@@ -1,3 +1,5 @@
+import gleam/order
+
 pub type List(a) {
   ListCons(head: a, tail: List(a))
   ListEmpty
@@ -270,5 +272,31 @@ pub fn filter_map(list: List(a), with: fn(a) -> Result(b, e)) -> List(b) {
         Error(_) -> filter_map(rest, with)
       }
     ListEmpty -> ListEmpty
+  }
+}
+
+pub fn sort(list: List(a), compare: fn(a, a) -> Order) -> List(a) {
+  sort_loop(list, [], compare)
+}
+
+fn sort_loop(
+  list: List(a),
+  acc: List(a),
+  compare: fn(a, a) -> Order,
+) -> List(a) {
+  case list {
+    [] -> acc
+    [head, ..rest] -> sort_loop(rest, insert(acc, head, compare), compare)
+  }
+}
+
+fn insert(list: List(a), item: a, compare: fn(a, a) -> Order) -> List(a) {
+  case list {
+    [] -> [item]
+    [head, ..rest] ->
+      case compare(item, head) {
+        Lt -> [item, head, ..rest]
+        _ -> [head, ..insert(rest, item, compare)]
+      }
   }
 }
