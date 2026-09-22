@@ -31,10 +31,6 @@ adding list support, and are now covered by `diffs/lists.gleam`:
 
 ## Language syntax not implemented
 
-- Type aliases (`pub type X = ...`) are rejected with
-  `type aliases not supported yet`.
-- Guards are boolean expressions (`if`/`when`); they cannot bind variables
-  (as in Gleam).
 - Exhaustiveness for tuple subjects (and multiple `case` subjects, which
   desugar to a tuple) checks each column independently. This never rejects a
   genuinely exhaustive case but may accept some that are not.
