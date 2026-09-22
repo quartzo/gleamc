@@ -66,6 +66,10 @@ int Gleamc_io_println(GleamcString s) {
     return 0;
 }
 
+int64_t Gleamc_string_byte_size(GleamcString value) {
+    return (int64_t)value.len;
+}
+
 int64_t Gleamc_string_length(GleamcString s) {
     /* counts UTF-8 codepoints (ASCII == graphemes) */
     int64_t n = 0;

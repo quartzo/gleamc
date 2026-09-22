@@ -1,4 +1,5 @@
 import gleam/list
+import gleam/option
 
 pub fn concat(strings: List(String)) -> String {
   case strings {
@@ -154,5 +155,93 @@ fn max_int(a: Int, b: Int) -> Int {
   case a > b {
     True -> a
     False -> b
+  }
+}
+
+pub fn split_once(
+  value: String,
+  pattern: String,
+) -> Result(#(String, String), Nil) {
+  split_once_loop(value, pattern, "")
+}
+
+fn split_once_loop(
+  value: String,
+  pattern: String,
+  prefix: String,
+) -> Result(#(String, String), Nil) {
+  case string.length(value) == 0 {
+    True -> Error(Nil)
+    False ->
+      case string.starts_with(value, pattern) {
+        True ->
+          Ok(#(
+            prefix,
+            string.slice(
+              value,
+              string.length(pattern),
+              string.length(value) - string.length(pattern),
+            ),
+          ))
+        False ->
+          split_once_loop(
+            string.slice(value, 1, string.length(value) - 1),
+            pattern,
+            prefix <> string.slice(value, 0, 1),
+          )
+      }
+  }
+}
+
+pub fn crop(value: String, before: String) -> String {
+  case split_once(value, before) {
+    Ok(#(_, after)) -> before <> after
+    Error(_) -> value
+  }
+}
+
+pub fn remove_prefix(value: String, prefix: String) -> String {
+  case string.starts_with(value, prefix) {
+    True ->
+      string.slice(
+        value,
+        string.length(prefix),
+        string.length(value) - string.length(prefix),
+      )
+    False -> value
+  }
+}
+
+pub fn remove_suffix(value: String, suffix: String) -> String {
+  case string.ends_with(value, suffix) {
+    True -> string.slice(value, 0, string.length(value) - string.length(suffix))
+    False -> value
+  }
+}
+
+pub fn capitalise(value: String) -> String {
+  case string.length(value) == 0 {
+    True -> value
+    False ->
+      string.uppercase(string.slice(value, 0, 1))
+      <> string.slice(value, 1, string.length(value) - 1)
+  }
+}
+
+pub fn pop_grapheme(value: String) -> Result(#(String, String), Nil) {
+  case string.length(value) == 0 {
+    True -> Error(Nil)
+    False ->
+      Ok(#(
+        string.slice(value, 0, 1),
+        string.slice(value, 1, string.length(value) - 1),
+      ))
+  }
+}
+
+pub fn to_option(value: String) -> Option(String) {
+  case string.length(value) == 0 {
+    True -> option.None
+    False -> option.Some(value)
   }
 }

@@ -44,6 +44,7 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   desugar to a tuple) is assumed rather than analysed, so a non-exhaustive
   tuple `case` is not reported.
 - `opaque` is a reserved keyword but opaque types are not enforced.
+- Trailing commas in tuples, lists, calls, and patterns are not accepted.
 
 ## Type system
 
@@ -92,8 +93,9 @@ are resolved when the prelude is attached.
   `contains`, `starts_with`, `ends_with`, `trim`, `replace`, `concat`, `join`,
   `split`, `slice`, `repeat`, `pad_start`, `pad_end`, `trim_start`, `trim_end`,
   `drop_start`, `drop_end`, `first`, `last`, `is_empty`, `to_graphemes`
-  (code-point based, not full grapheme clusters). Missing: `pad_zero`,
-  `split_once`, etc.
+  (code-point based, not full grapheme clusters), `split_once`, `crop`,
+  `remove_prefix`, `remove_suffix`, `capitalise`, `pop_grapheme`, `to_option`,
+  `byte_size`. Missing: `compare`, `pad_zero`, `utf_codepoints`, etc.
 - `gleam/int`: `to_string`, `parse`, `min`, `max`, `absolute_value`
   (arithmetic is built in). Missing: `to_base_string`, `to_float`, etc.
 - `gleam/float`: `to_string`, `min`, `max`, `absolute_value`, `floor`,
