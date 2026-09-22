@@ -1240,13 +1240,17 @@ fn emit_op(by_name, recursive) {
         <> call_args(by_name, args)
         <> ");"
       ir.OpBuiltin(dest, builtin, args, _) ->
-        "    "
-        <> dest
-        <> " = "
-        <> builtin_name(builtin)
-        <> "("
-        <> call_args(by_name, args)
-        <> ");"
+        case builtin {
+          "panic" -> "    Gleamc_panic(" <> call_args(by_name, args) <> ");"
+          _ ->
+            "    "
+            <> dest
+            <> " = "
+            <> builtin_name(builtin)
+            <> "("
+            <> call_args(by_name, args)
+            <> ");"
+        }
       ir.OpTuple(dest, elems, ty) ->
         "    "
         <> dest

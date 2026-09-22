@@ -66,6 +66,13 @@ int Gleamc_io_println(GleamcString s) {
     return 0;
 }
 
+void Gleamc_panic(GleamcString message) {
+    fputs("panic: ", stderr);
+    fwrite(message.data, 1, message.len, stderr);
+    fputc('\n', stderr);
+    abort();
+}
+
 int64_t Gleamc_string_byte_size(GleamcString value) {
     return (int64_t)value.len;
 }

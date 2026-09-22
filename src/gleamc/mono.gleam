@@ -15,9 +15,9 @@ import gleamc/ast.{
   type CustomType, type Expr, type Function, type Module, type Pattern,
   type Type, Arm, CustomType, DCustomType, DFunction, EBinop, EBlock, EBool,
   ECall, ECase, EClosure, ECtor, EEnvGet, EField, EFloat, EInt, ELabelled,
-  ELambda, ENil, EString, ETuple, EUnop, EVar, Function, Let, Module, PBool,
-  PCtor, PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard, Stmt,
-  TApp, TFun, TNamed, TTuple, TVar, Variant,
+  ELambda, ENil, EPanic, EString, ETuple, EUnop, EVar, Function, Let, Module,
+  PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard,
+  Stmt, TApp, TFun, TNamed, TTuple, TVar, Variant,
 }
 import gleamc/infer
 import gleamc/types.{type Scheme, Con, Fun, Scheme, Tup, Var}
@@ -478,6 +478,7 @@ fn mono_expr(
     ELambda(_, _) -> Error("lambda requires an expected function type")
     EClosure(_, _, _, _) -> Ok(#(expr, state))
     EEnvGet(_, _, _) -> Ok(#(expr, state))
+    EPanic(_, _) -> Ok(#(expr, state))
   }
 }
 
@@ -503,6 +504,14 @@ fn mono_expr_ex(state, locals, expected, expr) {
     ELambda(names, body) -> lift_lambda(state, locals, names, body, expected)
     EClosure(_, _, _, _) -> Ok(#(expr, state))
     EEnvGet(_, _, _) -> Ok(#(expr, state))
+    EPanic(message, _) -> {
+      use #(ty, state) <- result_try(case expected {
+        Some(expected_ty) ->
+          mono_type(state, dict.new(), surface_of(expected_ty))
+        None -> Ok(#(ast.TNil, state))
+      })
+      Ok(#(EPanic(message, ty), state))
+    }
     _ -> mono_expr(state, locals, expr)
   }
 }

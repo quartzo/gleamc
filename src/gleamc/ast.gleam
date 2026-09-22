@@ -56,6 +56,9 @@ pub type Expr {
   EClosure(code: String, captures: List(Expr), env_ty: String, fn_ty: Type)
   /// reads a captured value from the environment (produced by monomorphisation)
   EEnvGet(env_ty: String, index: Int, ty: Type)
+  /// `panic` / `todo` — aborts at runtime. `ty` is filled during
+  /// monomorphisation so the backend can type the surrounding expression.
+  EPanic(message: String, ty: Type)
 }
 
 pub type Statement {

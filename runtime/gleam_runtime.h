@@ -113,6 +113,9 @@ GleamcString Gleamc_string_uppercase(GleamcString s);
 GleamcString Gleamc_string_lowercase(GleamcString s);
 GleamcString Gleamc_string_reverse(GleamcString s);
 
+/* Abort the program with a message (panic / todo / let assert). */
+void Gleamc_panic(GleamcString message);
+
 /* std::string (predicates / transforms) */
 bool Gleamc_string_contains(GleamcString haystack, GleamcString needle);
 bool Gleamc_string_starts_with(GleamcString value, GleamcString prefix);

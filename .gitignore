@@ -47,3 +47,4 @@ erl_crash.dump
 /diffs/result3
 /diffs/stringlist
 /diffs/stringops
+/diffs/letassert

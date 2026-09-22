@@ -33,8 +33,6 @@ adding list support, and are now covered by `diffs/lists.gleam`:
 
 - Type aliases (`pub type X = ...`) are rejected with
   `type aliases not supported yet`.
-- `let assert` / `assert` expressions.
-- `todo` and `panic`.
 - String interpolation (`"${expr}"`); only escapes are handled.
 - Bit arrays (`<<...>>`).
 - Record update syntax (`Type(..record, field: value)`).

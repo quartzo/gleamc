@@ -13,9 +13,9 @@ import gleam/result
 import gleamc/ast.{
   type Expr, type Function, type Module, type Pattern, type Statement, type Type,
   Arm, DFunction, EBinop, EBlock, EBool, ECall, ECase, EClosure, ECtor, EEnvGet,
-  EField, EFloat, EInt, ELabelled, ELambda, ENil, EString, ETuple, EUnop, EVar,
-  Let, Module, PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString, PTuple,
-  PVar, PWildcard, Stmt, TBool, TFun, TNamed, TString, TTuple,
+  EField, EFloat, EInt, ELabelled, ELambda, ENil, EPanic, EString, ETuple, EUnop,
+  EVar, Let, Module, PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString,
+  PTuple, PVar, PWildcard, Stmt, TBool, TFun, TNamed, TString, TTuple,
 }
 import gleamc/checker
 import gleamc/infer
@@ -319,6 +319,16 @@ fn lower_expr(
     ELambda(_, _) -> Error(LowerError("lambda not lifted before lowering"))
     EClosure(code, captures, env_ty, fn_ty) ->
       lower_closure(b, code, captures, env_ty, fn_ty)
+    EPanic(message, _) -> {
+      let ty = infer(b, expr)
+      let #(dest, b1) = fresh_local(b, "panic", ty)
+      let #(msg_dest, b2) = fresh_local(b1, "panic_msg", TString)
+      let b3 = emit(b2, ir.OpConst(msg_dest, ir.LString(message)))
+      Ok(#(
+        ir.Var(dest),
+        emit(b3, ir.OpBuiltin(dest, "panic", [ir.Var(msg_dest)], ty)),
+      ))
+    }
     EEnvGet(env_ty, index, ty) -> {
       let #(dest, b1) = fresh_local(b, "cap", ty)
       Ok(#(ir.Var(dest), emit(b1, ir.OpEnvGet(dest, env_ty, index, ty))))

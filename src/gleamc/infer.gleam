@@ -12,9 +12,9 @@ import gleamc/ast.{
   type CustomType, type Expr, type Function, type Module, type Pattern,
   type Type, type Variant, Arm, CustomType, DCustomType, DFunction, EBinop,
   EBlock, EBool, ECall, ECase, EClosure, ECtor, EEnvGet, EField, EFloat, EInt,
-  ELabelled, ELambda, ENil, EString, ETuple, EUnop, EVar, Function, Let, Module,
-  PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard,
-  Stmt, Variant,
+  ELabelled, ELambda, ENil, EPanic, EString, ETuple, EUnop, EVar, Function, Let,
+  Module, PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar,
+  PWildcard, Stmt, Variant,
 }
 import gleamc/types.{
   type Scheme, type Subst, type Ty, Con, Fun, Rig, Scheme, Tup, Var,
@@ -341,6 +341,10 @@ pub fn infer(env: Env, st: St, expr: Expr) -> Result(#(Ty, St), InferError) {
     ELambda(names, body) -> infer_lambda(env, st, names, body)
     EClosure(_, _, _, fn_ty) -> Ok(#(convert(fn_ty, dict.new()), st))
     EEnvGet(_, _, ty) -> Ok(#(convert(ty, dict.new()), st))
+    EPanic(_, _) -> {
+      let #(ty, counter) = types.fresh(st.counter)
+      Ok(#(ty, St(..st, counter: counter)))
+    }
   }
 }
 

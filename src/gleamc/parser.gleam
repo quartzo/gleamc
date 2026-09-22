@@ -8,9 +8,9 @@ import gleam/option.{None, Some}
 import gleamc/ast.{
   type Module, Arm, CustomType, DCustomType, DFunction, DImport, EBinop, EBlock,
   EBool, ECall, ECase, ECtor, EField, EFloat, EInt, ELabelled, ELambda, ENil,
-  EString, ETuple, EUnop, EVar, Function, Import, Let, Module, PBool, PCtor,
-  PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard, Stmt, TApp,
-  TBool, TFloat, TFun, TInt, TNamed, TNil, TString, TTuple, TVar, Variant,
+  EPanic, EString, ETuple, EUnop, EVar, Function, Import, Let, Module, PBool,
+  PCtor, PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard, Stmt,
+  TApp, TBool, TFloat, TFun, TInt, TNamed, TNil, TString, TTuple, TVar, Variant,
 }
 import gleamc/lexer
 import gleamc/token.{
@@ -442,6 +442,18 @@ fn statements(tokens, acc) {
     }
     EofKind -> fail(tokens, "block `{` not closed")
     Keyword("use") -> use_stmt(tokens, acc)
+    Keyword("let") ->
+      case peek(drop_token(tokens)) {
+        NameKind("assert") -> let_assert_stmt(tokens, acc)
+        _ -> statement_step(tokens, acc)
+      }
+    _ -> statement_step(tokens, acc)
+  }
+}
+
+/// Parses one statement and continues the block.
+fn statement_step(tokens, acc) {
+  case tokens {
     _ -> {
       use #(stmt, rest) <- and_then(statement(tokens))
       let nxt = skip_newlines(rest)
@@ -459,6 +471,22 @@ fn statements(tokens, acc) {
       }
     }
   }
+}
+
+/// `let assert <pattern> = value` desugars to a `case` that aborts on a
+/// mismatch, so the remainder of the block becomes the matching arm.
+fn let_assert_stmt(tokens, acc) {
+  let rest = skip_newlines(drop_token(drop_token(tokens)))
+  use #(pattern, rest1) <- and_then(parse_pattern(rest))
+  use rest2 <- and_then(expect_symbol(skip_newlines(rest1), "="))
+  use #(value, rest3) <- and_then(parse_expr(skip_newlines(rest2)))
+  use #(body, rest4) <- and_then(statements(skip_newlines(rest3), []))
+  let case_expr =
+    ECase(value, [
+      Arm(pattern, None, body),
+      Arm(PWildcard, None, EPanic("let assert", TNil)),
+    ])
+  Ok(#(EBlock(list.append(list.reverse(acc), [Stmt(case_expr)])), rest4))
 }
 
 /// `use <pattern>, ... <- f(args)` desugars to
@@ -713,6 +741,8 @@ fn parse_atom(tokens) {
         _ -> Ok(#(ECtor(name, []), rest))
       }
     }
+    [Token(NameKind("panic"), _, _), ..rest] -> parse_panic(rest, "panic")
+    [Token(NameKind("todo"), _, _), ..rest] -> parse_panic(rest, "todo")
     [Token(NameKind(name), _, _), ..rest] -> Ok(#(EVar(name), rest))
     [Token(Keyword("case"), _, _), ..rest] -> parse_case(skip_newlines(rest))
     [Token(Keyword("fn"), _, _), ..rest] -> parse_lambda(rest)
@@ -733,6 +763,19 @@ fn parse_atom(tokens) {
               }
           }
       }
+  }
+}
+
+fn parse_panic(tokens, default_message) {
+  case peek(tokens) {
+    Keyword("as") -> {
+      case peek(drop_token(tokens)) {
+        StringKind(message) ->
+          Ok(#(EPanic(message, TNil), drop_token(drop_token(tokens))))
+        _ -> fail(tokens, "expected a string after `panic as`")
+      }
+    }
+    _ -> Ok(#(EPanic(default_message, TNil), tokens))
   }
 }
 
