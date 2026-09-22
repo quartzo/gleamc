@@ -1,4 +1,5 @@
 import gleam/int
+import gleam/order
 import gleam/string
 
 pub fn power(base: Float, exponent: Float) -> Result(Float, Nil) {
@@ -107,5 +108,16 @@ fn pow10_loop(exponent: Int, acc: Float) -> Float {
   case exponent <= 0 {
     True -> acc
     False -> pow10_loop(exponent - 1, acc *. 10.0)
+  }
+}
+
+pub fn compare(a: Float, b: Float) -> Order {
+  case a <. b {
+    True -> order.Lt
+    False ->
+      case a >. b {
+        True -> order.Gt
+        False -> order.Eq
+      }
   }
 }

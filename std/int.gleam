@@ -1,3 +1,4 @@
+import gleam/order
 import gleam/string
 
 pub fn parse(value: String) -> Result(Int, Nil) {
@@ -134,5 +135,16 @@ fn digit_value(ch: String, base: Int) -> Result(Int, Nil) {
         False -> Error(Nil)
       }
     Error(_) -> Error(Nil)
+  }
+}
+
+pub fn compare(a: Int, b: Int) -> Order {
+  case a < b {
+    True -> order.Lt
+    False ->
+      case a > b {
+        True -> order.Gt
+        False -> order.Eq
+      }
   }
 }

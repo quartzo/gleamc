@@ -92,10 +92,11 @@ are resolved when the prelude is attached.
   `remove_prefix`, `remove_suffix`, `capitalise`, `pop_grapheme`, `to_option`,
   `byte_size`, `compare`. Missing: `pad_zero`, `utf_codepoints`, etc.
 - `gleam/int`: `to_string`, `parse`, `base_parse`, `to_base_string`,
-  `to_float`, `min`, `max`, `absolute_value` (arithmetic is built in).
+  `to_float`, `compare`, `min`, `max`, `absolute_value` (arithmetic is built
+  in).
 - `gleam/float`: `to_string`, `parse`, `min`, `max`, `absolute_value`, `floor`,
-  `ceiling`, `round`, `truncate`, `power`, `square_root` (`parse`, `power` and
-  `square_root` return `Result`).
+  `ceiling`, `round`, `truncate`, `compare`, `power`, `square_root` (`parse`,
+  `power` and `square_root` return `Result`).
 - `gleam/bool`: `to_string` (runtime) plus `and`, `or`, `negate`, `nor`,
   `nand`, `exclusive_or`, `exclusive_nor`, `guard`, `lazy_guard`.
 - `gleam/io`: `println`, `print` only. Missing: `debug`.
@@ -103,6 +104,7 @@ are resolved when the prelude is attached.
   `bit_size`, `append`, `concat`. Only 8-bit integer segments are supported in
   `<<...>>` literals and patterns (no `:size`/`:unit`, no bit-level ops, no
   `slice`/`base64_encode`).
+- `gleam/function`: `identity` only.
 - `gleam/order`: `Order` type plus `to_int`, `negate`, `compare`, `reverse`,
   `break_tie`, `lazy_break_tie`.
 - `gleam/option`: `unwrap`, `map`, `is_some`, `is_none`, `then`, `or`,
