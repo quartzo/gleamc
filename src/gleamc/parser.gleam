@@ -1125,10 +1125,7 @@ fn list_pat_elems(tokens, acc) {
       let after = drop_token(tokens)
       case peek(after) {
         Symbol("]") ->
-          Ok(#(
-            build_list_pat(list.reverse(acc), PWildcard),
-            drop_token(after),
-          ))
+          Ok(#(build_list_pat(list.reverse(acc), PWildcard), drop_token(after)))
         _ -> {
           use #(tail, rest2) <- and_then(parse_pattern(after))
           use rest3 <- and_then(expect_symbol(rest2, "]"))
