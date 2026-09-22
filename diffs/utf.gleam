@@ -20,22 +20,18 @@ fn codes(value: String) -> String {
 pub fn main() {
   let assert Ok(a) = string.utf_codepoint(97)
   let assert Ok(b) = string.utf_codepoint(233)
-  let assert Ok(c) = string.utf_codepoint(128512)
+  let assert Ok(c) = string.utf_codepoint(128_512)
   let sample = string.from_utf_codepoints([a, b, c])
   io.println(codes(sample))
   io.println(codes(""))
   io.println(sample)
-  io.println(
-    case string.utf_codepoint(55_296) {
-      Ok(_) -> "ok"
-      Error(_) -> "err"
-    },
-  )
-  io.println(
-    case string.utf_codepoint(-1) {
-      Ok(_) -> "ok"
-      Error(_) -> "err"
-    },
-  )
+  io.println(case string.utf_codepoint(55_296) {
+    Ok(_) -> "ok"
+    Error(_) -> "err"
+  })
+  io.println(case string.utf_codepoint(-1) {
+    Ok(_) -> "ok"
+    Error(_) -> "err"
+  })
   io.println(int.to_string(string.utf_codepoint_to_int(a)))
 }
