@@ -52,5 +52,6 @@ erl_crash.dump
 /diffs/bitarray
 /diffs/stdlib3
 /diffs/math2
+/diffs/intparse2
 /diffs/guards2
 /diffs/alias

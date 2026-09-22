@@ -76,8 +76,8 @@ are resolved when the prelude is attached.
   `fold_right`, `any`, `all`, `each`, `append`, `flatten`, `flat_map`, `take`,
   `drop`, `contains`, `repeat`, `first`, `last`, `find`, `zip`, `unzip`,
   `index_map`, `index_fold`, `filter_map`, `sort`, `intersperse`, `take_while`,
-  `drop_while`, `window`, `unique`, plus the non-official extras `sum` and `at`.
-  Missing: `permutations`, `chunk`, and others.
+  `drop_while`, `window`, `chunk`, `unique`, plus the non-official extras `sum`
+  and `at`. Missing: `permutations`, `sized_chunk`, and others.
 - `gleam/string`: `length`, `append`, `uppercase`, `lowercase`, `reverse`,
   `contains`, `starts_with`, `ends_with`, `trim`, `replace`, `concat`, `join`,
   `split`, `slice`, `repeat`, `pad_start`, `pad_end`, `trim_start`, `trim_end`,
@@ -85,9 +85,8 @@ are resolved when the prelude is attached.
   (code-point based, not full grapheme clusters), `split_once`, `crop`,
   `remove_prefix`, `remove_suffix`, `capitalise`, `pop_grapheme`, `to_option`,
   `byte_size`, `compare`. Missing: `pad_zero`, `utf_codepoints`, etc.
-- `gleam/int`: `to_string`, `parse`, `to_base_string`, `to_float`, `min`,
-  `max`, `absolute_value` (arithmetic is built in). Missing: `base_parse`,
-  etc.
+- `gleam/int`: `to_string`, `parse`, `base_parse`, `to_base_string`,
+  `to_float`, `min`, `max`, `absolute_value` (arithmetic is built in).
 - `gleam/float`: `to_string`, `min`, `max`, `absolute_value`, `floor`,
   `ceiling`, `round`, `truncate`, `power`, `square_root` (the last two return
   `Result`). Missing: `parse`, etc.

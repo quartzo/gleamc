@@ -364,3 +364,28 @@ pub fn window(list: List(a), size: Int) -> List(List(a)) {
       }
   }
 }
+
+pub fn chunk(list: List(a), by: fn(a) -> k) -> List(List(a)) {
+  case list {
+    [] -> []
+    [first, ..rest] -> chunk_loop(rest, by, by(first), [first], [])
+  }
+}
+
+fn chunk_loop(
+  list: List(a),
+  by: fn(a) -> k,
+  key: k,
+  group: List(a),
+  acc: List(List(a)),
+) -> List(List(a)) {
+  case list {
+    [] -> list.reverse([list.reverse(group), ..acc])
+    [head, ..rest] ->
+      case by(head) == key {
+        True -> chunk_loop(rest, by, key, [head, ..group], acc)
+        False ->
+          chunk_loop(rest, by, by(head), [head], [list.reverse(group), ..acc])
+      }
+  }
+}

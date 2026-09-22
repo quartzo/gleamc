@@ -834,7 +834,13 @@ fn mono_block_ex(state, locals, expected, statements) {
       Ok(#(EBlock([Stmt(expr2), ..block_statements(rest2)]), state))
     }
     [Let(pattern, value), ..rest] -> {
-      use #(value2, state) <- result_try(mono_expr(state, locals, value))
+      let #(declared_ty, state) = type_of(state, locals, value)
+      use #(value2, state) <- result_try(mono_expr_ex(
+        state,
+        locals,
+        Some(declared_ty),
+        value,
+      ))
       let #(value_ty, state) = type_of(state, locals, value)
       use #(pattern2, bindings, state) <- result_try(mono_pattern(
         state,
@@ -1136,7 +1142,13 @@ fn mono_block(state: State, locals: Dict(String, Scheme), statements) {
       Ok(#(EBlock([Stmt(expr2), ..block_statements(rest2)]), state))
     }
     [Let(pattern, value), ..rest] -> {
-      use #(value2, state) <- result_try(mono_expr(state, locals, value))
+      let #(declared_ty, state) = type_of(state, locals, value)
+      use #(value2, state) <- result_try(mono_expr_ex(
+        state,
+        locals,
+        Some(declared_ty),
+        value,
+      ))
       let #(value_ty, state) = type_of(state, locals, value)
       use #(pattern2, bindings, state) <- result_try(mono_pattern(
         state,
