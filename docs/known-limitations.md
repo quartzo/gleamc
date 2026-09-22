@@ -138,7 +138,10 @@ their imports are resolved when the prelude is attached.
 
 - `tcc` was dropped; development builds use
   `clang -O0 -fuse-ld=mold`, release builds use `-O3 -march=native`.
-- Diagnostics are text messages without source spans or carets.
+- Diagnostics name the file and, for type errors, the enclosing function and
+  its declaration line (e.g. `app.gleam: at line 12, in function `f`: ...`).
+  There are no column-accurate spans or carets yet, and backend/monomorphisation
+  errors carry less context than front-end ones.
 - No language server, no formatter, no package manager integration.
 - Only a single entry module plus its imports is compiled; there is no build
   cache or incremental compilation.

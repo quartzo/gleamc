@@ -41,7 +41,7 @@ fn expand_definition(definition, aliases) -> Result(Definition, String) {
   case definition {
     DTypeAlias(_, _, _, _) -> Ok(definition)
     DFunction(function) -> {
-      let Function(is_pub, name, params, ret, body) = function
+      let Function(is_pub, name, params, ret, body, line) = function
       use params <- result.try(
         list.try_map(params, fn(param) {
           let #(param_name, ty) = param
@@ -50,7 +50,7 @@ fn expand_definition(definition, aliases) -> Result(Definition, String) {
         }),
       )
       use ret <- result.try(expand_type(ret, aliases, []))
-      Ok(DFunction(Function(is_pub, name, params, ret, body)))
+      Ok(DFunction(Function(is_pub, name, params, ret, body, line)))
     }
     DCustomType(custom) -> {
       let CustomType(is_pub, name, generics, variants, is_opaque) = custom

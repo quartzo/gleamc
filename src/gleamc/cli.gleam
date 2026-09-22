@@ -104,14 +104,14 @@ fn usage() -> Nil {
 
 fn compile_file(source: String, options: Options) -> Nil {
   case loader.load(source) {
-    Error(err) -> io.println(err)
+    Error(err) -> io.println(source <> ": " <> err)
     Ok(modules) -> compile_modules(modules, strip_gleam(source), options)
   }
 }
 
 fn compile_modules(modules, base: String, options: Options) -> Nil {
   case pipeline.compile_modules(modules) {
-    Error(err) -> io.println(err)
+    Error(err) -> io.println(base <> ".gleam: " <> err)
     Ok(c_code) -> {
       let c_path = base <> ".c"
       case ffi.write_file(c_path, c_code) {

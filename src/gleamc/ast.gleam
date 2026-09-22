@@ -84,6 +84,7 @@ pub type Function {
     params: List(#(String, Type)),
     ret: Type,
     body: Expr,
+    line: Int,
   )
 }
 

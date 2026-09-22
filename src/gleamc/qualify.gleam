@@ -57,6 +57,7 @@ fn qualify_definition(definition, ctors) -> Definition {
         function.params,
         function.ret,
         qualify_expr(function.body, ctors),
+        function.line,
       ))
     _ -> definition
   }

@@ -7,13 +7,20 @@ import gleamc/parser
 
 pub fn parse_type_variable_test() {
   let assert Ok(Module([
-    DFunction(Function(_, "id", [#("x", TVar("a"))], TVar("a"), _)),
+    DFunction(Function(_, "id", [#("x", TVar("a"))], TVar("a"), _, _)),
   ])) = parser.parse("fn id(x: a) -> a { x }")
 }
 
 pub fn parse_generic_application_test() {
   let assert Ok(Module([
-    DFunction(Function(_, "unwrap", [#("x", TApp("Option", [TInt]))], TInt, _)),
+    DFunction(Function(
+      _,
+      "unwrap",
+      [#("x", TApp("Option", [TInt]))],
+      TInt,
+      _,
+      _,
+    )),
   ])) = parser.parse("fn unwrap(x: Option(Int)) -> Int { 1 }")
 }
 
@@ -47,13 +54,13 @@ pub fn parse_multi_param_generic_test() {
 
 pub fn parse_simple_fn_test() {
   let assert Ok(Module([
-    DFunction(Function(False, "id", [#("x", TInt)], TInt, _)),
+    DFunction(Function(False, "id", [#("x", TInt)], TInt, _, _)),
   ])) = parser.parse("fn id(x: Int) -> Int { x }")
 }
 
 pub fn parse_pub_fn_test() {
   let assert Ok(Module([
-    DFunction(Function(True, "add", [#("a", TInt), #("b", TInt)], TInt, _)),
+    DFunction(Function(True, "add", [#("a", TInt), #("b", TInt)], TInt, _, _)),
   ])) = parser.parse("pub fn add(a: Int, b: Int) -> Int { a + b }")
 }
 
@@ -65,26 +72,35 @@ pub fn parse_precedence_test() {
       _,
       _,
       EBlock([Stmt(EBinop("+", EInt(1), EBinop("*", EInt(2), EInt(3))))]),
+      _,
     )),
   ])) = parser.parse("fn f() -> Int { 1 + 2 * 3 }")
 }
 
 pub fn parse_pipe_desugar_test() {
   let assert Ok(Module([
-    DFunction(Function(_, _, _, _, EBlock([Stmt(ECall(EVar("g"), [EInt(1)]))]))),
+    DFunction(Function(
+      _,
+      _,
+      _,
+      _,
+      EBlock([Stmt(ECall(EVar("g"), [EInt(1)]))]),
+      _,
+    )),
   ])) = parser.parse("fn f() -> Int { 1 |> g }")
 }
 
 pub fn parse_case_test() {
-  let assert Ok(Module([DFunction(Function(_, "f", _, _, EBlock([Stmt(_)])))])) =
+  let assert Ok(Module([DFunction(Function(_, "f", _, _, EBlock([Stmt(_)]), _))])) =
     parser.parse(
       "fn f(n: Int) -> Int {\n  case n {\n    0 -> 1\n    _ -> n\n  }\n}",
     )
 }
 
 pub fn parse_let_block_test() {
-  let assert Ok(Module([DFunction(Function(_, _, _, _, EBlock([_, Stmt(_)])))])) =
-    parser.parse("fn f() -> Int {\n  let x = 1\n  x\n}")
+  let assert Ok(Module([
+    DFunction(Function(_, _, _, _, EBlock([_, Stmt(_)]), _)),
+  ])) = parser.parse("fn f() -> Int {\n  let x = 1\n  x\n}")
 }
 
 pub fn parse_custom_type_test() {
@@ -113,7 +129,7 @@ pub fn parse_custom_type_fields_test() {
 
 pub fn parse_tuple_and_string_test() {
   let assert Ok(Module([
-    DFunction(Function(_, _, _, TTuple([TInt, TString]), _)),
+    DFunction(Function(_, _, _, TTuple([TInt, TString]), _, _)),
   ])) = parser.parse("fn pair() -> #(Int, String) { #(1, \"a\") }")
 }
 
@@ -128,7 +144,7 @@ pub fn parse_import_items_test() {
 }
 
 pub fn parse_bool_type_test() {
-  let assert Ok(Module([DFunction(Function(_, _, _, TBool, _))])) =
+  let assert Ok(Module([DFunction(Function(_, _, _, TBool, _, _))])) =
     parser.parse("fn ok() -> Bool { True }")
 }
 
@@ -145,6 +161,7 @@ pub fn parse_list_literal_test() {
           [EInt(1), ECtor("ListCons", [EInt(2), ECtor("ListEmpty", [])])],
         )),
       ]),
+      _,
     )),
   ])) = parser.parse("fn f() { [1, 2] }")
 }
@@ -168,6 +185,7 @@ pub fn parse_list_pattern_test() {
           ],
         )),
       ]),
+      _,
     )),
   ])) = parser.parse("fn f(xs: List(Int)) { case xs { [a] -> a } }")
 }
@@ -180,6 +198,7 @@ pub fn parse_list_spread_expr_test() {
       [],
       _,
       EBlock([Stmt(ECtor("ListCons", [EInt(1), EVar("rest")]))]),
+      _,
     )),
   ])) = parser.parse("fn f() { [1, ..rest] }")
 }
@@ -197,6 +216,7 @@ pub fn parse_list_spread_pattern_test() {
           [Arm(PCtor("ListCons", [PVar("a"), PVar("rest")]), _, EVar("a"))],
         )),
       ]),
+      _,
     )),
   ])) = parser.parse("fn f(xs: List(Int)) { case xs { [a, ..rest] -> a } }")
 }

@@ -57,7 +57,7 @@ pub fn check(module: Module) -> Result(Checked, CheckError) {
 fn collect(defs, signatures, ctors) {
   case defs {
     [] -> #(signatures, ctors)
-    [DFunction(Function(_, name, params, ret, _)), ..rest] -> {
+    [DFunction(Function(_, name, params, ret, _, _)), ..rest] -> {
       let signatures = dict.insert(signatures, name, Signature(params, ret))
       collect(rest, signatures, ctors)
     }
@@ -87,15 +87,39 @@ fn check_defs(defs, signatures, ctors) {
 }
 
 fn check_function(function, signatures, ctors) {
-  let Function(_, name, params, ret, body) = function
+  let Function(_, name, params, ret, body, line) = function
   let env =
     list.map(params, fn(param) {
       let #(param_name, ty) = param
       #(param_name, ty)
     })
-  use body_ty <- result.try(infer(env, signatures, ctors, body))
+  use body_ty <- result.try(with_function(
+    name,
+    line,
+    infer(env, signatures, ctors, body),
+  ))
   use _ <- result.try(unify(ret, body_ty, "in function `" <> name <> "`"))
   Ok(Nil)
+}
+
+fn with_function(name, line, result) {
+  case result {
+    Error(CheckError(message)) -> Error(CheckError(locate(line, name, message)))
+    Ok(value) -> Ok(value)
+  }
+}
+
+fn locate(line, name, message) {
+  case line > 0 {
+    True ->
+      "at line "
+      <> int.to_string(line)
+      <> ", in function `"
+      <> name
+      <> "`: "
+      <> message
+    False -> "in function `" <> name <> "`: " <> message
+  }
 }
 
 // ---------------------------------------------------------------------------

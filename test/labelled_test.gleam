@@ -26,6 +26,7 @@ pub fn parse_labelled_pattern_test() {
           ],
         )),
       ]),
+      _,
     )),
   ])) = parser.parse(source)
 }

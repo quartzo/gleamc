@@ -165,12 +165,16 @@ fn definition_fn(tokens, is_pub, acc) {
 }
 
 fn function_rest(tokens, is_pub) {
+  let line = case tokens {
+    [Token(_, at_line, _), ..] -> at_line
+    [] -> 0
+  }
   use #(name, rest) <- and_then(expect_name(tokens))
   use rest1 <- and_then(expect_symbol(rest, "("))
   use #(ps, rest2) <- and_then(params(rest1, []))
   let #(ret, rest3) = parse_optional_return(skip_newlines(rest2))
   use #(body, rest5) <- and_then(parse_block(skip_newlines(rest3)))
-  Ok(#(Function(is_pub, name, ps, ret, body), rest5))
+  Ok(#(Function(is_pub, name, ps, ret, body, line), rest5))
 }
 
 fn parse_optional_return(tokens) {

@@ -66,6 +66,7 @@ fn rewrite_definition(definition, module, local_fns, exports) -> Definition {
         function.params,
         function.ret,
         rewrite_expr(function.body, module, local_fns, exports),
+        function.line,
       ))
     _ -> definition
   }

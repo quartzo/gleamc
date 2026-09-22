@@ -5,6 +5,8 @@
 //// The monomorphiser runs on the result to make every concrete instantiation
 //// explicit before codegen.
 
+import gleam/int
+
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -203,7 +205,7 @@ fn variant_def(variant: Variant, mapping) -> VariantDef {
 }
 
 fn function_scheme(function: Function, st: St) {
-  let Function(_, _, params, ret, _) = function
+  let Function(_, _, params, ret, _, _) = function
   let surface_vars = function_type_vars(function)
   let #(mapping, param_ids, st) =
     list.fold(surface_vars, #(dict.new(), [], st), fn(acc, name) {
@@ -222,7 +224,7 @@ fn function_scheme(function: Function, st: St) {
 }
 
 fn function_type_vars(function: Function) -> List(String) {
-  let Function(_, _, params, ret, _) = function
+  let Function(_, _, params, ret, _, _) = function
   let from_params =
     list.flat_map(params, fn(param) {
       let #(_, surface) = param
@@ -378,7 +380,7 @@ fn check_definitions(definitions, env: Env, st: St) {
 }
 
 fn check_function(function: Function, env: Env, st) {
-  let Function(_, name, params, ret, body) = function
+  let Function(_, name, params, ret, body, line) = function
   let scheme = case dict.get(env.globals, name) {
     Ok(found) -> found
     Error(_) -> Scheme([], Fun([], Con("Nil", [])))
@@ -391,9 +393,33 @@ fn check_function(function: Function, env: Env, st) {
       dict.insert(acc, param_name, Scheme([], param_ty))
     })
   let env = Env(..env, locals: locals)
-  use #(body_ty, st) <- result_try(infer(env, st, body))
+  use #(body_ty, st) <- result_try(with_function(
+    name,
+    line,
+    infer(env, st, body),
+  ))
   let _ = ret
-  unify_st(ret_ty, body_ty, st)
+  with_function(name, line, unify_st(ret_ty, body_ty, st))
+}
+
+fn with_function(name, line, result) {
+  case result {
+    Error(InferError(message)) -> Error(InferError(locate(line, name, message)))
+    Ok(value) -> Ok(value)
+  }
+}
+
+fn locate(line, name, message) {
+  case line > 0 {
+    True ->
+      "at line "
+      <> int.to_string(line)
+      <> ", in function `"
+      <> name
+      <> "`: "
+      <> message
+    False -> "in function `" <> name <> "`: " <> message
+  }
 }
 
 // ---------------------------------------------------------------------------

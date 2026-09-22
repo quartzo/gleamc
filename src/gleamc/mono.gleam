@@ -260,7 +260,7 @@ fn specialise_fn(state: State, name, type_args) {
   case dict.get(state.surface_fns, name) {
     Error(_) -> Ok(state)
     Ok(function) -> {
-      let Function(is_pub, _, params, ret, body) = function
+      let Function(is_pub, _, params, ret, body, line) = function
       let var_names = function_type_vars(function)
       let surface_map =
         list.fold(list.zip(var_names, type_args), dict.new(), fn(acc, pair) {
@@ -304,7 +304,7 @@ fn specialise_fn(state: State, name, type_args) {
       }
       Ok(
         State(..state1, globals: globals, fn_out: [
-          Function(is_pub, specialized, params2, ret2, body2),
+          Function(is_pub, specialized, params2, ret2, body2, line),
           ..state1.fn_out
         ]),
       )
@@ -611,6 +611,7 @@ fn lift_lambda(
           [env_param, ..list.zip(names, param_surfaces)],
           ret_surface,
           body2,
+          0,
         )
       Ok(#(
         EClosure("Gleamc_" <> fname, captures2, env_ty, fn_ty),
@@ -980,7 +981,7 @@ fn expected_param_tys(state: State, name, type_args) -> List(types.Ty) {
   case dict.get(state.surface_fns, name) {
     Error(_) -> []
     Ok(function) -> {
-      let Function(_, _, params, _, _) = function
+      let Function(_, _, params, _, _, _) = function
       let var_names = function_type_vars(function)
       let surface_map =
         list.fold(list.zip(var_names, type_args), dict.new(), fn(acc, pair) {
@@ -1528,7 +1529,7 @@ fn mangle_type(ty: Type) -> String {
 }
 
 fn function_type_vars(function: Function) -> List(String) {
-  let Function(_, _, params, ret, _) = function
+  let Function(_, _, params, ret, _, _) = function
   let from_params =
     list.flat_map(params, fn(param) {
       let #(_, surface) = param
