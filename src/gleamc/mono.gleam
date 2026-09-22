@@ -218,7 +218,7 @@ fn request_type(
 fn ctor_specialised_name(state: State, type_name, name, args) {
   case dict.get(state.ctor_names, ctor_key(type_name, name, args)) {
     Ok(specialized) -> specialized
-    Error(_) -> name
+    Error(_) -> ctor_specialised(type_name, name, args)
   }
 }
 
@@ -1150,9 +1150,18 @@ fn unspecialize_internal(state: State, ty) -> types.Ty {
 }
 
 fn ctor_specialised(type_name, name, type_args) -> String {
+  // `name` is a canonical `alias.Ctor`; the C identifier uses the bare part.
+  let base = base_ctor_name(name)
   case type_args {
-    [] -> name <> "_" <> type_name
-    _ -> name <> "_" <> type_name <> "_" <> mangle_args(type_args)
+    [] -> base <> "_" <> type_name
+    _ -> base <> "_" <> type_name <> "_" <> mangle_args(type_args)
+  }
+}
+
+fn base_ctor_name(name) -> String {
+  case list.last(string.split(name, ".")) {
+    Ok(last) -> last
+    Error(_) -> name
   }
 }
 

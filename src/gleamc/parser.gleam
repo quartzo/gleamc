@@ -356,6 +356,21 @@ fn expect_item_name(tokens) {
 fn parse_type(tokens) {
   case tokens {
     [Token(Keyword("fn"), _, _), ..rest] -> parse_fun_type(rest)
+    [
+      Token(NameKind(_), _, _),
+      Token(Symbol("."), _, _),
+      Token(UpNameKind(name), _, _),
+      ..rest
+    ] -> {
+      // Qualified types (`mod.Type`); type names are global.
+      case peek(rest) {
+        Symbol("(") -> {
+          use #(args, rest2) <- and_then(parse_type_args(drop_token(rest), []))
+          Ok(#(TApp(name, args), rest2))
+        }
+        _ -> Ok(#(TNamed(name), rest))
+      }
+    }
     [Token(UpNameKind("Int"), _, _), ..rest] -> Ok(#(TInt, rest))
     [Token(UpNameKind("Float"), _, _), ..rest] -> Ok(#(TFloat, rest))
     [Token(UpNameKind("Bool"), _, _), ..rest] -> Ok(#(TBool, rest))
@@ -1019,17 +1034,19 @@ fn parse_guard(tokens) {
 fn parse_pattern(tokens) {
   case tokens {
     [
-      Token(NameKind(_), _, _),
+      Token(NameKind(module), _, _),
       Token(Symbol("."), _, _),
       Token(UpNameKind(name), _, _),
       ..rest
     ] -> {
+      // Keep the module qualifier; it is resolved during merging.
+      let qualified = module <> "." <> name
       case peek(rest) {
         Symbol("(") -> {
           use #(args, rest2) <- and_then(pattern_args(drop_token(rest), []))
-          Ok(#(PCtor(name, args), rest2))
+          Ok(#(PCtor(qualified, args), rest2))
         }
-        _ -> Ok(#(PCtor(name, []), rest))
+        _ -> Ok(#(PCtor(qualified, []), rest))
       }
     }
     [Token(IntKind(v), _, _), ..rest] -> Ok(#(PInt(v), rest))

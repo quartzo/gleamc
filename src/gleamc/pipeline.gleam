@@ -47,7 +47,8 @@ pub fn compile_ir_modules(
 
 fn cascade(modules: List(#(String, Module))) {
   use _ <- result.try(opacity.check(modules))
-  let merged = merge.merge(modules) |> qualify.qualify_ctors
+  use merged <- result.try(merge.merge(modules))
+  let merged = qualify.qualify_ctors(merged)
   // 0. expand type aliases before specialisation
   use merged <- result.try(aliases.expand(merged))
   // 1. monomorphise the generic program (validates via the HM checker)

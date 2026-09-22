@@ -8,6 +8,7 @@ import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
+import gleam/string
 import gleamc/ast.{
   type Module, Arm, CustomType, DCustomType, DFunction, DImport, DTypeAlias,
   EBinop, EBitArray, EBlock, ECall, ECase, EClosure, ECtor, EEnvGet, EField,
@@ -62,13 +63,24 @@ fn check_module(module, alias, opaque_ctors) -> Result(Nil, String) {
   })
 }
 
+fn base_name(name) -> String {
+  case list.last(string.split(name, ".")) {
+    Ok(last) -> last
+    Error(_) -> name
+  }
+}
+
 fn use_ctor(ctor, alias, opaque_ctors) -> Result(Nil, String) {
-  case dict.get(opaque_ctors, ctor) {
+  case dict.get(opaque_ctors, base_name(ctor)) {
     Ok(defining) ->
       case defining == alias {
         True -> Ok(Nil)
         False ->
-          Error("constructor `" <> ctor <> "` of an opaque type is private")
+          Error(
+            "constructor `"
+            <> base_name(ctor)
+            <> "` of an opaque type is private",
+          )
       }
     Error(_) -> Ok(Nil)
   }

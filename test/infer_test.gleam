@@ -1,6 +1,7 @@
 import gleamc/infer
 import gleamc/merge
 import gleamc/parser
+import gleamc/pipeline
 
 fn check(source: String) {
   let assert Ok(module) = parser.parse(source)
@@ -69,12 +70,12 @@ pub fn merged_generic_test() {
   let source =
     "type Wrapped(a) {\n  Wrapped(value: a)\n  Empty\n}\n\nfn unwrap(w: Wrapped(a), default: a) -> a {\n  case w {\n    Wrapped(v) -> v\n    Empty -> default\n  }\n}\n\npub fn main() {\n  io.println(unwrap(Wrapped(\"hi\"), \"none\"))\n  io.println(int.to_string(unwrap(Wrapped(7), 0)))\n}\n"
   let assert Ok(module) = parser.parse(source)
-  let merged = merge.merge([#("", module)])
+  let assert Ok(merged) = merge.merge([#("", module)])
   let assert Ok(_) = infer.check(merged)
 }
 
 pub fn duplicate_constructor_test() {
   let source =
     "type A {\n  Empty\n}\n\ntype B {\n  Empty\n}\n\npub fn main() { Nil }"
-  let assert Error(_) = check(source)
+  let assert Error(_) = pipeline.compile_to_c(source)
 }

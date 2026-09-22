@@ -49,11 +49,12 @@ adding list support, and are now covered by `diffs/lists.gleam`:
 - No module-qualified types beyond a plain named type or `TApp`
   (`Type` / `Type(a)`); there is no `module.Type` in annotations.
 - No `const` values.
-- Constructor names must be unique across all types in a program (resolution is
-  by name). The official compiler scopes names per type, so two types may each
-  define an `Empty`; here that is rejected with a clear diagnostic. The list
-  constructors are internal names (`ListCons` / `ListEmpty`) so that user types
-  can still define `Empty`/`Cons`.
+- Constructors are module-scoped, like the official compiler: a name may be
+  reused across modules (canonicalised internally to `module.Ctor`) but must be
+  unique within a module. Qualified references (`mod.Ctor`) and unqualified ones
+  (own module, or a globally unique name such as the prelude `Ok`/`Error`) both
+  resolve. Import items (`import mod.{Ctor}`) are not supported, so an
+  unqualified constructor from another module must be globally unique.
 - The primitive `Nil` type shares its constructor name with a user constructor
   named `Nil`.
 
