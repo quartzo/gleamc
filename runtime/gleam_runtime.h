@@ -149,6 +149,7 @@ GleamcString Gleamc_string_trim_start(GleamcString value);
 GleamcString Gleamc_string_trim_end(GleamcString value);
 GleamcString Gleamc_string_slice(GleamcString value, int64_t idx, int64_t len);
 int64_t Gleamc_string_byte_size(GleamcString value);
+int64_t Gleamc_string_compare_bytes(GleamcString a, GleamcString b);
 GleamcString Gleamc_string_replace(
     GleamcString value,
     GleamcString pattern,
@@ -159,6 +160,8 @@ GleamcString Gleamc_string_replace(
 int64_t Gleamc_int_min(int64_t a, int64_t b);
 int64_t Gleamc_int_max(int64_t a, int64_t b);
 int64_t Gleamc_int_absolute_value(int64_t a);
+GleamcString Gleamc_int_raw_to_base_string(int64_t value, int64_t base);
+double Gleamc_int_to_float(int64_t value);
 
 /* std::float */
 double Gleamc_float_min(double a, double b);
@@ -168,6 +171,8 @@ double Gleamc_float_floor(double a);
 double Gleamc_float_ceiling(double a);
 int64_t Gleamc_float_round(double a);
 int64_t Gleamc_float_truncate(double a);
+double Gleamc_float_raw_power(double base, double exponent);
+double Gleamc_float_raw_square_root(double value);
 
 /* std::int / std::float / std::bool to_string */
 GleamcString Gleamc_int_to_string(int64_t v);

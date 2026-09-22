@@ -62,6 +62,14 @@ pub fn table() -> Dict(String, FfiSig) {
   |> dict.insert("float.ceiling", FfiSig([Borrow], OwnedResult))
   |> dict.insert("float.round", FfiSig([Borrow], OwnedResult))
   |> dict.insert("float.truncate", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("float.raw_power", FfiSig([Borrow, Borrow], OwnedResult))
+  |> dict.insert("float.raw_square_root", FfiSig([Borrow], OwnedResult))
+  |> dict.insert(
+    "int.raw_to_base_string",
+    FfiSig([Borrow, Borrow], OwnedResult),
+  )
+  |> dict.insert("int.to_float", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("string.compare_bytes", FfiSig([Borrow, Borrow], OwnedResult))
   |> dict.insert("string.contains", FfiSig([Borrow, Borrow], OwnedResult))
   |> dict.insert("string.starts_with", FfiSig([Borrow, Borrow], OwnedResult))
   |> dict.insert("string.ends_with", FfiSig([Borrow, Borrow], OwnedResult))

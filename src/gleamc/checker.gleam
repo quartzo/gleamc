@@ -792,6 +792,56 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         TInt,
         "int.absolute_value",
       )
+    "float", "raw_power" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TFloat, TFloat],
+        TFloat,
+        "float.raw_power",
+      )
+    "float", "raw_square_root" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TFloat],
+        TFloat,
+        "float.raw_square_root",
+      )
+    "int", "raw_to_base_string" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TInt, TInt],
+        TString,
+        "int.raw_to_base_string",
+      )
+    "int", "to_float" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TInt],
+        TFloat,
+        "int.to_float",
+      )
+    "string", "compare_bytes" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TString],
+        TInt,
+        "string.compare_bytes",
+      )
     "float", "min" ->
       check_builtin(
         env,

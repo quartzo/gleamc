@@ -49,3 +49,7 @@ fn digit(ch: String) -> Result(Int, Nil) {
     _ -> Error(Nil)
   }
 }
+
+pub fn to_base_string(value: Int, base: Int) -> Result(String, Nil) {
+  Ok(int.raw_to_base_string(value, base))
+}

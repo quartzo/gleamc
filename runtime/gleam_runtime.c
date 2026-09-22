@@ -133,6 +133,16 @@ int64_t Gleamc_string_byte_size(GleamcString value) {
     return (int64_t)value.len;
 }
 
+int64_t Gleamc_string_compare_bytes(GleamcString a, GleamcString b) {
+    size_t n = a.len < b.len ? a.len : b.len;
+    int cmp = memcmp(a.data, b.data, n);
+    if (cmp < 0) return -1;
+    if (cmp > 0) return 1;
+    if (a.len < b.len) return -1;
+    if (a.len > b.len) return 1;
+    return 0;
+}
+
 int64_t Gleamc_string_length(GleamcString s) {
     /* counts UTF-8 codepoints (ASCII == graphemes) */
     int64_t n = 0;
@@ -356,6 +366,29 @@ int64_t Gleamc_int_min(int64_t a, int64_t b) { return a < b ? a : b; }
 int64_t Gleamc_int_max(int64_t a, int64_t b) { return a > b ? a : b; }
 int64_t Gleamc_int_absolute_value(int64_t a) { return a < 0 ? -a : a; }
 
+GleamcString Gleamc_int_raw_to_base_string(int64_t value, int64_t base) {
+    if (base < 2) base = 2;
+    if (base > 36) base = 36;
+    char tmp[72];
+    int n = 0;
+    int negative = value < 0;
+    uint64_t magnitude =
+        negative ? (uint64_t)(-(value + 1)) + 1 : (uint64_t)value;
+    if (magnitude == 0) tmp[n++] = '0';
+    while (magnitude > 0) {
+        int digit = (int)(magnitude % (uint64_t)base);
+        tmp[n++] = (char)(digit < 10 ? '0' + digit : 'A' + (digit - 10));
+        magnitude /= (uint64_t)base;
+    }
+    if (negative) tmp[n++] = '-';
+    char* buf = (char*)gleamc_alloc((size_t)n + 1);
+    for (int i = 0; i < n; i++) buf[i] = tmp[n - 1 - i];
+    buf[n] = '\0';
+    return (GleamcString){buf, (size_t)n};
+}
+
+double Gleamc_int_to_float(int64_t value) { return (double)value; }
+
 double Gleamc_float_min(double a, double b) { return a < b ? a : b; }
 double Gleamc_float_max(double a, double b) { return a > b ? a : b; }
 double Gleamc_float_absolute_value(double a) { return fabs(a); }
@@ -363,6 +396,8 @@ double Gleamc_float_floor(double a) { return floor(a); }
 double Gleamc_float_ceiling(double a) { return ceil(a); }
 int64_t Gleamc_float_round(double a) { return (int64_t)llround(a); }
 int64_t Gleamc_float_truncate(double a) { return (int64_t)trunc(a); }
+double Gleamc_float_raw_power(double base, double exponent) { return pow(base, exponent); }
+double Gleamc_float_raw_square_root(double value) { return sqrt(value); }
 
 GleamcString Gleamc_float_to_string(double v) {
     /* Matches Gleam/Erlang `float_to_string`: the shortest decimal string that

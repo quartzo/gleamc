@@ -1,5 +1,6 @@
 import gleam/list
 import gleam/option
+import gleam/order
 
 pub fn concat(strings: List(String)) -> String {
   case strings {
@@ -243,5 +244,17 @@ pub fn to_option(value: String) -> Option(String) {
   case string.length(value) == 0 {
     True -> option.None
     False -> option.Some(value)
+  }
+}
+
+pub fn compare(a: String, b: String) -> Order {
+  let ordering = string.compare_bytes(a, b)
+  case ordering < 0 {
+    True -> order.Lt
+    False ->
+      case ordering > 0 {
+        True -> order.Gt
+        False -> order.Eq
+      }
   }
 }
