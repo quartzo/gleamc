@@ -41,3 +41,5 @@ erl_crash.dump
 /diffs/result2
 /diffs/filtermap
 /diffs/sort
+/diffs/multicase
+/diffs/order

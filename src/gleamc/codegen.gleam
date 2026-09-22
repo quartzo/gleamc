@@ -55,15 +55,23 @@ pub fn emit(
 
   let type_code =
     forward_decls
-    <> string.join(
-      list.map(tuple_types, fn(ty) { emit_tuple_type(ty, recursive) }),
-      "",
-    )
-    <> "\n"
-    <> string.join(
-      list.map(custom_types, fn(custom) { emit_custom_type(custom, recursive) }),
-      "\n",
-    )
+    <> order_type_entries(list.append(
+      list.map(tuple_types, fn(ty) {
+        #(
+          type_key(ty),
+          tuple_dep_keys(ty, recursive),
+          emit_tuple_type(ty, recursive),
+        )
+      }),
+      list.map(custom_types, fn(custom) {
+        let CustomType(_, name, _, _) = custom
+        #(
+          name,
+          custom_dep_keys(custom, recursive),
+          emit_custom_type(custom, recursive),
+        )
+      }),
+    ))
     <> "\n"
     <> string.join(
       list.map(env_structs, fn(entry) { emit_env_struct(entry, recursive) }),
@@ -135,6 +143,83 @@ pub fn emit(
   <> string.join(value_wrappers, "")
   <> definitions
   <> main_code
+}
+
+/// Emits type definitions in dependency order: a type is emitted only after
+/// all of the (by-value) types it embeds. Recursive types are pointers and are
+/// forward-declared, so they do not constrain ordering.
+fn order_type_entries(entries) -> String {
+  order_type_entries_loop(entries, [], [])
+}
+
+fn order_type_entries_loop(pending, emitted, acc) {
+  case pending {
+    [] -> string.join(list.reverse(acc), "\n")
+    _ ->
+      case
+        list.find(pending, fn(entry) {
+          let #(_, deps, _) = entry
+          list.all(deps, fn(dep) { list.contains(emitted, dep) })
+        })
+      {
+        Ok(ready) -> {
+          let #(key, _, code) = ready
+          let rest =
+            list.filter(pending, fn(entry) {
+              let #(other, _, _) = entry
+              other != key
+            })
+          order_type_entries_loop(rest, [key, ..emitted], [code, ..acc])
+        }
+        // A dependency cycle that does not go through a recursive pointer:
+        // emit what is left as-is to avoid dropping definitions.
+        Error(_) -> {
+          let rest_code =
+            list.map(pending, fn(entry) {
+              let #(_, _, code) = entry
+              code
+            })
+          string.join(list.append(list.reverse(acc), rest_code), "\n")
+        }
+      }
+  }
+}
+
+fn tuple_dep_keys(ty, recursive) -> List(String) {
+  case ty {
+    TTuple(types) ->
+      list.filter_map(types, fn(inner) { dep_key(inner, recursive) })
+    _ -> []
+  }
+}
+
+fn custom_dep_keys(custom, recursive) -> List(String) {
+  let CustomType(_, _, _, variants) = custom
+  list.flat_map(variants, fn(variant) {
+    let Variant(_, fields) = variant
+    list.filter_map(fields, fn(field) {
+      let #(_, ty) = field
+      dep_key(ty, recursive)
+    })
+  })
+}
+
+/// The emitted-type key a field depends on, or `Error` for primitives,
+/// strings, functions, and recursive (pointer) types.
+fn dep_key(ty, recursive) -> Result(String, Nil) {
+  case ty {
+    TNamed(name) ->
+      case is_recursive(recursive, name) {
+        True -> Error(Nil)
+        False -> Ok(name)
+      }
+    ast.TApp(name, args) -> {
+      let key = name <> "_" <> string.join(list.map(args, mangle_type), "_")
+      Ok(key)
+    }
+    TTuple(_) -> Ok(type_key(ty))
+    _ -> Error(Nil)
+  }
 }
 
 // ---------------------------------------------------------------------------

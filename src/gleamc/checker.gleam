@@ -345,6 +345,9 @@ fn patterns_exhaustive(ty, patterns, ctors) -> Bool {
       case ty {
         TNamed(name) -> type_exhaustive(name, patterns, ctors)
         TBool -> has_bool(patterns, True) && has_bool(patterns, False)
+        // Tuple exhaustiveness (including multi-subject `case`) is not
+        // analysed; assume exhaustive so it does not reject valid code.
+        TTuple(_) -> True
         _ -> False
       }
   }

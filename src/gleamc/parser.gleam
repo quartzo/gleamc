@@ -775,9 +775,26 @@ fn tuple_elems(tokens, acc) {
 }
 
 fn parse_case(tokens) {
-  use #(subject, rest) <- and_then(parse_expr(tokens))
+  use #(subjects, rest) <- and_then(case_subjects(tokens, []))
   use rest1 <- and_then(expect_symbol(rest, "{"))
-  arms(subject, skip_newlines(rest1), [])
+  arms(desugar_subjects(subjects), skip_newlines(rest1), [])
+}
+
+/// Collects the comma-separated subjects of a `case`. Multiple subjects are
+/// desugared to a tuple, so the rest of the pipeline stays unchanged.
+fn case_subjects(tokens, acc) {
+  use #(subject, rest) <- and_then(parse_expr(tokens))
+  case peek(rest) {
+    Symbol(",") -> case_subjects(drop_token(rest), [subject, ..acc])
+    _ -> Ok(#(list.reverse([subject, ..acc]), rest))
+  }
+}
+
+fn desugar_subjects(subjects) {
+  case subjects {
+    [single] -> single
+    _ -> ETuple(subjects)
+  }
 }
 
 fn arms(subject, tokens, acc) {
@@ -804,11 +821,24 @@ fn arms(subject, tokens, acc) {
 }
 
 fn parse_arm(tokens) {
-  use #(pat, rest) <- and_then(parse_pattern(tokens))
+  use #(patterns, rest) <- and_then(arm_patterns(tokens, []))
+  let pat = case patterns {
+    [single] -> single
+    _ -> PTuple(patterns)
+  }
   let #(guard, rest1) = parse_guard(skip_newlines(rest))
   use rest2 <- and_then(expect_symbol(rest1, "->"))
   use #(body, rest3) <- and_then(parse_expr(skip_newlines(rest2)))
   Ok(#(Arm(pat, guard, body), rest3))
+}
+
+/// Collects the comma-separated patterns of an arm (multiple subjects).
+fn arm_patterns(tokens, acc) {
+  use #(pattern, rest) <- and_then(parse_pattern(tokens))
+  case peek(rest) {
+    Symbol(",") -> arm_patterns(drop_token(rest), [pattern, ..acc])
+    _ -> Ok(#(list.reverse([pattern, ..acc]), rest))
+  }
 }
 
 fn parse_guard(tokens) {

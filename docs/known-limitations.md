@@ -38,9 +38,11 @@ adding list support, and are now covered by `diffs/lists.gleam`:
 - String interpolation (`"${expr}"`); only escapes are handled.
 - Bit arrays (`<<...>>`).
 - Record update syntax (`Type(..record, field: value)`).
-- Multiple `case` subjects (`case a, b { ... }`); use nested `case` instead.
 - Guards: only a single boolean guard via `if` (alias `when`). Pattern guards
   and `let` inside guards are not supported.
+- Exhaustiveness for tuple subjects (including multiple `case` subjects, which
+  desugar to a tuple) is assumed rather than analysed, so a non-exhaustive
+  tuple `case` is not reported.
 - `opaque` is a reserved keyword but opaque types are not enforced.
 
 ## Type system
