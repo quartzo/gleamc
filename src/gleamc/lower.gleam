@@ -12,10 +12,11 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleamc/ast.{
   type Expr, type Function, type Module, type Pattern, type Statement, type Type,
-  Arm, DFunction, EBinop, EBlock, EBool, ECall, ECase, EClosure, ECtor, EEnvGet,
-  EField, EFloat, EInt, ELabelled, ELambda, ENil, EPanic, EString, ETuple, EUnop,
-  EUpdate, EVar, Let, Module, PBool, PCtor, PFloat, PInt, PLabelled, PNil,
-  PString, PTuple, PVar, PWildcard, Stmt, TBool, TFun, TNamed, TString, TTuple,
+  Arm, DFunction, EBinop, EBitArray, EBlock, EBool, ECall, ECase, EClosure,
+  ECtor, EEnvGet, EField, EFloat, EInt, ELabelled, ELambda, ENil, EPanic,
+  EString, ETuple, EUnop, EUpdate, EVar, Let, Module, PBitArray, PBool, PCtor,
+  PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard, Stmt, TBool,
+  TFun, TInt, TNamed, TString, TTuple,
 }
 import gleamc/checker
 import gleamc/infer
@@ -286,6 +287,12 @@ fn lower_expr(
       let ty = infer(b, expr)
       let #(dest, b2) = fresh_local(b1, "tuple", ty)
       Ok(#(ir.Var(dest), emit(b2, ir.OpTuple(dest, operands, ty))))
+    }
+    EBitArray(elements) -> {
+      use #(operands, b1) <- result.try(lower_args(b, elements))
+      let ty = infer(b, expr)
+      let #(dest, b2) = fresh_local(b1, "bitarray", ty)
+      Ok(#(ir.Var(dest), emit(b2, ir.OpBitArray(dest, operands, ty))))
     }
     ECtor(name, args) -> {
       use ordered <- result.try(order_exprs(ctor_field_names(b, name), args))
@@ -801,6 +808,62 @@ fn match_pattern(
       )
     }
     PLabelled(_, inner) -> match_pattern(b, operand, ty, inner, success, fail)
+    PBitArray(patterns) -> {
+      let count = list.length(patterns)
+      let #(size, b1) = fresh_local(b, "basize", TInt)
+      let b2 =
+        emit(b1, ir.OpBuiltin(size, "bit_array.byte_size", [operand], TInt))
+      let #(mid, b3) = new_label(b2, "ba_size")
+      use b4 <- result.try(match_literal(
+        b3,
+        ir.Var(size),
+        ir.Lit(ir.LInt(count)),
+        mid,
+        fail,
+      ))
+      match_bit_array(start_block(b4, mid), operand, patterns, success, fail, 0)
+    }
+  }
+}
+
+fn match_bit_array(b, operand, patterns, success, fail, index) {
+  case patterns {
+    [] -> Ok(end_block(b, ir.Jmp(success)))
+    [pattern, ..rest] -> {
+      let #(byte, b1) = fresh_local(b, "babyte", TInt)
+      let b2 =
+        emit(
+          b1,
+          ir.OpBuiltin(
+            byte,
+            "bit_array.byte",
+            [operand, ir.Lit(ir.LInt(index))],
+            TInt,
+          ),
+        )
+      case rest {
+        [] -> match_pattern(b2, ir.Var(byte), TInt, pattern, success, fail)
+        _ -> {
+          let #(mid, b3) = new_label(b2, "ba_next")
+          use b4 <- result.try(match_pattern(
+            b3,
+            ir.Var(byte),
+            TInt,
+            pattern,
+            mid,
+            fail,
+          ))
+          match_bit_array(
+            start_block(b4, mid),
+            operand,
+            rest,
+            success,
+            fail,
+            index + 1,
+          )
+        }
+      }
+    }
   }
 }
 

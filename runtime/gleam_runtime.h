@@ -99,6 +99,26 @@ bool gleamc_string_eq(GleamcString a, GleamcString b);
     } while (0)
 
 /* ------------------------------------------------------------------ */
+/* BitArray — raw bytes (bit arrays with 8-bit segments)               */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    uint8_t* data;
+    size_t len;
+} GleamcBitArray;
+
+GleamcBitArray Gleamc_bit_array_new(size_t len);
+GleamcBitArray Gleamc_bit_array_from_bytes(const int64_t* values, size_t count);
+GleamcBitArray Gleamc_bit_array_from_string(GleamcString s);
+GleamcString Gleamc_bit_array_raw_to_string(GleamcBitArray a);
+int64_t Gleamc_bit_array_byte_size(GleamcBitArray a);
+int64_t Gleamc_bit_array_byte(GleamcBitArray a, size_t index);
+GleamcBitArray Gleamc_bit_array_append(GleamcBitArray a, GleamcBitArray b);
+bool Gleamc_bit_array_eq(GleamcBitArray a, GleamcBitArray b);
+void Gleamc_bit_array_retain(GleamcBitArray a);
+void Gleamc_bit_array_release(GleamcBitArray a);
+
+/* ------------------------------------------------------------------ */
 /* std::io — print (to_string is inserted by the compiler)             */
 /* ------------------------------------------------------------------ */
 

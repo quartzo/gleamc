@@ -252,6 +252,7 @@ pub fn is_recursive(recursive: Dict(String, Bool), name: String) -> Bool {
 pub fn type_key(ty: Type) -> String {
   case ty {
     TString -> "str"
+    TNamed("BitArray") -> "bitarray"
     ast.TInt -> "i64"
     ast.TFloat -> "f64"
     ast.TBool -> "b"
@@ -276,6 +277,7 @@ pub fn c_type(ty: Type, recursive: Dict(String, Bool)) -> String {
     ast.TFloat -> "double"
     ast.TBool -> "bool"
     TString -> "GleamcString"
+    TNamed("BitArray") -> "GleamcBitArray"
     ast.TNil -> "int"
     ast.TVar(name) -> name
     TNamed("Nil") -> "int"
@@ -298,6 +300,7 @@ fn mangle_type(ty: Type) -> String {
     ast.TFloat -> "f64"
     ast.TBool -> "b"
     TString -> "str"
+    TNamed("BitArray") -> "bitarray"
     ast.TNil -> "nil"
     ast.TVar(name) -> name
     TNamed("Nil") -> "nil"
@@ -760,7 +763,7 @@ fn expand_eq(pending, ctors, acc) {
 fn eq_key(ty: Type) -> Result(String, Nil) {
   case ty {
     TString | ast.TInt | ast.TFloat | ast.TBool | ast.TNil -> Error(Nil)
-    TNamed("Nil") -> Error(Nil)
+    TNamed("Nil") | TNamed("BitArray") -> Error(Nil)
     TNamed(_) | TTuple(_) -> Ok(type_key(ty))
     _ -> Error(Nil)
   }
@@ -884,6 +887,7 @@ fn named_eq(ty: Type, name, recursive, ctors) -> String {
 fn eq_expr(ty, left, right) -> String {
   case ty {
     TString -> "gleamc_string_eq(" <> left <> ", " <> right <> ")"
+    TNamed("BitArray") -> "Gleamc_bit_array_eq(" <> left <> ", " <> right <> ")"
     ast.TInt | ast.TFloat | ast.TBool | ast.TNil ->
       "(" <> left <> " == " <> right <> ")"
     ast.TFun(_, _) ->
@@ -942,6 +946,7 @@ fn expand_glue(pending, ctors, acc) {
 fn glue_key(ty: Type) -> Result(String, Nil) {
   case ty {
     TString -> Error(Nil)
+    TNamed("BitArray") -> Error(Nil)
     TTuple(_) -> Ok(type_key(ty))
     TNamed(_) -> Ok(type_key(ty))
     ast.TFun(_, _) -> Ok(type_key(ty))
@@ -1134,6 +1139,11 @@ fn recursive_glue(kind, name, ty, ctors) -> String {
 
 fn glue_call(kind: String, ty: Type, expr: String) -> String {
   case ty {
+    TNamed("BitArray") ->
+      case kind {
+        "retain" -> "Gleamc_bit_array_retain(" <> expr <> ")"
+        _ -> "Gleamc_bit_array_release(" <> expr <> ")"
+      }
     TString ->
       case kind {
         "retain" -> "gleamc_string_retain(" <> expr <> ")"
@@ -1213,6 +1223,8 @@ fn emit_op(by_name, recursive) {
     case op {
       ir.OpConst(dest, value) ->
         "    " <> dest <> " = " <> literal_c(value) <> ";"
+      ir.OpBitArray(dest, elems, _) ->
+        "    " <> dest <> " = " <> bit_array_c(by_name, elems) <> ";"
       ir.OpBinop(dest, op_name, a, b) ->
         "    "
         <> dest
@@ -1416,6 +1428,7 @@ fn binop_c(op, operand_ty, left, right) -> String {
 fn eq_c(ty, left, right) -> String {
   case ty {
     TString -> "gleamc_string_eq(" <> left <> ", " <> right <> ")"
+    TNamed("BitArray") -> "Gleamc_bit_array_eq(" <> left <> ", " <> right <> ")"
     ast.TInt | ast.TFloat | ast.TBool | ast.TNil ->
       "(" <> left <> " == " <> right <> ")"
     ast.TFun(_, _) ->
@@ -1443,6 +1456,18 @@ fn normalize_op(op) -> String {
     "<=." -> "<="
     ">=." -> ">="
     _ -> op
+  }
+}
+
+fn bit_array_c(by_name, elems) -> String {
+  case elems {
+    [] -> "Gleamc_bit_array_new(0)"
+    _ ->
+      "Gleamc_bit_array_from_bytes((int64_t[]){"
+      <> call_args(by_name, elems)
+      <> "}, "
+      <> int.to_string(list.length(elems))
+      <> ")"
   }
 }
 

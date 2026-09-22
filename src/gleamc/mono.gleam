@@ -13,11 +13,11 @@ import gleam/option.{None, Some}
 import gleam/string
 import gleamc/ast.{
   type CustomType, type Expr, type Function, type Module, type Pattern,
-  type Type, Arm, CustomType, DCustomType, DFunction, EBinop, EBlock, EBool,
-  ECall, ECase, EClosure, ECtor, EEnvGet, EField, EFloat, EInt, ELabelled,
+  type Type, Arm, CustomType, DCustomType, DFunction, EBinop, EBitArray, EBlock,
+  EBool, ECall, ECase, EClosure, ECtor, EEnvGet, EField, EFloat, EInt, ELabelled,
   ELambda, ENil, EPanic, EString, ETuple, EUnop, EUpdate, EVar, Function, Let,
-  Module, PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar,
-  PWildcard, Stmt, TApp, TFun, TNamed, TTuple, TVar, Variant,
+  Module, PBitArray, PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString,
+  PTuple, PVar, PWildcard, Stmt, TApp, TFun, TNamed, TTuple, TVar, Variant,
 }
 import gleamc/infer
 import gleamc/types.{type Scheme, Con, Fun, Scheme, Tup, Var}
@@ -481,6 +481,10 @@ fn mono_expr(
     EPanic(_, _) -> Ok(#(expr, state))
     EUpdate(name, base, fields) ->
       mono_update(state, locals, None, name, base, fields)
+    EBitArray(elements) -> {
+      use #(elements2, state) <- result_try(mono_exprs(state, locals, elements))
+      Ok(#(EBitArray(elements2), state))
+    }
   }
 }
 
@@ -1256,6 +1260,15 @@ fn mono_pattern(
         }
       }
     PLabelled(_, inner) -> mono_pattern(state, locals, inner, ty)
+    PBitArray(patterns) -> {
+      use #(patterns2, bindings, state) <- result_try(mono_patterns(
+        state,
+        locals,
+        patterns,
+        list.repeat(Con("Int", []), list.length(patterns)),
+      ))
+      Ok(#(PBitArray(patterns2), bindings, state))
+    }
   }
 }
 

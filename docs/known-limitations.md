@@ -33,9 +33,8 @@ adding list support, and are now covered by `diffs/lists.gleam`:
 
 - Type aliases (`pub type X = ...`) are rejected with
   `type aliases not supported yet`.
-- Bit arrays (`<<...>>`).
-- Guards: only a single boolean guard via `if` (alias `when`). Pattern guards
-  and `let` inside guards are not supported.
+- Guards are boolean expressions (`if`/`when`); they cannot bind variables
+  (as in Gleam).
 - Exhaustiveness for tuple subjects (including multiple `case` subjects, which
   desugar to a tuple) is assumed rather than analysed, so a non-exhaustive
   tuple `case` is not reported.
@@ -98,6 +97,10 @@ are resolved when the prelude is attached.
   etc.
 - `gleam/bool`: `to_string` only.
 - `gleam/io`: `println`, `print` only. Missing: `debug`.
+- `gleam/bit_array`: `from_string`, `to_string` (always `Ok`), `byte_size`,
+  `bit_size`, `append`, `concat`. Only 8-bit integer segments are supported in
+  `<<...>>` literals and patterns (no `:size`/`:unit`, no bit-level ops, no
+  `slice`/`base64_encode`).
 - `gleam/order`: `Order` type plus `to_int`, `negate`. Other helpers
   (`compare`, `reverse`, `break_tie`) are not implemented.
 - `gleam/option`: `unwrap`, `map`, `is_some`, `is_none`, `then`, `or`,

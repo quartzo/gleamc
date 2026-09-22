@@ -31,6 +31,8 @@ pub type Pattern {
   PTuple(List(Pattern))
   /// `field: pat` — a labelled constructor pattern argument.
   PLabelled(name: String, pattern: Pattern)
+  /// `<<a, b>>` — matches 8-bit segments of a bit array.
+  PBitArray(List(Pattern))
 }
 
 pub type Expr {
@@ -62,6 +64,8 @@ pub type Expr {
   /// `Ctor(..base, field: value)` — record update (desugared during
   /// monomorphisation into a full constructor call).
   EUpdate(name: String, base: Expr, fields: List(#(String, Expr)))
+  /// `<<1, 2, 3>>` — bit array of 8-bit segments.
+  EBitArray(List(Expr))
 }
 
 pub type Statement {
@@ -103,6 +107,7 @@ pub type Import {
 pub type Definition {
   DFunction(Function)
   DCustomType(CustomType)
+  DTypeAlias(is_pub: Bool, name: String, generics: List(String), ty: Type)
   DImport(Import)
 }
 

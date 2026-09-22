@@ -6,6 +6,7 @@
 
 import gleam/list
 import gleam/result
+import gleamc/aliases
 import gleamc/ast.{type CustomType, type Module, DCustomType, Module}
 import gleamc/checker
 import gleamc/codegen
@@ -44,6 +45,8 @@ pub fn compile_ir_modules(
 
 fn cascade(modules: List(#(String, Module))) {
   let merged = merge.merge(modules) |> qualify.qualify_ctors
+  // 0. expand type aliases before specialisation
+  use merged <- result.try(aliases.expand(merged))
   // 1. monomorphise the generic program (validates via the HM checker)
   use mono_module <- result.try(mono.monomorphize(merged))
   // 2. the monomorphic backend runs on the specialised AST

@@ -10,9 +10,10 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleamc/ast.{
   type Definition, type Expr, type Module, type Statement, Arm, CustomType,
-  DCustomType, DFunction, EBinop, EBlock, EBool, ECall, ECase, EClosure, ECtor,
-  EEnvGet, EField, EFloat, EInt, ELabelled, ELambda, ENil, EPanic, EString,
-  ETuple, EUnop, EUpdate, EVar, Function, Let, Module, Stmt, Variant,
+  DCustomType, DFunction, EBinop, EBitArray, EBlock, EBool, ECall, ECase,
+  EClosure, ECtor, EEnvGet, EField, EFloat, EInt, ELabelled, ELambda, ENil,
+  EPanic, EString, ETuple, EUnop, EUpdate, EVar, Function, Let, Module, Stmt,
+  Variant,
 }
 
 pub fn qualify_ctors(module: Module) -> Module {
@@ -80,6 +81,10 @@ fn qualify_expr(expr, ctors) -> Expr {
       }
     EInt(_) | EFloat(_) | EString(_) | EVar(_) | ENil | EEnvGet(_, _, _) -> expr
     EPanic(_, _) -> expr
+    EBitArray(elements) ->
+      EBitArray(
+        list.map(elements, fn(element) { qualify_expr(element, ctors) }),
+      )
     EUpdate(name, base, fields) ->
       EUpdate(
         name,

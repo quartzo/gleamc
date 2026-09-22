@@ -12,11 +12,12 @@ import gleam/result
 import gleam/string
 import gleamc/ast.{
   type Expr, type Module, type Pattern, type Type, Arm, CustomType, DCustomType,
-  DFunction, DImport, EBinop, EBlock, EBool, ECall, ECase, EClosure, ECtor,
-  EEnvGet, EField, EFloat, EInt, ELabelled, ELambda, ENil, EPanic, EString,
-  ETuple, EUnop, EUpdate, EVar, Function, Let, Module, PBool, PCtor, PFloat,
-  PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard, Stmt, TApp, TBool,
-  TFloat, TFun, TInt, TNamed, TNil, TString, TTuple, TVar, Variant,
+  DFunction, DImport, DTypeAlias, EBinop, EBitArray, EBlock, EBool, ECall, ECase,
+  EClosure, ECtor, EEnvGet, EField, EFloat, EInt, ELabelled, ELambda, ENil,
+  EPanic, EString, ETuple, EUnop, EUpdate, EVar, Function, Let, Module,
+  PBitArray, PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar,
+  PWildcard, Stmt, TApp, TBool, TFloat, TFun, TInt, TNamed, TNil, TString,
+  TTuple, TVar, Variant,
 }
 
 pub type Signature {
@@ -70,6 +71,7 @@ fn collect(defs, signatures, ctors) {
       collect(rest, signatures, ctors)
     }
     [DImport(_), ..rest] -> collect(rest, signatures, ctors)
+    [DTypeAlias(_, _, _, _), ..rest] -> collect(rest, signatures, ctors)
   }
 }
 
@@ -146,6 +148,15 @@ pub fn infer(
     EPanic(_, ty) -> Ok(ty)
     EUpdate(_, _, _) ->
       Error(CheckError("record update must be desugared before checking"))
+    EBitArray(elements) -> {
+      use types <- result.try(infer_all(env, signatures, ctors, elements))
+      use _ <- result.try(check_types(
+        list.repeat(TInt, list.length(types)),
+        types,
+        "bit array segment",
+      ))
+      Ok(TNamed("BitArray"))
+    }
   }
 }
 
@@ -884,6 +895,66 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         TString,
         "string.replace",
       )
+    "bit_array", "from_string" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TNamed("BitArray"),
+        "bit_array.from_string",
+      )
+    "bit_array", "raw_to_string" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("BitArray")],
+        TString,
+        "bit_array.raw_to_string",
+      )
+    "bit_array", "byte_size" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("BitArray")],
+        TInt,
+        "bit_array.byte_size",
+      )
+    "bit_array", "byte" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("BitArray"), TInt],
+        TInt,
+        "bit_array.byte",
+      )
+    "bit_array", "append" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("BitArray"), TNamed("BitArray")],
+        TNamed("BitArray"),
+        "bit_array.append",
+      )
+    "bit_array", "bit_size" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("BitArray")],
+        TInt,
+        "bit_array.bit_size",
+      )
     "string", "byte_size" ->
       check_builtin(
         env,
@@ -1044,6 +1115,10 @@ fn bind_pattern(pattern, subject_ty, ctors) -> Result(Env, CheckError) {
         }
       }
     PLabelled(_, inner) -> bind_pattern(inner, subject_ty, ctors)
+    PBitArray(patterns) -> {
+      use _ <- result.try(expect_ty(subject_ty, TNamed("BitArray"), "pattern"))
+      bind_patterns(patterns, list.repeat(TInt, list.length(patterns)), ctors)
+    }
   }
 }
 

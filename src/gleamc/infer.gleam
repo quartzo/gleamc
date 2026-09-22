@@ -11,10 +11,10 @@ import gleam/option.{type Option, None, Some}
 import gleamc/ast.{
   type CustomType, type Expr, type Function, type Module, type Pattern,
   type Type, type Variant, Arm, CustomType, DCustomType, DFunction, EBinop,
-  EBlock, EBool, ECall, ECase, EClosure, ECtor, EEnvGet, EField, EFloat, EInt,
-  ELabelled, ELambda, ENil, EPanic, EString, ETuple, EUnop, EUpdate, EVar,
-  Function, Let, Module, PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString,
-  PTuple, PVar, PWildcard, Stmt, Variant,
+  EBitArray, EBlock, EBool, ECall, ECase, EClosure, ECtor, EEnvGet, EField,
+  EFloat, EInt, ELabelled, ELambda, ENil, EPanic, EString, ETuple, EUnop,
+  EUpdate, EVar, Function, Let, Module, PBitArray, PBool, PCtor, PFloat, PInt,
+  PLabelled, PNil, PString, PTuple, PVar, PWildcard, Stmt, Variant,
 }
 import gleamc/types.{
   type Scheme, type Subst, type Ty, Con, Fun, Rig, Scheme, Tup, Var,
@@ -268,6 +268,33 @@ fn builtins() -> Dict(String, Scheme) {
   |> dict.insert("string.trim_end", Scheme(none, Fun([s], s)))
   |> dict.insert("string.replace", Scheme(none, Fun([s, s, s], s)))
   |> dict.insert("string.byte_size", Scheme(none, Fun([s], i)))
+  |> dict.insert(
+    "bit_array.from_string",
+    Scheme(none, Fun([s], Con("BitArray", []))),
+  )
+  |> dict.insert(
+    "bit_array.raw_to_string",
+    Scheme(none, Fun([Con("BitArray", [])], s)),
+  )
+  |> dict.insert(
+    "bit_array.byte_size",
+    Scheme(none, Fun([Con("BitArray", [])], i)),
+  )
+  |> dict.insert(
+    "bit_array.byte",
+    Scheme(none, Fun([Con("BitArray", []), i], i)),
+  )
+  |> dict.insert(
+    "bit_array.append",
+    Scheme(
+      none,
+      Fun([Con("BitArray", []), Con("BitArray", [])], Con("BitArray", [])),
+    ),
+  )
+  |> dict.insert(
+    "bit_array.bit_size",
+    Scheme(none, Fun([Con("BitArray", [])], i)),
+  )
   |> dict.insert("string.slice", Scheme(none, Fun([s, i, i], s)))
   |> dict.insert("string.length", Scheme(none, Fun([s], i)))
   |> dict.insert("string.append", Scheme(none, Fun([s, s], s)))
@@ -344,6 +371,16 @@ pub fn infer(env: Env, st: St, expr: Expr) -> Result(#(Ty, St), InferError) {
     EPanic(_, _) -> {
       let #(ty, counter) = types.fresh(st.counter)
       Ok(#(ty, St(..st, counter: counter)))
+    }
+    EBitArray(elements) -> {
+      use #(element_tys, st) <- result_try(infer_all(env, st, elements))
+      use st <- result_try(unify_lists(
+        list.repeat(Con("Int", []), list.length(element_tys)),
+        element_tys,
+        st,
+        "bit array segment",
+      ))
+      Ok(#(Con("BitArray", []), st))
     }
     EUpdate(name, base, fields) ->
       case dict.get(env.ctors, name) {
@@ -693,6 +730,15 @@ fn bind_pattern(
         }
       }
     PLabelled(_, inner) -> bind_pattern(env, inner, ty, st)
+    PBitArray(patterns) -> {
+      use st <- result_try(unify_st(Con("BitArray", []), ty, st))
+      bind_patterns(
+        env,
+        patterns,
+        list.repeat(Con("Int", []), list.length(patterns)),
+        st,
+      )
+    }
   }
 }
 

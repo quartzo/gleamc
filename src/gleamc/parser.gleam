@@ -6,12 +6,12 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleamc/ast.{
-  type Module, Arm, CustomType, DCustomType, DFunction, DImport, EBinop, EBlock,
-  EBool, ECall, ECase, ECtor, EField, EFloat, EInt, ELabelled, ELambda, ENil,
-  EPanic, EString, ETuple, EUnop, EUpdate, EVar, Function, Import, Let, Module,
-  PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard,
-  Stmt, TApp, TBool, TFloat, TFun, TInt, TNamed, TNil, TString, TTuple, TVar,
-  Variant,
+  type Module, Arm, CustomType, DCustomType, DFunction, DImport, DTypeAlias,
+  EBinop, EBitArray, EBlock, EBool, ECall, ECase, ECtor, EField, EFloat, EInt,
+  ELabelled, ELambda, ENil, EPanic, EString, ETuple, EUnop, EUpdate, EVar,
+  Function, Import, Let, Module, PBitArray, PBool, PCtor, PFloat, PInt,
+  PLabelled, PNil, PString, PTuple, PVar, PWildcard, Stmt, TApp, TBool, TFloat,
+  TFun, TInt, TNamed, TNil, TString, TTuple, TVar, Variant,
 }
 import gleamc/lexer
 import gleamc/token.{
@@ -202,7 +202,13 @@ fn definition_type(tokens, is_pub, acc) {
   let #(generics, rest1) = parse_generics(skip_newlines(rest1))
   let rest2 = skip_newlines(rest1)
   case peek(rest2) {
-    Symbol("=") -> fail(rest2, "type aliases not supported yet")
+    Symbol("=") -> {
+      use #(ty, rest3) <- and_then(parse_type(skip_newlines(drop_token(rest2))))
+      definitions(skip_newlines(rest3), [
+        DTypeAlias(is_pub, name, generics, ty),
+        ..acc
+      ])
+    }
     _ -> {
       use rest3 <- and_then(expect_symbol(rest2, "{"))
       use #(variants, rest4) <- and_then(variants(skip_newlines(rest3), []))
@@ -754,18 +760,22 @@ fn parse_atom(tokens) {
     [Token(Keyword("case"), _, _), ..rest] -> parse_case(skip_newlines(rest))
     [Token(Keyword("fn"), _, _), ..rest] -> parse_lambda(rest)
     _ ->
-      case at_symbol(tokens, "#") {
-        True -> parse_tuple(drop_token(tokens))
+      case at_symbol(tokens, "<<") {
+        True -> parse_bit_array(drop_token(tokens))
         False ->
-          case at_symbol(tokens, "(") {
-            True -> parse_grouped(drop_token(tokens))
+          case at_symbol(tokens, "#") {
+            True -> parse_tuple(drop_token(tokens))
             False ->
-              case at_symbol(tokens, "{") {
-                True -> parse_block(tokens)
+              case at_symbol(tokens, "(") {
+                True -> parse_grouped(drop_token(tokens))
                 False ->
-                  case at_symbol(tokens, "[") {
-                    True -> parse_list_literal(drop_token(tokens))
-                    False -> fail(tokens, "expected an expression")
+                  case at_symbol(tokens, "{") {
+                    True -> parse_block(tokens)
+                    False ->
+                      case at_symbol(tokens, "[") {
+                        True -> parse_list_literal(drop_token(tokens))
+                        False -> fail(tokens, "expected an expression")
+                      }
                   }
               }
           }
@@ -801,6 +811,44 @@ fn update_fields(tokens, acc) {
         Symbol(",") -> update_fields(skip_newlines(drop_token(nxt)), acc2)
         Symbol(")") -> Ok(#(list.reverse(acc2), drop_token(nxt)))
         _ -> fail(nxt, "expected `,` or `)` in record update")
+      }
+    }
+  }
+}
+
+fn parse_bit_array(tokens) {
+  bit_array_elems(tokens, [])
+}
+
+fn bit_array_elems(tokens, acc) {
+  case peek(tokens) {
+    Symbol(">>") -> Ok(#(EBitArray(list.reverse(acc)), drop_token(tokens)))
+    _ -> {
+      use #(element, rest) <- and_then(parse_expr(tokens))
+      case peek(rest) {
+        Symbol(",") -> bit_array_elems(drop_token(rest), [element, ..acc])
+        Symbol(">>") ->
+          Ok(#(EBitArray(list.reverse([element, ..acc])), drop_token(rest)))
+        _ -> fail(rest, "expected `,` or `>>` in bit array")
+      }
+    }
+  }
+}
+
+fn parse_bit_array_pattern(tokens) {
+  bit_array_pat_elems(tokens, [])
+}
+
+fn bit_array_pat_elems(tokens, acc) {
+  case peek(tokens) {
+    Symbol(">>") -> Ok(#(PBitArray(list.reverse(acc)), drop_token(tokens)))
+    _ -> {
+      use #(element, rest) <- and_then(parse_pattern(tokens))
+      case peek(rest) {
+        Symbol(",") -> bit_array_pat_elems(drop_token(rest), [element, ..acc])
+        Symbol(">>") ->
+          Ok(#(PBitArray(list.reverse([element, ..acc])), drop_token(rest)))
+        _ -> fail(rest, "expected `,` or `>>` in pattern")
       }
     }
   }
@@ -994,12 +1042,16 @@ fn parse_pattern(tokens) {
       }
     }
     _ ->
-      case at_symbol(tokens, "#") {
-        True -> parse_tuple_pattern(drop_token(tokens))
+      case at_symbol(tokens, "<<") {
+        True -> parse_bit_array_pattern(drop_token(tokens))
         False ->
-          case at_symbol(tokens, "[") {
-            True -> parse_list_pattern(drop_token(tokens))
-            False -> fail(tokens, "expected a pattern")
+          case at_symbol(tokens, "#") {
+            True -> parse_tuple_pattern(drop_token(tokens))
+            False ->
+              case at_symbol(tokens, "[") {
+                True -> parse_list_pattern(drop_token(tokens))
+                False -> fail(tokens, "expected a pattern")
+              }
           }
       }
   }

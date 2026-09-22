@@ -36,6 +36,7 @@ pub fn needs_drop(ty: Type, ctors: Dict(String, checker.CtorInfo)) -> Bool {
 fn needs_drop_seen(ty, fields_of, recursive, seen) -> Bool {
   case ty {
     TString -> True
+    TNamed("BitArray") -> True
     TInt -> False
     TFloat -> False
     TBool -> False

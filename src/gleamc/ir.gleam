@@ -30,6 +30,7 @@ pub type Op {
   OpCall(dest: String, fun: String, args: List(Operand), ret_ty: Type)
   OpBuiltin(dest: String, name: String, args: List(Operand), ret_ty: Type)
   OpTuple(dest: String, elems: List(Operand), ty: Type)
+  OpBitArray(dest: String, elems: List(Operand), ty: Type)
   OpTupleGet(dest: String, tuple: Operand, index: Int, ty: Type)
   OpCtor(
     dest: String,
@@ -102,6 +103,7 @@ pub fn op_dest(op: Op) -> Result(String, Nil) {
     OpCall(dest, _, _, _) -> Ok(dest)
     OpBuiltin(dest, _, _, _) -> Ok(dest)
     OpTuple(dest, _, _) -> Ok(dest)
+    OpBitArray(dest, _, _) -> Ok(dest)
     OpTupleGet(dest, _, _, _) -> Ok(dest)
     OpCtor(dest, _, _, _, _) -> Ok(dest)
     OpTagIs(dest, _, _, _) -> Ok(dest)
@@ -124,6 +126,7 @@ pub fn op_reads(op: Op) -> List(Operand) {
     OpCall(_, _, args, _) -> args
     OpBuiltin(_, _, args, _) -> args
     OpTuple(_, elems, _) -> elems
+    OpBitArray(_, elems, _) -> elems
     OpTupleGet(_, tuple, _, _) -> [tuple]
     OpCtor(_, _, _, args, _) -> args
     OpTagIs(_, subject, _, _) -> [subject]
@@ -143,6 +146,7 @@ pub fn op_owning(op: Op) -> List(Operand) {
     OpCall(_, _, args, _) -> args
     OpCtor(_, _, _, args, _) -> args
     OpTuple(_, elems, _) -> elems
+    OpBitArray(_, elems, _) -> elems
     OpCopy(_, src, _) -> [src]
     OpCallIndirect(_, _, args, _) -> args
     _ -> []
@@ -256,6 +260,11 @@ fn op_text(op: Op) -> String {
       <> string.join(list.map(args, operand_text), ", ")
       <> ") : "
       <> describe_type(ty)
+    OpBitArray(dest, elems, _) ->
+      "    "
+      <> dest
+      <> " = bit_array "
+      <> string.join(list.map(elems, operand_text), ", ")
     OpTuple(dest, elems, ty) ->
       "    "
       <> dest

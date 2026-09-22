@@ -49,3 +49,6 @@ erl_crash.dump
 /diffs/stringops
 /diffs/letassert
 /diffs/update
+/diffs/bitarray
+/diffs/guards2
+/diffs/alias

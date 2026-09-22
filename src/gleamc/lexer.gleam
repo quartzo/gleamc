@@ -245,6 +245,8 @@ fn symbol_two(src, line, col, depth, acc) -> Result(List(Token), LexError) {
     | "&&"
     | "||"
     | ".."
+    | "<<"
+    | ">>"
     | "+."
     | "-."
     | "*."

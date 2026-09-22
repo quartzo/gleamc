@@ -66,6 +66,62 @@ int Gleamc_io_println(GleamcString s) {
     return 0;
 }
 
+GleamcBitArray Gleamc_bit_array_new(size_t len) {
+    uint8_t* data = (uint8_t*)gleamc_alloc(len + 1);
+    memset(data, 0, len + 1);
+    return (GleamcBitArray){data, len};
+}
+
+GleamcBitArray Gleamc_bit_array_from_bytes(const int64_t* values, size_t count) {
+    GleamcBitArray result = Gleamc_bit_array_new(count);
+    for (size_t i = 0; i < count; i++) {
+        result.data[i] = (uint8_t)(values[i] & 0xFF);
+    }
+    return result;
+}
+
+GleamcBitArray Gleamc_bit_array_from_string(GleamcString s) {
+    GleamcBitArray result = Gleamc_bit_array_new(s.len);
+    memcpy(result.data, s.data, s.len);
+    return result;
+}
+
+GleamcString Gleamc_bit_array_raw_to_string(GleamcBitArray a) {
+    char* buf = (char*)gleamc_alloc(a.len + 1);
+    memcpy(buf, a.data, a.len);
+    buf[a.len] = '\0';
+    return (GleamcString){buf, a.len};
+}
+
+int64_t Gleamc_bit_array_byte_size(GleamcBitArray a) {
+    return (int64_t)a.len;
+}
+
+int64_t Gleamc_bit_array_byte(GleamcBitArray a, size_t index) {
+    if (index >= a.len) return 0;
+    return (int64_t)a.data[index];
+}
+
+GleamcBitArray Gleamc_bit_array_append(GleamcBitArray a, GleamcBitArray b) {
+    GleamcBitArray result = Gleamc_bit_array_new(a.len + b.len);
+    memcpy(result.data, a.data, a.len);
+    memcpy(result.data + a.len, b.data, b.len);
+    return result;
+}
+
+bool Gleamc_bit_array_eq(GleamcBitArray a, GleamcBitArray b) {
+    if (a.len != b.len) return false;
+    return memcmp(a.data, b.data, a.len) == 0;
+}
+
+void Gleamc_bit_array_retain(GleamcBitArray a) {
+    if (a.data != NULL) gleamc_retain(a.data);
+}
+
+void Gleamc_bit_array_release(GleamcBitArray a) {
+    if (a.data != NULL) gleamc_release(a.data);
+}
+
 void Gleamc_panic(GleamcString message) {
     fputs("panic: ", stderr);
     fwrite(message.data, 1, message.len, stderr);
