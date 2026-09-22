@@ -841,6 +841,26 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         TBool,
         "string.ends_with",
       )
+    "string", "trim_start" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TString,
+        "string.trim_start",
+      )
+    "string", "trim_end" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TString,
+        "string.trim_end",
+      )
     "string", "trim" ->
       check_builtin(
         env,

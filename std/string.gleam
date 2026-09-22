@@ -107,3 +107,52 @@ fn pad_for(with: String, missing: Int) -> String {
 pub fn to_graphemes(string: String) -> List(String) {
   split(string, "")
 }
+
+pub fn is_empty(value: String) -> Bool {
+  string.length(value) == 0
+}
+
+pub fn drop_start(value: String, up_to: Int) -> String {
+  let len = string.length(value)
+  case up_to <= 0 {
+    True -> value
+    False -> string.slice(value, min_int(up_to, len), max_int(len - up_to, 0))
+  }
+}
+
+pub fn drop_end(value: String, up_to: Int) -> String {
+  let len = string.length(value)
+  case up_to <= 0 {
+    True -> value
+    False -> string.slice(value, 0, max_int(len - up_to, 0))
+  }
+}
+
+pub fn first(value: String) -> Result(String, Nil) {
+  case string.length(value) == 0 {
+    True -> Error(Nil)
+    False -> Ok(string.slice(value, 0, 1))
+  }
+}
+
+pub fn last(value: String) -> Result(String, Nil) {
+  let len = string.length(value)
+  case len == 0 {
+    True -> Error(Nil)
+    False -> Ok(string.slice(value, len - 1, 1))
+  }
+}
+
+fn min_int(a: Int, b: Int) -> Int {
+  case a < b {
+    True -> a
+    False -> b
+  }
+}
+
+fn max_int(a: Int, b: Int) -> Int {
+  case a > b {
+    True -> a
+    False -> b
+  }
+}

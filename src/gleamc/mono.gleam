@@ -772,7 +772,12 @@ fn mono_block_ex(state, locals, expected, statements) {
     }
     [Stmt(expr), ..rest] -> {
       use #(expr2, state) <- result_try(mono_expr(state, locals, expr))
-      use #(rest2, state) <- result_try(mono_block(state, locals, rest))
+      use #(rest2, state) <- result_try(mono_block_ex(
+        state,
+        locals,
+        expected,
+        rest,
+      ))
       Ok(#(EBlock([Stmt(expr2), ..block_statements(rest2)]), state))
     }
     [Let(pattern, value), ..rest] -> {
@@ -785,7 +790,12 @@ fn mono_block_ex(state, locals, expected, statements) {
         value_ty,
       ))
       let locals = merge_dicts(locals, bindings)
-      use #(rest2, state) <- result_try(mono_block(state, locals, rest))
+      use #(rest2, state) <- result_try(mono_block_ex(
+        state,
+        locals,
+        expected,
+        rest,
+      ))
       Ok(#(EBlock([Let(pattern2, value2), ..block_statements(rest2)]), state))
     }
   }

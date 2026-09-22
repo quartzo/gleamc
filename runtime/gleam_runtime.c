@@ -163,6 +163,25 @@ static size_t codepoint_offset(GleamcString s, int64_t index) {
     return i;
 }
 
+GleamcString Gleamc_string_trim_start(GleamcString value) {
+    size_t start = 0;
+    while (start < value.len && is_space_byte(value.data[start])) start++;
+    size_t len = value.len - start;
+    char* buf = (char*)gleamc_alloc(len + 1);
+    memcpy(buf, value.data + start, len);
+    buf[len] = '\0';
+    return (GleamcString){buf, len};
+}
+
+GleamcString Gleamc_string_trim_end(GleamcString value) {
+    size_t end = value.len;
+    while (end > 0 && is_space_byte(value.data[end - 1])) end--;
+    char* buf = (char*)gleamc_alloc(end + 1);
+    memcpy(buf, value.data, end);
+    buf[end] = '\0';
+    return (GleamcString){buf, end};
+}
+
 GleamcString Gleamc_string_slice(GleamcString value, int64_t idx, int64_t len) {
     if (len <= 0) {
         char* empty = (char*)gleamc_alloc(1);

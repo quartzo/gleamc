@@ -331,3 +331,36 @@ fn intersperse_rest(list: List(a), separator: a) -> List(a) {
     [head, ..rest] -> [separator, head, ..intersperse_rest(rest, separator)]
   }
 }
+
+pub fn take_while(list: List(a), satisfying: fn(a) -> Bool) -> List(a) {
+  case list {
+    [] -> []
+    [head, ..rest] ->
+      case satisfying(head) {
+        True -> [head, ..take_while(rest, satisfying)]
+        False -> []
+      }
+  }
+}
+
+pub fn drop_while(list: List(a), satisfying: fn(a) -> Bool) -> List(a) {
+  case list {
+    [] -> []
+    [head, ..rest] ->
+      case satisfying(head) {
+        True -> drop_while(rest, satisfying)
+        False -> list
+      }
+  }
+}
+
+pub fn window(list: List(a), size: Int) -> List(List(a)) {
+  case size <= 0 {
+    True -> []
+    False ->
+      case list.length(list) < size {
+        True -> []
+        False -> [list.take(list, size), ..window(list.drop(list, 1), size)]
+      }
+  }
+}

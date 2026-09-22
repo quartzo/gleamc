@@ -118,6 +118,8 @@ bool Gleamc_string_contains(GleamcString haystack, GleamcString needle);
 bool Gleamc_string_starts_with(GleamcString value, GleamcString prefix);
 bool Gleamc_string_ends_with(GleamcString value, GleamcString suffix);
 GleamcString Gleamc_string_trim(GleamcString value);
+GleamcString Gleamc_string_trim_start(GleamcString value);
+GleamcString Gleamc_string_trim_end(GleamcString value);
 GleamcString Gleamc_string_slice(GleamcString value, int64_t from, int64_t to);
 GleamcString Gleamc_string_replace(
     GleamcString value,
