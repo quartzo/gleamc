@@ -63,6 +63,7 @@ pub type Env {
 
 pub fn check(module: Module) -> Result(Program, InferError) {
   let Module(definitions) = module
+  use _ <- result_try(check_unique_ctors(definitions))
   let st = St(types.empty(), 0)
   let #(types_map, ctors, functions, st) = collect(definitions, st)
   let globals =
@@ -86,6 +87,42 @@ pub fn globals_of(program: Program) -> Dict(String, Scheme) {
 // ---------------------------------------------------------------------------
 // declaration collection
 // ---------------------------------------------------------------------------
+
+/// Constructor names must be unique across types: resolution is by name only.
+fn check_unique_ctors(definitions) -> Result(Nil, InferError) {
+  use seen <- result_try(
+    list.try_fold(definitions, dict.new(), fn(acc, def) {
+      case def {
+        DCustomType(custom) -> {
+          let CustomType(_, type_name, _, variants, _) = custom
+          list.try_fold(variants, acc, fn(acc, variant) {
+            let Variant(name, _) = variant
+            case dict.get(acc, name) {
+              Ok(existing) ->
+                case existing == type_name {
+                  True -> Ok(acc)
+                  False ->
+                    Error(InferError(
+                      "constructor `"
+                      <> name
+                      <> "` is defined in both `"
+                      <> existing
+                      <> "` and `"
+                      <> type_name
+                      <> "` (constructor names must be unique across types)",
+                    ))
+                }
+              Error(_) -> Ok(dict.insert(acc, name, type_name))
+            }
+          })
+        }
+        _ -> Ok(acc)
+      }
+    }),
+  )
+  let _ = seen
+  Ok(Nil)
+}
 
 fn collect(definitions, st: St) {
   list.fold(

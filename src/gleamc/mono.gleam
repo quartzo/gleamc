@@ -215,11 +215,15 @@ fn request_type(
   }
 }
 
-fn ctor_specialised_name(state: State, name, args) {
-  case dict.get(state.ctor_names, key(name, args)) {
+fn ctor_specialised_name(state: State, type_name, name, args) {
+  case dict.get(state.ctor_names, ctor_key(type_name, name, args)) {
     Ok(specialized) -> specialized
     Error(_) -> name
   }
+}
+
+fn ctor_key(type_name, name, args) -> String {
+  type_name <> "|" <> key(name, args)
 }
 
 fn key(name, args) -> String {
@@ -366,6 +370,7 @@ fn specialise_type(state: State, name, type_args) {
         )
       use #(variants2, state) <- result_try(mono_variants(
         state,
+        name,
         type_args,
         surface_map,
         variants,
@@ -380,11 +385,12 @@ fn specialise_type(state: State, name, type_args) {
   }
 }
 
-fn mono_variants(state: State, type_args, surface_map, variants) {
+fn mono_variants(state: State, type_name, type_args, surface_map, variants) {
   case variants {
     [] -> Ok(#([], state))
     [Variant(ctor, fields), ..rest] -> {
-      let ctor_specialized = ctor_specialised_name(state, ctor, type_args)
+      let ctor_specialized =
+        ctor_specialised_name(state, type_name, ctor, type_args)
       use #(fields2, state) <- result_try(mono_fields(
         state,
         surface_map,
@@ -392,6 +398,7 @@ fn mono_variants(state: State, type_args, surface_map, variants) {
       ))
       use #(rest2, state) <- result_try(mono_variants(
         state,
+        type_name,
         type_args,
         surface_map,
         rest,
@@ -1065,11 +1072,11 @@ fn mono_ctor_ex(state, locals, name, args, expected_opt) {
           ..state,
           ctor_names: dict.insert(
             state.ctor_names,
-            key(name, type_args),
+            ctor_key(type_name, name, type_args),
             ctor_specialised(type_name, name, type_args),
           ),
         )
-      let specialized = ctor_specialised_name(state, name, type_args)
+      let specialized = ctor_specialised_name(state, type_name, name, type_args)
       Ok(#(ECtor(specialized, args2), state))
     }
   }
@@ -1141,10 +1148,10 @@ fn unspecialize_internal(state: State, ty) -> types.Ty {
   }
 }
 
-fn ctor_specialised(_type_name, name, type_args) -> String {
+fn ctor_specialised(type_name, name, type_args) -> String {
   case type_args {
-    [] -> name
-    _ -> name <> "_" <> mangle_args(type_args)
+    [] -> name <> "_" <> type_name
+    _ -> name <> "_" <> type_name <> "_" <> mangle_args(type_args)
   }
 }
 
@@ -1339,11 +1346,12 @@ fn mono_pattern(
               ..state,
               ctor_names: dict.insert(
                 state.ctor_names,
-                key(name, type_args),
+                ctor_key(type_name, name, type_args),
                 ctor_specialised(type_name, name, type_args),
               ),
             )
-          let specialized = ctor_specialised_name(state, name, type_args)
+          let specialized =
+            ctor_specialised_name(state, type_name, name, type_args)
           use #(args2, bindings, state) <- result_try(mono_patterns(
             state,
             locals,

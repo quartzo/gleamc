@@ -72,3 +72,9 @@ pub fn merged_generic_test() {
   let merged = merge.merge([#("", module)])
   let assert Ok(_) = infer.check(merged)
 }
+
+pub fn duplicate_constructor_test() {
+  let source =
+    "type A {\n  Empty\n}\n\ntype B {\n  Empty\n}\n\npub fn main() { 1 }"
+  let assert Error(_) = check(source)
+}

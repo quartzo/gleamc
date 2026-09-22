@@ -49,9 +49,11 @@ adding list support, and are now covered by `diffs/lists.gleam`:
 - No module-qualified types beyond a plain named type or `TApp`
   (`Type` / `Type(a)`); there is no `module.Type` in annotations.
 - No `const` values.
-- Constructors are global by name. Two modules defining the same constructor
-  name collide. The list constructors are therefore internal names
-  (`ListCons` / `ListEmpty`) so that user types can still define `Empty`/`Cons`.
+- Constructor names must be unique across all types in a program (resolution is
+  by name). The official compiler scopes names per type, so two types may each
+  define an `Empty`; here that is rejected with a clear diagnostic. The list
+  constructors are internal names (`ListCons` / `ListEmpty`) so that user types
+  can still define `Empty`/`Cons`.
 - The primitive `Nil` type shares its constructor name with a user constructor
   named `Nil`.
 
