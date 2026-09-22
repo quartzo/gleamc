@@ -87,8 +87,8 @@ later during checking.
 - `gleam/string`: `length`, `append`, `uppercase`, `lowercase`, `reverse`,
   `contains`, `starts_with`, `ends_with`, `trim`, `replace`, `concat`, `join`,
   `split`, `slice`. Missing: `to_graphemes`, `pad_leading`, and others.
-- `gleam/int`: `to_string`, `min`, `max`, `absolute_value` (arithmetic is
-  built in). Missing: `parse`, `to_base_string`, etc.
+- `gleam/int`: `to_string`, `parse`, `min`, `max`, `absolute_value`
+  (arithmetic is built in). Missing: `to_base_string`, `to_float`, etc.
 - `gleam/float`: `to_string`, `min`, `max`, `absolute_value`, `floor`,
   `ceiling`, `round`, `truncate`. Missing: `parse`, `power`, `square_root`,
   etc.

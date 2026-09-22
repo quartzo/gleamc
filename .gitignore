@@ -37,3 +37,4 @@ erl_crash.dump
 /diffs/strjoin
 /diffs/split
 /diffs/option2
+/diffs/intparse
