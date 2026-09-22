@@ -50,5 +50,6 @@ erl_crash.dump
 /diffs/letassert
 /diffs/update
 /diffs/bitarray
+/diffs/stdlib3
 /diffs/guards2
 /diffs/alias

@@ -53,37 +53,6 @@ pub fn emit(
       "",
     )
 
-  let type_code =
-    forward_decls
-    <> order_type_entries(list.append(
-      list.map(tuple_types, fn(ty) {
-        #(
-          type_key(ty),
-          tuple_dep_keys(ty, recursive),
-          emit_tuple_type(ty, recursive),
-        )
-      }),
-      list.map(custom_types, fn(custom) {
-        let CustomType(_, name, _, _, _) = custom
-        #(
-          name,
-          custom_dep_keys(custom, recursive),
-          emit_custom_type(custom, recursive),
-        )
-      }),
-    ))
-    <> "\n"
-    <> string.join(
-      list.map(env_structs, fn(entry) { emit_env_struct(entry, recursive) }),
-      "",
-    )
-    <> string.join(
-      list.map(fn_types, fn(ty) { emit_fn_type(ty, recursive) }),
-      "",
-    )
-    <> "\n"
-    <> emit_string_literals(string_lits)
-
   let glue_prototypes =
     string.join(
       list.flat_map(glue_types, fn(ty) {
@@ -94,6 +63,43 @@ pub fn emit(
       }),
       "",
     )
+
+  let type_code =
+    forward_decls
+    <> order_type_entries(list.append(
+      list.append(
+        list.map(tuple_types, fn(ty) {
+          #(
+            type_key(ty),
+            tuple_dep_keys(ty, recursive),
+            emit_tuple_type(ty, recursive),
+          )
+        }),
+        list.map(custom_types, fn(custom) {
+          let CustomType(_, name, _, _, _) = custom
+          #(
+            name,
+            custom_dep_keys(custom, recursive),
+            emit_custom_type(custom, recursive),
+          )
+        }),
+      ),
+      list.map(fn_types, fn(ty) {
+        #(
+          "GleamFn_" <> mangle_type(ty),
+          fn_dep_keys(ty, recursive),
+          emit_fn_type(ty, recursive),
+        )
+      }),
+    ))
+    <> "\n"
+    <> glue_prototypes
+    <> string.join(
+      list.map(env_structs, fn(entry) { emit_env_struct(entry, recursive) }),
+      "",
+    )
+    <> "\n"
+    <> emit_string_literals(string_lits)
 
   let glue_definitions =
     string.join(
@@ -134,7 +140,6 @@ pub fn emit(
 
   preamble
   <> type_code
-  <> glue_prototypes
   <> eq_prototypes
   <> "\n"
   <> glue_definitions
@@ -218,7 +223,22 @@ fn dep_key(ty, recursive) -> Result(String, Nil) {
       Ok(key)
     }
     TTuple(_) -> Ok(type_key(ty))
+    ast.TFun(_, _) -> Ok("GleamFn_" <> mangle_type(ty))
     _ -> Error(Nil)
+  }
+}
+
+fn fn_dep_keys(ty, recursive) -> List(String) {
+  case ty {
+    ast.TFun(params, ret) -> {
+      let keys =
+        list.filter_map(params, fn(param) { dep_key(param, recursive) })
+      list.append(keys, case dep_key(ret, recursive) {
+        Ok(key) -> [key]
+        Error(_) -> []
+      })
+    }
+    _ -> []
   }
 }
 

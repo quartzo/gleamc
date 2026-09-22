@@ -145,3 +145,23 @@ fn partition_loop(
       }
   }
 }
+
+pub fn lazy_or(
+  first: Result(a, e),
+  second: fn() -> Result(a, e),
+) -> Result(a, e) {
+  case first {
+    Ok(_) -> first
+    Error(_) -> second()
+  }
+}
+
+pub fn try_recover(
+  result: Result(a, e),
+  with: fn(e) -> Result(a, f),
+) -> Result(a, f) {
+  case result {
+    Ok(value) -> Ok(value)
+    Error(reason) -> with(reason)
+  }
+}

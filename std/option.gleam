@@ -108,3 +108,10 @@ fn all_loop(options: List(Option(a)), acc: List(a)) -> Option(List(a)) {
       }
   }
 }
+
+pub fn lazy_or(first: Option(a), second: fn() -> Option(a)) -> Option(a) {
+  case first {
+    Some(_) -> first
+    None -> second()
+  }
+}

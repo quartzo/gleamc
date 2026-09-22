@@ -90,22 +90,22 @@ are resolved when the prelude is attached.
 - `gleam/float`: `to_string`, `min`, `max`, `absolute_value`, `floor`,
   `ceiling`, `round`, `truncate`. Missing: `parse`, `power`, `square_root`,
   etc.
-- `gleam/bool`: `to_string` only.
+- `gleam/bool`: `to_string` (runtime) plus `and`, `or`, `negate`, `nor`,
+  `nand`, `exclusive_or`, `exclusive_nor`, `guard`, `lazy_guard`.
 - `gleam/io`: `println`, `print` only. Missing: `debug`.
 - `gleam/bit_array`: `from_string`, `to_string` (always `Ok`), `byte_size`,
   `bit_size`, `append`, `concat`. Only 8-bit integer segments are supported in
   `<<...>>` literals and patterns (no `:size`/`:unit`, no bit-level ops, no
   `slice`/`base64_encode`).
-- `gleam/order`: `Order` type plus `to_int`, `negate`. Other helpers
-  (`compare`, `reverse`, `break_tie`) are not implemented.
+- `gleam/order`: `Order` type plus `to_int`, `negate`, `compare`, `reverse`,
+  `break_tie`, `lazy_break_tie`.
 - `gleam/option`: `unwrap`, `map`, `is_some`, `is_none`, `then`, `or`,
-  `to_result`, `from_result`, `flatten`, `lazy_unwrap`, plus the non-official
-  `unwrap_or` (import required; the prelude does not expose `Some`/`None`).
-  Missing: `all`, `values`, `lazy_or`, etc.
+  `to_result`, `from_result`, `flatten`, `lazy_unwrap`, `lazy_or`, `values`,
+  `all`, plus the non-official `unwrap_or` (import required; the prelude does
+  not expose `Some`/`None`).
 - `gleam/result`: `unwrap`, `unwrap_or`, `lazy_unwrap`, `unwrap_error`, `map`,
   `map_error`, `try`, `then`, `is_ok`, `is_error`, `flatten`, `all`, `or`,
-  `replace`, `replace_error`, `values`, `partition`. Missing: `lazy_or`,
-  `try_recover`, etc.
+  `replace`, `replace_error`, `values`, `partition`, `lazy_or`, `try_recover`.
 
 ## Toolchain
 
