@@ -58,5 +58,6 @@ erl_crash.dump
 /diffs/floatparse
 /diffs/list3
 /diffs/stdlib4
+/diffs/list4
 /diffs/guards2
 /diffs/alias

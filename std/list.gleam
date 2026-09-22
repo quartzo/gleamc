@@ -485,3 +485,54 @@ fn any_non_empty(rows: List(List(a))) -> Bool {
     }
   })
 }
+
+pub fn map_fold(
+  list: List(a),
+  from: acc,
+  with: fn(acc, a) -> #(acc, b),
+) -> #(acc, List(b)) {
+  map_fold_loop(list, from, with, [])
+}
+
+fn map_fold_loop(
+  list: List(a),
+  acc: acc,
+  with: fn(acc, a) -> #(acc, b),
+  out: List(b),
+) -> #(acc, List(b)) {
+  case list {
+    [] -> #(acc, list.reverse(out))
+    [head, ..rest] -> {
+      let #(next, mapped) = with(acc, head)
+      map_fold_loop(rest, next, with, [mapped, ..out])
+    }
+  }
+}
+
+pub fn reduce(list: List(a), with: fn(a, a) -> a) -> Result(a, Nil) {
+  case list {
+    [] -> Error(Nil)
+    [first, ..rest] -> Ok(reduce_loop(rest, first, with))
+  }
+}
+
+fn reduce_loop(list: List(a), acc: a, with: fn(a, a) -> a) -> a {
+  case list {
+    [] -> acc
+    [head, ..rest] -> reduce_loop(rest, with(acc, head), with)
+  }
+}
+
+pub fn window_by_2(list: List(a)) -> List(#(a, a)) {
+  case list {
+    [first, second, ..rest] -> [
+      #(first, second),
+      ..window_by_2([second, ..rest])
+    ]
+    _ -> []
+  }
+}
+
+pub fn split(list: List(a), index: Int) -> #(List(a), List(a)) {
+  #(list.take(list, index), list.drop(list, index))
+}
