@@ -359,11 +359,40 @@ fn patterns_exhaustive(ty, patterns, ctors) -> Bool {
       case ty {
         TNamed(name) -> type_exhaustive(name, patterns, ctors)
         TBool -> has_bool(patterns, True) && has_bool(patterns, False)
-        // Tuple exhaustiveness (including multi-subject `case`) is not
-        // analysed; assume exhaustive so it does not reject valid code.
-        TTuple(_) -> True
+        TTuple(types) -> tuple_exhaustive(types, patterns, ctors)
         _ -> False
       }
+  }
+}
+
+/// A tuple case is exhaustive only if each column is exhaustive: projecting a
+/// cover of the product onto a coordinate always covers that coordinate, so
+/// this never rejects a truly exhaustive case (it may accept some that are).
+fn tuple_exhaustive(types, patterns, ctors) -> Bool {
+  list.all(types |> list.index_map(fn(ty, index) { #(ty, index) }), fn(pair) {
+    let #(ty, index) = pair
+    let column =
+      list.map(patterns, fn(pattern) { column_pattern(pattern, index) })
+    patterns_exhaustive(ty, column, ctors)
+  })
+}
+
+fn column_pattern(pattern, index) -> Pattern {
+  case pattern {
+    PTuple(items) ->
+      case list_at(items, index) {
+        Ok(inner) -> inner
+        Error(_) -> PWildcard
+      }
+    _ -> PWildcard
+  }
+}
+
+fn list_at(items, index) {
+  case items, index {
+    [], _ -> Error(Nil)
+    [item, ..], 0 -> Ok(item)
+    [_, ..rest], n -> list_at(rest, n - 1)
   }
 }
 

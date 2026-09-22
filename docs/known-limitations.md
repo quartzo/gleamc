@@ -35,9 +35,9 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   `type aliases not supported yet`.
 - Guards are boolean expressions (`if`/`when`); they cannot bind variables
   (as in Gleam).
-- Exhaustiveness for tuple subjects (including multiple `case` subjects, which
-  desugar to a tuple) is assumed rather than analysed, so a non-exhaustive
-  tuple `case` is not reported.
+- Exhaustiveness for tuple subjects (and multiple `case` subjects, which
+  desugar to a tuple) checks each column independently. This never rejects a
+  genuinely exhaustive case but may accept some that are not.
 
 ## Type system
 
