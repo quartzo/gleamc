@@ -411,3 +411,26 @@ fn sized_chunk_loop(
       ])
   }
 }
+
+pub fn permutations(elements: List(a)) -> List(List(a)) {
+  case elements {
+    [] -> [[]]
+    _ ->
+      list.flat_map(elements, fn(element) {
+        list.map(permutations(remove_first(elements, element)), fn(permutation) {
+          [element, ..permutation]
+        })
+      })
+  }
+}
+
+fn remove_first(elements: List(a), element: a) -> List(a) {
+  case elements {
+    [] -> []
+    [head, ..rest] ->
+      case head == element {
+        True -> rest
+        False -> [head, ..remove_first(rest, element)]
+      }
+  }
+}

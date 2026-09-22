@@ -284,8 +284,22 @@ fn specialise_fn(state: State, name, type_args) {
         body,
       ))
       let specialized = fn_specialised_name(state1, name, type_args)
+      // Register the specialised signature so later `type_of` calls (on
+      // already-specialised calls) can resolve its type.
+      let internal_params =
+        list.map(params2, fn(param) {
+          let #(_, param_ty) = param
+          ty_of_surface(param_ty)
+        })
+      let scheme = Scheme([], Fun(internal_params, ty_of_surface(ret2)))
+      let globals = case specialized == name {
+        // Monomorphic functions already have a (generic) scheme in globals;
+        // only new specialised names need registering.
+        True -> state1.globals
+        False -> dict.insert(state1.globals, specialized, scheme)
+      }
       Ok(
-        State(..state1, fn_out: [
+        State(..state1, globals: globals, fn_out: [
           Function(is_pub, specialized, params2, ret2, body2),
           ..state1.fn_out
         ]),
@@ -483,7 +497,10 @@ fn mono_expr(
     ECase(subject, arms) -> mono_case(state, locals, subject, arms)
     ELambda(_, _) -> Error("lambda requires an expected function type")
     EClosure(_, _, _, _) -> Ok(#(expr, state))
-    EEnvGet(_, _, _) -> Ok(#(expr, state))
+    EEnvGet(env_ty, index, ty) -> {
+      use #(specialized, state) <- result_try(specialize_env_get(state, ty))
+      Ok(#(EEnvGet(env_ty, index, specialized), state))
+    }
     EPanic(_, _) -> Ok(#(expr, state))
     EUpdate(name, base, fields) ->
       mono_update(state, locals, None, name, base, fields)
@@ -515,7 +532,10 @@ fn mono_expr_ex(state, locals, expected, expr) {
     ECall(fun, args) -> mono_call(state, locals, fun, args, expected)
     ELambda(names, body) -> lift_lambda(state, locals, names, body, expected)
     EClosure(_, _, _, _) -> Ok(#(expr, state))
-    EEnvGet(_, _, _) -> Ok(#(expr, state))
+    EEnvGet(env_ty, index, ty) -> {
+      use #(specialized, state) <- result_try(specialize_env_get(state, ty))
+      Ok(#(EEnvGet(env_ty, index, specialized), state))
+    }
     EPanic(message, _) -> {
       use #(ty, state) <- result_try(case expected {
         Some(expected_ty) ->
@@ -640,11 +660,10 @@ fn prepare_captures(state, locals, fname, captured, body) {
     [] -> Ok(#(body, [], "", state))
     _ -> {
       let env_ty = "__Env_" <> fname
-      use #(with_types, state) <- result_try(specialize_captures(
-        state,
-        locals,
-        captured,
-      ))
+      let with_types =
+        list.map(captured, fn(name) {
+          #(name, scheme_surface_type(state, locals, name))
+        })
       let replacements =
         list.fold(
           list.index_map(with_types, fn(pair, index) {
@@ -668,18 +687,10 @@ fn prepare_captures(state, locals, fname, captured, body) {
   }
 }
 
-fn specialize_captures(state, locals, captured) {
-  case captured {
-    [] -> Ok(#([], state))
-    [name, ..rest] -> {
-      use #(specialized, state) <- result_try(mono_type(
-        state,
-        dict.new(),
-        scheme_surface_type(state, locals, name),
-      ))
-      use #(rest2, state) <- result_try(specialize_captures(state, locals, rest))
-      Ok(#([#(name, specialized), ..rest2], state))
-    }
+fn specialize_env_get(state: State, ty) {
+  case mono_type(state, dict.new(), ty) {
+    Ok(#(specialized, state)) -> Ok(#(specialized, state))
+    Error(_) -> Ok(#(ty, state))
   }
 }
 

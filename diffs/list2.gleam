@@ -20,4 +20,6 @@ pub fn main() {
   io.println(show_g(list.sized_chunk([1, 2, 3, 4, 5], 2)))
   io.println(show_g(list.sized_chunk([1, 2, 3], 5)))
   io.println(show_g(list.sized_chunk([], 3)))
+  io.println(show_g(list.permutations([1, 2, 3])))
+  io.println(show_g(list.permutations([])))
 }
