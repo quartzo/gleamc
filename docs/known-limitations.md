@@ -90,8 +90,8 @@ are resolved when the prelude is attached.
   and others.
 - `gleam/string`: `length`, `append`, `uppercase`, `lowercase`, `reverse`,
   `contains`, `starts_with`, `ends_with`, `trim`, `replace`, `concat`, `join`,
-  `split`, `slice`, `repeat`, `pad_start`, `pad_end`. Missing: `to_graphemes`,
-  `pad_zero`, and others.
+  `split`, `slice`, `repeat`, `pad_start`, `pad_end`, `to_graphemes` (code-point
+  based, not full grapheme clusters). Missing: `pad_zero`, `trim_start`, etc.
 - `gleam/int`: `to_string`, `parse`, `min`, `max`, `absolute_value`
   (arithmetic is built in). Missing: `to_base_string`, `to_float`, etc.
 - `gleam/float`: `to_string`, `min`, `max`, `absolute_value`, `floor`,
@@ -105,8 +105,10 @@ are resolved when the prelude is attached.
   `to_result`, `from_result`, `flatten`, `lazy_unwrap`, plus the non-official
   `unwrap_or` (import required; the prelude does not expose `Some`/`None`).
   Missing: `all`, `values`, `lazy_or`, etc.
-- `gleam/result`: `unwrap`, `unwrap_or`, `map`, `try`, `then`, `map_error`,
-  `is_ok`, `is_error`, `flatten`, `all`. Missing: `unwrap_error`, `values`, etc.
+- `gleam/result`: `unwrap`, `unwrap_or`, `lazy_unwrap`, `unwrap_error`, `map`,
+  `map_error`, `try`, `then`, `is_ok`, `is_error`, `flatten`, `all`, `or`,
+  `replace`, `replace_error`, `values`, `partition`. Missing: `lazy_or`,
+  `try_recover`, etc.
 
 ## Toolchain
 

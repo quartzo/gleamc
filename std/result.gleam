@@ -76,3 +76,72 @@ fn all_loop(results: List(Result(a, e)), acc: List(a)) -> Result(List(a), e) {
       }
   }
 }
+
+pub fn lazy_unwrap(result: Result(a, e), default: fn() -> a) -> a {
+  case result {
+    Ok(value) -> value
+    Error(_) -> default()
+  }
+}
+
+pub fn unwrap_error(result: Result(a, e), default: e) -> e {
+  case result {
+    Ok(_) -> default
+    Error(reason) -> reason
+  }
+}
+
+pub fn or(first: Result(a, e), second: Result(a, e)) -> Result(a, e) {
+  case first {
+    Ok(_) -> first
+    Error(_) -> second
+  }
+}
+
+pub fn replace(result: Result(a, e), value: b) -> Result(b, e) {
+  case result {
+    Ok(_) -> Ok(value)
+    Error(reason) -> Error(reason)
+  }
+}
+
+pub fn replace_error(result: Result(a, e), error: f) -> Result(a, f) {
+  case result {
+    Ok(value) -> Ok(value)
+    Error(_) -> Error(error)
+  }
+}
+
+pub fn values(results: List(Result(a, e))) -> List(a) {
+  values_loop(results, [])
+}
+
+fn values_loop(results: List(Result(a, e)), acc: List(a)) -> List(a) {
+  case results {
+    [] -> list.reverse(acc)
+    [result, ..rest] ->
+      case result {
+        Ok(value) -> values_loop(rest, [value, ..acc])
+        Error(_) -> values_loop(rest, acc)
+      }
+  }
+}
+
+pub fn partition(results: List(Result(a, e))) -> #(List(a), List(e)) {
+  partition_loop(results, [], [])
+}
+
+fn partition_loop(
+  results: List(Result(a, e)),
+  oks: List(a),
+  errors: List(e),
+) -> #(List(a), List(e)) {
+  case results {
+    [] -> #(oks, errors)
+    [result, ..rest] ->
+      case result {
+        Ok(value) -> partition_loop(rest, [value, ..oks], errors)
+        Error(reason) -> partition_loop(rest, oks, [reason, ..errors])
+      }
+  }
+}

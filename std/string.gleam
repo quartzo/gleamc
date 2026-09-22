@@ -103,3 +103,7 @@ fn pad_for(with: String, missing: Int) -> String {
     }
   }
 }
+
+pub fn to_graphemes(string: String) -> List(String) {
+  split(string, "")
+}
