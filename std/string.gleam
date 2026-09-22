@@ -70,3 +70,36 @@ fn split_loop(
       }
   }
 }
+
+pub fn repeat(string: String, times: Int) -> String {
+  case times <= 0 {
+    True -> ""
+    False -> string <> repeat(string, times - 1)
+  }
+}
+
+pub fn pad_start(string: String, desired_length: Int, with: String) -> String {
+  let missing = desired_length - string.length(string)
+  case missing <= 0 {
+    True -> string
+    False -> pad_for(with, missing) <> string
+  }
+}
+
+pub fn pad_end(string: String, desired_length: Int, with: String) -> String {
+  let missing = desired_length - string.length(string)
+  case missing <= 0 {
+    True -> string
+    False -> string <> pad_for(with, missing)
+  }
+}
+
+fn pad_for(with: String, missing: Int) -> String {
+  case string.length(with) == 0 {
+    True -> ""
+    False -> {
+      let needed = missing / string.length(with) + 1
+      string.slice(repeat(with, needed), 0, missing)
+    }
+  }
+}

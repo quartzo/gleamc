@@ -300,3 +300,34 @@ fn insert(list: List(a), item: a, compare: fn(a, a) -> Order) -> List(a) {
       }
   }
 }
+
+pub fn index_fold(list: List(a), from: b, with: fn(b, a, Int) -> b) -> b {
+  index_fold_loop(list, from, with, 0)
+}
+
+fn index_fold_loop(
+  list: List(a),
+  acc: b,
+  with: fn(b, a, Int) -> b,
+  index: Int,
+) -> b {
+  case list {
+    [] -> acc
+    [head, ..rest] ->
+      index_fold_loop(rest, with(acc, head, index), with, index + 1)
+  }
+}
+
+pub fn intersperse(list: List(a), separator: a) -> List(a) {
+  case list {
+    [] -> []
+    [first, ..rest] -> [first, ..intersperse_rest(rest, separator)]
+  }
+}
+
+fn intersperse_rest(list: List(a), separator: a) -> List(a) {
+  case list {
+    [] -> []
+    [head, ..rest] -> [separator, head, ..intersperse_rest(rest, separator)]
+  }
+}

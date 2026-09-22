@@ -1,3 +1,5 @@
+import gleam/list
+
 pub type Option(a) {
   Some(value: a)
   None
@@ -74,5 +76,35 @@ pub fn lazy_unwrap(option: Option(a), default: fn() -> a) -> a {
   case option {
     Some(value) -> value
     None -> default()
+  }
+}
+
+pub fn values(options: List(Option(a))) -> List(a) {
+  values_loop(options, [])
+}
+
+fn values_loop(options: List(Option(a)), acc: List(a)) -> List(a) {
+  case options {
+    [] -> list.reverse(acc)
+    [option, ..rest] ->
+      case option {
+        Some(value) -> values_loop(rest, [value, ..acc])
+        None -> values_loop(rest, acc)
+      }
+  }
+}
+
+pub fn all(options: List(Option(a))) -> Option(List(a)) {
+  all_loop(options, [])
+}
+
+fn all_loop(options: List(Option(a)), acc: List(a)) -> Option(List(a)) {
+  case options {
+    [] -> Some(list.reverse(acc))
+    [option, ..rest] ->
+      case option {
+        Some(value) -> all_loop(rest, [value, ..acc])
+        None -> None
+      }
   }
 }

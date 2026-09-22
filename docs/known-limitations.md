@@ -85,11 +85,13 @@ are resolved when the prelude is attached.
 - `gleam/list`: `length`, `reverse`, `map`, `map2`, `filter`, `fold`,
   `fold_right`, `any`, `all`, `each`, `append`, `flatten`, `flat_map`, `take`,
   `drop`, `contains`, `repeat`, `first`, `last`, `find`, `zip`, `unzip`,
-  `index_map`, `filter_map`, `sort`, `unique`, plus the non-official extras
-  `sum` and `at`. Missing: `index_fold`, `intersperse`, and others.
+  `index_map`, `index_fold`, `filter_map`, `sort`, `intersperse`, `unique`,
+  plus the non-official extras `sum` and `at`. Missing: `window`, `permutations`,
+  and others.
 - `gleam/string`: `length`, `append`, `uppercase`, `lowercase`, `reverse`,
   `contains`, `starts_with`, `ends_with`, `trim`, `replace`, `concat`, `join`,
-  `split`, `slice`. Missing: `to_graphemes`, `pad_leading`, and others.
+  `split`, `slice`, `repeat`, `pad_start`, `pad_end`. Missing: `to_graphemes`,
+  `pad_zero`, and others.
 - `gleam/int`: `to_string`, `parse`, `min`, `max`, `absolute_value`
   (arithmetic is built in). Missing: `to_base_string`, `to_float`, etc.
 - `gleam/float`: `to_string`, `min`, `max`, `absolute_value`, `floor`,

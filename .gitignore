@@ -43,3 +43,4 @@ erl_crash.dump
 /diffs/sort
 /diffs/multicase
 /diffs/order
+/diffs/stdlib2
