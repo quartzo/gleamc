@@ -44,7 +44,6 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   desugar to a tuple) is assumed rather than analysed, so a non-exhaustive
   tuple `case` is not reported.
 - `opaque` is a reserved keyword but opaque types are not enforced.
-- Trailing commas in tuples, lists, calls, and patterns are not accepted.
 
 ## Type system
 
