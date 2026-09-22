@@ -303,6 +303,11 @@ fn builtins() -> Dict(String, Scheme) {
   |> dict.insert("string.reverse", Scheme(none, Fun([s], s)))
 }
 
+/// The names of every builtin, used by `ffi_modes` coverage checks.
+pub fn builtin_names() -> List(String) {
+  dict.keys(builtins())
+}
+
 fn merge_globals(a, b) {
   dict.fold(b, a, fn(acc, key, value) { dict.insert(acc, key, value) })
 }

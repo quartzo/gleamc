@@ -12,7 +12,9 @@ import gleamc/ast.{
   type Type, TApp, TBool, TFloat, TFun, TInt, TNamed, TNil, TString, TTuple,
   TVar,
 }
+import gleamc/borrow
 import gleamc/checker
+import gleamc/ffi_modes
 import gleamc/ir
 
 pub fn insert(
@@ -20,7 +22,11 @@ pub fn insert(
   ctors: Dict(String, checker.CtorInfo),
 ) -> ir.Module {
   let ir.Module(functions) = module
-  ir.Module(list.map(functions, fn(function) { insert_fn(function, ctors) }))
+  let modes = borrow.analyze(module)
+  let ffi = ffi_modes.table()
+  ir.Module(
+    list.map(functions, fn(function) { insert_fn(function, ctors, modes, ffi) }),
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -140,7 +146,7 @@ pub fn type_fields(
 // per-function pass
 // ---------------------------------------------------------------------------
 
-fn insert_fn(function: ir.Function, ctors) -> ir.Function {
+fn insert_fn(function: ir.Function, ctors, modes, ffi) -> ir.Function {
   let ir.Function(name, params, ret, blocks, locals) = function
   let handles =
     list.fold(locals, dict.new(), fn(acc, local) {
@@ -152,14 +158,19 @@ fn insert_fn(function: ir.Function, ctors) -> ir.Function {
     })
   case dict.is_empty(handles) {
     True -> function
-    False ->
+    False -> {
+      let param_modes = case dict.get(modes, name) {
+        Ok(found) -> found
+        Error(_) -> list.map(params, fn(_) { ffi_modes.Borrow })
+      }
       ir.Function(
         name,
         params,
         ret,
-        insert_blocks(blocks, params, locals, handles),
+        insert_blocks(blocks, params, locals, handles, modes, ffi, param_modes),
         locals,
       )
+    }
   }
 }
 
@@ -168,6 +179,9 @@ fn insert_blocks(
   params: List(String),
   locals: List(ir.Local),
   handles: Dict(String, Type),
+  modes,
+  ffi,
+  param_modes,
 ) {
   let succ_map =
     list.fold(blocks, dict.new(), fn(acc, block) {
@@ -213,6 +227,8 @@ fn insert_blocks(
           live,
           dict.new(),
           dict.new(),
+          modes,
+          ffi,
         )
       dict.insert(acc, block.label, #(pre, moved))
     })
@@ -222,10 +238,18 @@ fn insert_blocks(
     Error(_) -> ""
   }
   let entry_owned =
-    list.fold(params, dict.new(), fn(acc, param) {
-      case dict.get(handles, param) {
-        Ok(_) -> set_add(acc, param)
-        Error(_) -> acc
+    list.index_map(params, fn(param, index) {
+      #(param, ffi_modes.mode_at(param_modes, index))
+    })
+    |> list.fold(dict.new(), fn(acc, pair) {
+      let #(param, mode) = pair
+      case mode {
+        ffi_modes.Owned ->
+          case dict.get(handles, param) {
+            Ok(_) -> set_add(acc, param)
+            Error(_) -> acc
+          }
+        ffi_modes.Borrow -> acc
       }
     })
   let defs_map =
@@ -410,7 +434,7 @@ fn add_term_reads(live, term: ir.Terminator, handles) {
 // backward op walk: retains + moved set
 // ---------------------------------------------------------------------------
 
-fn back_ops(reversed_ops, index, handles, live, pre, moved) {
+fn back_ops(reversed_ops, index, handles, live, pre, moved, modes, ffi) {
   case reversed_ops {
     [] -> #(pre, moved)
     [op, ..rest] -> {
@@ -425,7 +449,7 @@ fn back_ops(reversed_ops, index, handles, live, pre, moved) {
       }
       let #(pre, moved) =
         list.fold(
-          dict.to_list(owning_counts(ir.op_owning(op))),
+          dict.to_list(owning_counts(ir.op_owning_modes(op, modes, ffi))),
           #(pre, moved),
           fn(acc, entry) {
             let #(pre_acc, moved_acc) = acc
@@ -451,7 +475,7 @@ fn back_ops(reversed_ops, index, handles, live, pre, moved) {
           },
         )
       let live = set_union(sets_from(reads), set_diff(live, sets_from(defs)))
-      back_ops(rest, index - 1, handles, live, pre, moved)
+      back_ops(rest, index - 1, handles, live, pre, moved, modes, ffi)
     }
   }
 }

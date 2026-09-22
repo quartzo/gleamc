@@ -90,3 +90,34 @@ pub fn memory_retain_shared_test() {
   let output = compile_and_run("dup", source)
   assert live_blocks(output) == 0
 }
+
+/// `string.uppercase` takes ownership and rewrites the uniquely-owned buffer in
+/// place (F3). A fresh heap string is used so the reuse path is exercised.
+pub fn memory_uppercase_reuse_test() {
+  let source =
+    "import gleam/io\nimport gleam/string\n\npub fn main() {\n  let a = \"he\" <> \"llo\"\n  io.println(string.uppercase(a))\n}\n"
+  let output = compile_and_run("upper", source)
+  assert string.contains(output, "HELLO")
+  assert live_blocks(output) == 0
+}
+
+/// When the argument is still live afterwards the ownership pass retains it,
+/// so the refcount is > 1 and uppercase must copy (and release its reference).
+pub fn memory_uppercase_shared_copies_test() {
+  let source =
+    "import gleam/io\nimport gleam/string\n\npub fn main() {\n  let a = \"he\" <> \"llo\"\n  io.println(string.uppercase(a))\n  io.println(a)\n}\n"
+  let output = compile_and_run("upper_shared", source)
+  assert string.contains(output, "HELLO")
+  assert string.contains(output, "hello")
+  assert live_blocks(output) == 0
+}
+
+/// String literals are immortal (GLEAMC_RC_STATIC): they must never be mutated
+/// in place, only copied.
+pub fn memory_uppercase_literal_test() {
+  let source =
+    "import gleam/io\nimport gleam/string\n\npub fn main() {\n  io.println(string.uppercase(\"abc\"))\n}\n"
+  let output = compile_and_run("upper_literal", source)
+  assert string.contains(output, "ABC")
+  assert live_blocks(output) == 0
+}

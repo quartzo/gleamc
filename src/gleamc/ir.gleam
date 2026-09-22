@@ -4,11 +4,13 @@
 //// port) can run over it: operands are local names or literals, every op
 //// may define a destination local, and blocks end in a terminator.
 
+import gleam/dict.{type Dict}
 import gleam/float
 import gleam/int
 import gleam/list
 import gleam/string
 import gleamc/ast.{type Type}
+import gleamc/ffi_modes
 
 pub type Literal {
   LInt(Int)
@@ -150,6 +152,52 @@ pub fn op_owning(op: Op) -> List(Operand) {
     OpCopy(_, src, _) -> [src]
     OpCallIndirect(_, _, args, _) -> args
     _ -> []
+  }
+}
+
+/// Like `op_owning`, but the owning positions of a call depend on the callee's
+/// parameter modes: only args declared/inferred `Owned` transfer ownership.
+/// Calls whose callee is unknown (indirect, or missing from the maps) fail safe
+/// to transferring every argument.
+pub fn op_owning_modes(
+  op: Op,
+  fn_modes: Dict(String, List(ffi_modes.ParamMode)),
+  ffi: Dict(String, ffi_modes.FfiSig),
+) -> List(Operand) {
+  case op {
+    OpCall(_, fun, args, _) ->
+      case dict.get(fn_modes, fun) {
+        Ok(modes) -> owned_args(args, modes)
+        Error(_) -> args
+      }
+    OpBuiltin(_, name, args, _) ->
+      case dict.get(ffi, name) {
+        Ok(ffi_modes.FfiSig(modes, _)) -> owned_args(args, modes)
+        Error(_) -> args
+      }
+    OpCallIndirect(_, _, args, _) -> args
+    OpCtor(_, _, _, args, _) -> args
+    OpTuple(_, elems, _) -> elems
+    OpBitArray(_, elems, _) -> elems
+    OpCopy(_, src, _) -> [src]
+    OpClosure(_, _, captures, _, _) -> captures
+    _ -> []
+  }
+}
+
+fn owned_args(
+  args: List(Operand),
+  modes: List(ffi_modes.ParamMode),
+) -> List(Operand) {
+  case args, modes {
+    [], _ -> []
+    [arg, ..rest], [ffi_modes.Owned, ..rest_modes] -> [
+      arg,
+      ..owned_args(rest, rest_modes)
+    ]
+    [_, ..rest], [ffi_modes.Borrow, ..rest_modes] ->
+      owned_args(rest, rest_modes)
+    [arg, ..rest], [] -> [arg, ..owned_args(rest, [])]
   }
 }
 

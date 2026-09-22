@@ -24,14 +24,43 @@ pub fn ownership_return_no_drop_test() {
   assert !string.contains(text, "drop")
 }
 
-pub fn ownership_borrow_drops_param_test() {
+pub fn ownership_borrow_no_refcount_test() {
   let text = run("fn f(s: String) -> Nil {\n  io.println(s)\n}")
-  assert string.contains(text, "drop s")
+  assert !string.contains(text, "drop s")
   assert !string.contains(text, "retain")
+}
+
+pub fn ownership_borrow_param_owned_on_one_path_test() {
+  let text =
+    run(
+      "fn f(s: String, b: Bool) -> String {\n  case b {\n    True -> s\n    False -> \"x\"\n  }\n}",
+    )
+  // `s` escapes on the `True` path, so it is owned and must be dropped on the
+  // path where it does not.
+  assert string.contains(text, "drop s")
+}
+
+pub fn ownership_borrow_propagates_no_refcount_test() {
+  let text =
+    run(
+      "fn g(s: String) -> Int {\n  string.length(s)\n}\n\nfn f(s: String) -> Int {\n  let n = g(s)\n  string.length(s) + n\n}",
+    )
+  assert !string.contains(text, "retain")
+  assert !string.contains(text, "drop")
 }
 
 pub fn ownership_dup_retains_test() {
   let text = run("fn dup(s: String) -> #(String, String) { #(s, s) }")
+  assert string.contains(text, "retain s")
+}
+
+/// A builtin declared `Owned` (string.uppercase) consumes its argument: when
+/// the caller still needs the value afterwards, it must be retained first.
+pub fn ownership_ffi_owned_retains_test() {
+  let text =
+    run(
+      "fn f(s: String) -> String {\n  let u = string.uppercase(s)\n  s <> u\n}",
+    )
   assert string.contains(text, "retain s")
 }
 

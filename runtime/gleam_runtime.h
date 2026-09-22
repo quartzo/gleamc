@@ -129,6 +129,10 @@ int Gleamc_io_println(GleamcString s);
 /* std::string */
 int64_t Gleamc_string_length(GleamcString s);
 GleamcString Gleamc_string_append(GleamcString a, GleamcString b);
+
+/* `uppercase`/`lowercase` take ownership of `s` (FFI mode `Owned`, see
+ * `src/gleamc/ffi_modes.gleam`): they reuse the buffer in place when uniquely
+ * owned, otherwise return a fresh copy and release `s`. */
 GleamcString Gleamc_string_uppercase(GleamcString s);
 GleamcString Gleamc_string_lowercase(GleamcString s);
 GleamcString Gleamc_string_reverse(GleamcString s);

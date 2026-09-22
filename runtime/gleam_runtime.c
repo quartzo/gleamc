@@ -154,18 +154,45 @@ static char ascii_lower(char c) {
     return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
 }
 
+/* True when `s` is an RC block this call uniquely owns, so it may be mutated
+ * in place. Shared blocks (refcount > 1) and immortal literals
+ * (GLEAMC_RC_STATIC) are excluded. */
+static bool string_can_mutate(GleamcString s) {
+    if (s.data == NULL) return false;
+    GleamcHdr* h = (GleamcHdr*)((uint8_t*)s.data - sizeof(GleamcHdr));
+    return h->refcount == 1;
+}
+
+/* `uppercase`/`lowercase` preserve length, so a uniquely owned string can be
+ * rewritten in place. The FFI declares the argument `Owned`; when the caller
+ * still needs it the ownership pass retains first, the refcount becomes > 1
+ * and this falls back to allocating a copy (releasing the transferred ref). */
 GleamcString Gleamc_string_uppercase(GleamcString s) {
+    if (string_can_mutate(s)) {
+        char* buf = (char*)s.data;
+        for (size_t i = 0; i < s.len; i++) buf[i] = ascii_upper(buf[i]);
+        return s;
+    }
     char* buf = (char*)gleamc_alloc(s.len + 1);
     for (size_t i = 0; i < s.len; i++) buf[i] = ascii_upper(s.data[i]);
     buf[s.len] = '\0';
-    return (GleamcString){buf, s.len};
+    GleamcString result = {buf, s.len};
+    gleamc_string_release(s);
+    return result;
 }
 
 GleamcString Gleamc_string_lowercase(GleamcString s) {
+    if (string_can_mutate(s)) {
+        char* buf = (char*)s.data;
+        for (size_t i = 0; i < s.len; i++) buf[i] = ascii_lower(buf[i]);
+        return s;
+    }
     char* buf = (char*)gleamc_alloc(s.len + 1);
     for (size_t i = 0; i < s.len; i++) buf[i] = ascii_lower(s.data[i]);
     buf[s.len] = '\0';
-    return (GleamcString){buf, s.len};
+    GleamcString result = {buf, s.len};
+    gleamc_string_release(s);
+    return result;
 }
 
 GleamcString Gleamc_string_reverse(GleamcString s) {
