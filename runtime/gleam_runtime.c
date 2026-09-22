@@ -152,6 +152,44 @@ GleamcString Gleamc_string_trim(GleamcString value) {
     return (GleamcString){buf, len};
 }
 
+static size_t codepoint_offset(GleamcString s, int64_t index) {
+    size_t i = 0;
+    int64_t n = 0;
+    while (i < s.len && n < index) {
+        i++;
+        while (i < s.len && ((unsigned char)s.data[i] & 0xC0) == 0x80) i++;
+        n++;
+    }
+    return i;
+}
+
+GleamcString Gleamc_string_slice(GleamcString value, int64_t idx, int64_t len) {
+    if (len <= 0) {
+        char* empty = (char*)gleamc_alloc(1);
+        empty[0] = '\0';
+        return (GleamcString){empty, 0};
+    }
+    int64_t count = Gleamc_string_length(value);
+    if (idx < 0) {
+        idx = count + idx;
+        if (idx < 0) {
+            char* empty = (char*)gleamc_alloc(1);
+            empty[0] = '\0';
+            return (GleamcString){empty, 0};
+        }
+    }
+    if (idx > count) idx = count;
+    int64_t end = idx + len;
+    if (end > count) end = count;
+    size_t start = codepoint_offset(value, idx);
+    size_t finish = codepoint_offset(value, end);
+    size_t n = finish - start;
+    char* buf = (char*)gleamc_alloc(n + 1);
+    memcpy(buf, value.data + start, n);
+    buf[n] = '\0';
+    return (GleamcString){buf, n};
+}
+
 GleamcString Gleamc_string_replace(
     GleamcString value,
     GleamcString pattern,

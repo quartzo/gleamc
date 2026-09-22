@@ -265,6 +265,7 @@ fn builtins() -> Dict(String, Scheme) {
   |> dict.insert("string.ends_with", Scheme(none, Fun([s, s], b)))
   |> dict.insert("string.trim", Scheme(none, Fun([s], s)))
   |> dict.insert("string.replace", Scheme(none, Fun([s, s, s], s)))
+  |> dict.insert("string.slice", Scheme(none, Fun([s, i, i], s)))
   |> dict.insert("string.length", Scheme(none, Fun([s], i)))
   |> dict.insert("string.append", Scheme(none, Fun([s, s], s)))
   |> dict.insert("string.uppercase", Scheme(none, Fun([s], s)))

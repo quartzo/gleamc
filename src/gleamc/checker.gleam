@@ -858,6 +858,16 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         TString,
         "string.replace",
       )
+    "string", "slice" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TInt, TInt],
+        TString,
+        "string.slice",
+      )
     "string", "length" ->
       check_builtin(
         env,
