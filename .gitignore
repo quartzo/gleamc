@@ -55,5 +55,6 @@ erl_crash.dump
 /diffs/intparse2
 /diffs/list2
 /diffs/closures2
+/diffs/floatparse
 /diffs/guards2
 /diffs/alias

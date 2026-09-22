@@ -94,9 +94,9 @@ are resolved when the prelude is attached.
   `byte_size`, `compare`. Missing: `pad_zero`, `utf_codepoints`, etc.
 - `gleam/int`: `to_string`, `parse`, `base_parse`, `to_base_string`,
   `to_float`, `min`, `max`, `absolute_value` (arithmetic is built in).
-- `gleam/float`: `to_string`, `min`, `max`, `absolute_value`, `floor`,
-  `ceiling`, `round`, `truncate`, `power`, `square_root` (the last two return
-  `Result`). Missing: `parse`, etc.
+- `gleam/float`: `to_string`, `parse`, `min`, `max`, `absolute_value`, `floor`,
+  `ceiling`, `round`, `truncate`, `power`, `square_root` (`parse`, `power` and
+  `square_root` return `Result`).
 - `gleam/bool`: `to_string` (runtime) plus `and`, `or`, `negate`, `nor`,
   `nand`, `exclusive_or`, `exclusive_nor`, `guard`, `lazy_guard`.
 - `gleam/io`: `println`, `print` only. Missing: `debug`.
