@@ -20,8 +20,8 @@ import gleamc/ast.{
   type Definition, type Expr, type Module, type Pattern, type Statement, Arm,
   CustomType, DCustomType, DFunction, DImport, EBinop, EBitArray, EBlock, EBool,
   ECall, ECase, EClosure, ECtor, EEnvGet, EField, EFloat, EInt, ELabelled,
-  ELambda, ENil, EPanic, EString, ETuple, EUnop, EUpdate, EVar, Function, Let,
-  Module, PBitArray, PCtor, PLabelled, PTuple, Stmt, Variant,
+  ELambda, ENil, EPanic, EString, ETuple, EUnop, EUpdate, EVar, Function, Import,
+  Let, Module, PBitArray, PCtor, PLabelled, PTuple, Stmt, Variant,
 }
 
 type Ctx {
@@ -32,13 +32,19 @@ type Ctx {
     ctors: Dict(String, Dict(String, Bool)),
     /// constructor name -> aliases that define it.
     owners: Dict(String, List(String)),
+    /// alias -> (unqualified function name -> source alias).
+    fn_scope: Dict(String, Dict(String, String)),
+    /// alias -> (unqualified constructor name -> canonical name).
+    ctor_scope: Dict(String, Dict(String, String)),
+    /// import conflicts (a name imported from two places, or shadowing a local).
+    conflicts: List(String),
   )
 }
 
 pub fn merge(modules: List(#(String, Module))) -> Result(Module, String) {
   let modules = dedupe_modules(modules)
   let ctx = build_ctx(modules)
-  use _ <- result.try(validate_modules(modules))
+  use _ <- result.try(validate_modules(modules, ctx))
   let definitions =
     list_flat_map(modules, fn(entry) {
       let #(name, module) = entry
@@ -93,7 +99,118 @@ fn build_ctx(modules) -> Ctx {
         dict.insert(acc, ctor, [name, ..existing])
       })
     })
-  Ctx(exports, ctors, owners)
+  let fn_scope =
+    list.fold(modules, dict.new(), fn(acc, entry) {
+      let #(name, module) = entry
+      let Module(defs) = module
+      dict.insert(acc, name, module_fn_scope(defs, name, exports))
+    })
+  let ctor_scope =
+    list.fold(modules, dict.new(), fn(acc, entry) {
+      let #(name, module) = entry
+      let Module(defs) = module
+      dict.insert(acc, name, module_ctor_scope(defs, name, ctors, owners))
+    })
+  let conflicts =
+    list.flat_map(modules, fn(entry) {
+      let #(name, module) = entry
+      let Module(defs) = module
+      scope_conflicts(name, defs, exports, ctors)
+    })
+  Ctx(exports, ctors, owners, fn_scope, ctor_scope, conflicts)
+}
+
+fn module_fn_scope(defs, _alias, exports) {
+  list.fold(import_decls(defs), dict.new(), fn(acc, import_decl) {
+    let Import(path, items) = import_decl
+    let source = last_segment(path)
+    case dict.get(exports, source) {
+      Error(_) -> acc
+      Ok(fns) ->
+        list.fold(items, acc, fn(acc, item) {
+          case list_contains(fns, item) {
+            True -> dict.insert(acc, item, source)
+            False -> acc
+          }
+        })
+    }
+  })
+}
+
+fn module_ctor_scope(defs, _alias, ctors, _owners) {
+  list.fold(import_decls(defs), dict.new(), fn(acc, import_decl) {
+    let Import(path, items) = import_decl
+    let source = last_segment(path)
+    case dict.get(ctors, source) {
+      Error(_) -> acc
+      Ok(names) ->
+        list.fold(items, acc, fn(acc, item) {
+          case dict.has_key(names, item) {
+            True -> dict.insert(acc, item, canonical(source, item))
+            False -> acc
+          }
+        })
+    }
+  })
+}
+
+/// A name imported twice (from different modules) or shadowing a local is an
+/// error, matching the official compiler.
+fn scope_conflicts(alias, defs, exports, ctors) {
+  let #(_seen, conflicts) =
+    list.fold(import_decls(defs), #(dict.new(), []), fn(acc, import_decl) {
+      let #(seen, conflicts) = acc
+      let Import(path, items) = import_decl
+      let source = last_segment(path)
+      list.fold(items, #(seen, conflicts), fn(acc, item) {
+        let #(seen, conflicts) = acc
+        case dict.get(seen, item) {
+          Ok(previous) ->
+            case previous == source {
+              True -> acc
+              False -> #(seen, [conflict_message(alias, item), ..conflicts])
+            }
+          Error(_) ->
+            case is_known_item(exports, ctors, source, item) {
+              True -> #(dict.insert(seen, item, source), conflicts)
+              False -> acc
+            }
+        }
+      })
+    })
+  conflicts
+}
+
+fn is_known_item(exports, ctors, source, item) {
+  let is_fn = case dict.get(exports, source) {
+    Ok(fns) -> list_contains(fns, item)
+    Error(_) -> False
+  }
+  let is_ctor = case dict.get(ctors, source) {
+    Ok(names) -> dict.has_key(names, item)
+    Error(_) -> False
+  }
+  is_fn || is_ctor
+}
+
+fn conflict_message(alias, item) {
+  "`" <> item <> "` is imported multiple times (module `" <> alias <> "`)"
+}
+
+fn import_decls(defs) {
+  list_filter_map(defs, fn(definition) {
+    case definition {
+      DImport(import_decl) -> Ok(import_decl)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+fn last_segment(path) {
+  case list.reverse(path) {
+    [last, ..] -> last
+    [] -> ""
+  }
 }
 
 fn module_function_names(defs) {
@@ -126,21 +243,26 @@ fn module_ctor_set(defs) {
   })
 }
 
-/// A constructor name may not be defined twice in the same module.
-fn validate_modules(modules) -> Result(Nil, String) {
-  list.try_each(modules, fn(entry) {
-    let #(alias, module) = entry
-    let Module(defs) = module
-    case no_duplicates(module_ctor_names(defs), []) {
-      Ok(_) -> Ok(Nil)
-      Error(_) ->
-        Error(
-          "constructor names must be unique within a module (module `"
-          <> alias
-          <> "`)",
-        )
-    }
-  })
+/// A constructor name may not be defined twice in the same module, and an
+/// imported name may not clash with a local one.
+fn validate_modules(modules, ctx: Ctx) -> Result(Nil, String) {
+  case ctx.conflicts {
+    [conflict, ..] -> Error(conflict)
+    [] ->
+      list.try_each(modules, fn(entry) {
+        let #(alias, module) = entry
+        let Module(defs) = module
+        case no_duplicates(module_ctor_names(defs), []) {
+          Ok(_) -> Ok(Nil)
+          Error(_) ->
+            Error(
+              "constructor names must be unique within a module (module `"
+              <> alias
+              <> "`)",
+            )
+        }
+      })
+  }
 }
 
 fn no_duplicates(names, seen) -> Result(Nil, Nil) {
@@ -179,14 +301,29 @@ fn resolve_ctor(ctx: Ctx, module, name) -> String {
   case string.contains(name, ".") {
     True -> name
     False ->
-      case module_has_ctor(ctx, module, name) {
-        True -> canonical(module, name)
-        False ->
-          case dict.get(ctx.owners, name) {
-            Ok([only]) -> canonical(only, name)
-            _ -> name
+      case lookups(ctx.ctor_scope, module, name) {
+        Ok(found) -> found
+        Error(_) ->
+          case module_has_ctor(ctx, module, name) {
+            True -> canonical(module, name)
+            False ->
+              case dict.get(ctx.owners, name) {
+                Ok([only]) -> canonical(only, name)
+                _ -> name
+              }
           }
       }
+  }
+}
+
+fn lookups(scope, module, name) -> Result(String, Nil) {
+  case dict.get(scope, module) {
+    Ok(names) ->
+      case dict.get(names, name) {
+        Ok(found) -> Ok(found)
+        Error(_) -> Error(Nil)
+      }
+    Error(_) -> Error(Nil)
   }
 }
 
@@ -373,7 +510,11 @@ fn rewrite_target(fun, module, ctx) -> Expr {
     EVar(name) ->
       case list_contains(module_local_fns(ctx, module), name) {
         True -> EVar(qualify(module, name))
-        False -> fun
+        False ->
+          case lookups(ctx.fn_scope, module, name) {
+            Ok(source) -> EVar(qualify(source, name))
+            Error(_) -> fun
+          }
       }
     EField(EVar(alias), name) ->
       case is_lower_name(name) && module_exports(ctx.exports, alias, name) {

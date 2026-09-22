@@ -53,8 +53,9 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   reused across modules (canonicalised internally to `module.Ctor`) but must be
   unique within a module. Qualified references (`mod.Ctor`) and unqualified ones
   (own module, or a globally unique name such as the prelude `Ok`/`Error`) both
-  resolve. Import items (`import mod.{Ctor}`) are not supported, so an
-  unqualified constructor from another module must be globally unique.
+  resolve. Import items (`import mod.{Ctor}`, `import mod.{fn}`) bring names
+  into scope unqualified; importing the same name from two modules, or
+  shadowing a local, is reported as an error.
 - The primitive `Nil` type shares its constructor name with a user constructor
   named `Nil`.
 
