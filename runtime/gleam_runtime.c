@@ -122,6 +122,45 @@ void Gleamc_bit_array_release(GleamcBitArray a) {
     if (a.data != NULL) gleamc_release(a.data);
 }
 
+GleamcString Gleamc_show_concat(GleamcString a, GleamcString b) {
+    GleamcString result = gleamc_string_concat(a, b);
+    gleamc_string_release(a);
+    gleamc_string_release(b);
+    return result;
+}
+
+GleamcString Gleamc_string_show(GleamcString value) {
+    size_t extra = 0;
+    for (size_t i = 0; i < value.len; i++) {
+        char c = value.data[i];
+        if (c == '"' || c == '\\' || c == '\n' || c == '\t' || c == '\r') extra++;
+    }
+    size_t total = value.len + extra + 2;
+    char* buf = (char*)gleamc_alloc(total + 1);
+    size_t out = 0;
+    buf[out++] = '"';
+    for (size_t i = 0; i < value.len; i++) {
+        char c = value.data[i];
+        switch (c) {
+            case '"': buf[out++] = '\\'; buf[out++] = '"'; break;
+            case '\\': buf[out++] = '\\'; buf[out++] = '\\'; break;
+            case '\n': buf[out++] = '\\'; buf[out++] = 'n'; break;
+            case '\t': buf[out++] = '\\'; buf[out++] = 't'; break;
+            case '\r': buf[out++] = '\\'; buf[out++] = 'r'; break;
+            default: buf[out++] = c; break;
+        }
+    }
+    buf[out++] = '"';
+    buf[out] = '\0';
+    return (GleamcString){buf, out};
+}
+
+int Gleamc_io_debug(GleamcString value) {
+    fwrite(value.data, 1, value.len, stderr);
+    fputc('\n', stderr);
+    return 0;
+}
+
 void Gleamc_panic(GleamcString message) {
     fputs("panic: ", stderr);
     fwrite(message.data, 1, message.len, stderr);

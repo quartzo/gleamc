@@ -137,6 +137,13 @@ GleamcString Gleamc_string_uppercase(GleamcString s);
 GleamcString Gleamc_string_lowercase(GleamcString s);
 GleamcString Gleamc_string_reverse(GleamcString s);
 
+/* Debug/inspect helpers: concatenate two strings, consuming both. */
+GleamcString Gleamc_show_concat(GleamcString a, GleamcString b);
+/* Renders a string with surrounding quotes and escapes (inspect form). */
+GleamcString Gleamc_string_show(GleamcString value);
+/* Writes an inspect string to stderr with a trailing newline (io.debug). */
+int Gleamc_io_debug(GleamcString value);
+
 /* Abort the program with a message (panic / todo / let assert). */
 void Gleamc_panic(GleamcString message);
 

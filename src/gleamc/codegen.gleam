@@ -31,6 +31,7 @@ pub fn emit(
   let glue_types = collect_glue_types(functions, custom_types, ctors)
   let eq_types = collect_eq_types(custom_types, tuple_types, ctors)
   let cmp_types = collect_cmp_types(functions, ctors)
+  let show_types = collect_show_types(functions, ctors)
 
   let preamble = "#include \"gleam_runtime.h\"\n\n"
 
@@ -134,6 +135,18 @@ pub fn emit(
       "\n",
     )
 
+  let show_prototypes =
+    string.join(
+      list.map(show_types, fn(ty) { show_prototype(ty, recursive) }),
+      "",
+    )
+
+  let show_definitions =
+    string.join(
+      list.map(show_types, fn(ty) { show_definition(ty, recursive, ctors) }),
+      "\n",
+    )
+
   let prototypes =
     string.join(
       list.map(functions, fn(function) { emit_prototype(function, recursive) }),
@@ -155,10 +168,12 @@ pub fn emit(
   <> type_code
   <> eq_prototypes
   <> cmp_prototypes
+  <> show_prototypes
   <> "\n"
   <> glue_definitions
   <> eq_definitions
   <> cmp_definitions
+  <> show_definitions
   <> prototypes
   <> string.join(value_wrappers, "")
   <> definitions
@@ -817,7 +832,7 @@ fn eq_fields(ty: Type, ctors) -> List(Type) {
 }
 
 fn eq_fn(ty: Type) -> String {
-  "Gleamc_eq_" <> mangle_glue(ty)
+  "Gleamc_Eq_" <> mangle_glue(ty)
 }
 
 fn eq_prototype(ty: Type, recursive) -> String {
@@ -1005,7 +1020,7 @@ fn glue_fields(ty: Type, ctors) -> List(Type) {
 }
 
 fn glue_fn(kind: String, ty: Type) -> String {
-  "Gleamc_rc_" <> kind <> "_" <> mangle_glue(ty)
+  "Gleamc_Rc_" <> kind <> "_" <> mangle_glue(ty)
 }
 
 fn mangle_glue(ty: Type) -> String {
@@ -1289,6 +1304,32 @@ fn emit_op(by_name, recursive) {
       ir.OpBuiltin(dest, builtin, args, _) ->
         case builtin {
           "panic" -> "    Gleamc_panic(" <> call_args(by_name, args) <> ");"
+          "gleamc.show" -> {
+            let first = case args {
+              [arg, ..] -> arg
+              [] -> ir.Lit(ir.LUnit)
+            }
+            "    "
+            <> dest
+            <> " = "
+            <> show_fn(operand_type(by_name, first))
+            <> "("
+            <> operand_c(by_name, first)
+            <> ");"
+          }
+          "io.debug" -> {
+            let first = case args {
+              [arg, ..] -> arg
+              [] -> ir.Lit(ir.LUnit)
+            }
+            "    "
+            <> dest
+            <> " = Gleamc_io_debug("
+            <> show_fn(operand_type(by_name, first))
+            <> "("
+            <> operand_c(by_name, first)
+            <> "));"
+          }
           "gleamc.key_compare" -> {
             let first = case args {
               [arg, ..] -> arg
@@ -1833,7 +1874,7 @@ fn cmp_fields(ty: Type, ctors) -> List(Type) {
 }
 
 fn cmp_fn(ty: Type) -> String {
-  "Gleamc_cmp_" <> mangle_glue(ty)
+  "Gleamc_Cmp_" <> mangle_glue(ty)
 }
 
 fn cmp_header(ty, recursive) -> String {
@@ -1937,4 +1978,240 @@ fn cmp_expr(ty, left, right) -> String {
     ast.TFun(_, _) -> "0"
     _ -> cmp_fn(ty) <> "(" <> left <> ", " <> right <> ")"
   }
+}
+
+// ---------------------------------------------------------------------------
+// inspect/show glue
+// ---------------------------------------------------------------------------
+
+fn collect_show_types(functions, ctors) -> List(Type) {
+  let seeds =
+    list.flat_map(functions, fn(function) {
+      let ir.Function(_, _, _, blocks, locals) = function
+      let by_name = locals_map(locals)
+      list.flat_map(blocks, fn(block) {
+        let ir.Block(_, ops, _) = block
+        list.flat_map(ops, fn(op) {
+          case op {
+            ir.OpBuiltin(_, name, args, _) ->
+              case name, args {
+                "gleamc.show", [first, ..] -> [operand_type(by_name, first)]
+                "io.debug", [first, ..] -> [operand_type(by_name, first)]
+                _, _ -> []
+              }
+            _ -> []
+          }
+        })
+      })
+    })
+  expand_show(seeds, ctors, [])
+}
+
+fn expand_show(pending, ctors, acc) {
+  case pending {
+    [] -> acc
+    [ty, ..rest] ->
+      case show_key(ty) {
+        Error(_) -> expand_show(rest, ctors, acc)
+        Ok(key) ->
+          case list.any(acc, fn(existing) { type_key(existing) == key }) {
+            True -> expand_show(rest, ctors, acc)
+            False ->
+              expand_show(list.append(rest, show_fields(ty, ctors)), ctors, [
+                ty,
+                ..acc
+              ])
+          }
+      }
+  }
+}
+
+fn show_key(ty: Type) -> Result(String, Nil) {
+  case ty {
+    ast.TInt | ast.TFloat | ast.TBool | TString | ast.TNil -> Ok(type_key(ty))
+    TNamed(_) | TTuple(_) | ast.TFun(_, _) -> Ok(type_key(ty))
+    _ -> Error(Nil)
+  }
+}
+
+fn show_fields(ty: Type, ctors) -> List(Type) {
+  case ty {
+    TTuple(types) -> types
+    TNamed(name) ->
+      list.flat_map(type_variants(name, ctors), fn(pair) {
+        let #(_, fields) = pair
+        fields
+      })
+    _ -> []
+  }
+}
+
+fn show_fn(ty: Type) -> String {
+  "Gleamc_Inspect_" <> mangle_glue(ty)
+}
+
+fn show_header(ty, recursive) -> String {
+  "GleamcString " <> show_fn(ty) <> "(" <> c_type(ty, recursive) <> " a)"
+}
+
+fn show_prototype(ty: Type, recursive) -> String {
+  show_header(ty, recursive) <> ";\n"
+}
+
+fn show_expr(ty, expr) -> String {
+  case ty {
+    ast.TFun(_, _) -> "gleamc_string_lit(\"<function>\", 10)"
+    _ -> show_fn(ty) <> "(" <> expr <> ")"
+  }
+}
+
+fn show_definition(ty: Type, recursive, ctors) -> String {
+  case ty {
+    ast.TInt ->
+      show_header(ty, recursive) <> " { return Gleamc_int_to_string(a); }\n"
+    ast.TFloat ->
+      show_header(ty, recursive) <> " { return Gleamc_float_to_string(a); }\n"
+    ast.TBool ->
+      show_header(ty, recursive) <> " { return Gleamc_bool_to_string(a); }\n"
+    TString ->
+      show_header(ty, recursive) <> " { return Gleamc_string_show(a); }\n"
+    ast.TNil ->
+      show_header(ty, recursive)
+      <> " { (void)a; return gleamc_string_lit(\"Nil\", 3); }\n"
+    ast.TFun(_, _) ->
+      show_header(ty, recursive)
+      <> " { (void)a; return gleamc_string_lit(\"<function>\", 10); }\n"
+    TTuple(types) -> tuple_show(ty, recursive, types)
+    TNamed(name) ->
+      case list_ctor_info(name, ctors) {
+        Ok(#(cons, head, tail)) ->
+          list_show(ty, recursive, name, cons, head, tail)
+        Error(_) -> adt_show(ty, name, recursive, ctors)
+      }
+    _ -> ""
+  }
+}
+
+fn tuple_show(ty, recursive, types) -> String {
+  let parts =
+    string.join(
+      list.index_map(types, fn(inner, index) {
+        let sep = case index {
+          0 -> ""
+          _ -> "    r = Gleamc_show_concat(r, gleamc_string_lit(\", \", 2));\n"
+        }
+        sep
+        <> "    r = Gleamc_show_concat(r, "
+        <> show_expr(inner, "a._" <> int.to_string(index))
+        <> ");\n"
+      }),
+      "",
+    )
+  show_header(ty, recursive)
+  <> " {\n    GleamcString r = gleamc_string_lit(\"#(\", 2);\n"
+  <> parts
+  <> "    r = Gleamc_show_concat(r, gleamc_string_lit(\")\", 1));\n    return r;\n}\n"
+}
+
+fn list_ctor_info(name, ctors) -> Result(#(String, Type, Type), Nil) {
+  case
+    list.find(type_variants(name, ctors), fn(variant) {
+      let #(ctor, _) = variant
+      string.starts_with(ctor, "ListCons")
+    })
+  {
+    Ok(#(cons, fields)) ->
+      case fields {
+        [head, tail] -> Ok(#(cons, head, tail))
+        _ -> Error(Nil)
+      }
+    Error(_) -> Error(Nil)
+  }
+}
+
+fn list_show(ty, recursive, name, cons, head, tail) -> String {
+  let _ = tail
+  show_header(ty, recursive)
+  <> " {\n    GleamcString r = gleamc_string_lit(\"[\", 1);\n"
+  <> "    int first = 1;\n"
+  <> "    "
+  <> name
+  <> "* cur = a;\n"
+  <> "    while (cur != NULL && cur->tag == TAG_"
+  <> name
+  <> "_"
+  <> cons
+  <> ") {\n"
+  <> "        if (!first) r = Gleamc_show_concat(r, gleamc_string_lit(\", \", 2));\n"
+  <> "        first = 0;\n"
+  <> "        r = Gleamc_show_concat(r, "
+  <> show_expr(head, "cur->" <> cons <> "._0")
+  <> ");\n"
+  <> "        cur = cur->"
+  <> cons
+  <> "._1;\n"
+  <> "    }\n"
+  <> "    r = Gleamc_show_concat(r, gleamc_string_lit(\"]\", 1));\n    return r;\n}\n"
+}
+
+fn adt_show(ty, name, recursive, ctors) -> String {
+  let is_rec = is_recursive(recursive, name)
+  let access = case is_rec {
+    True -> "->"
+    False -> "."
+  }
+  let cases =
+    string.join(
+      list.map(type_variants(name, ctors), fn(variant) {
+        let #(variant_name, fields) = variant
+        let display = case string.split(variant_name, "_" <> name) {
+          [base, ..] -> base
+          [] -> variant_name
+        }
+        let prefix =
+          "            GleamcString r = gleamc_string_lit(\""
+          <> display
+          <> "\", "
+          <> int.to_string(string.length(display))
+          <> ");\n"
+        let field_code = case fields {
+          [] -> ""
+          _ ->
+            "            r = Gleamc_show_concat(r, gleamc_string_lit(\"(\", 1));\n"
+            <> string.join(
+              list.index_map(fields, fn(inner, index) {
+                let sep = case index {
+                  0 -> ""
+                  _ ->
+                    "            r = Gleamc_show_concat(r, gleamc_string_lit(\", \", 2));\n"
+                }
+                sep
+                <> "            r = Gleamc_show_concat(r, "
+                <> show_expr(
+                  inner,
+                  "a" <> access <> variant_name <> "._" <> int.to_string(index),
+                )
+                <> ");\n"
+              }),
+              "",
+            )
+            <> "            r = Gleamc_show_concat(r, gleamc_string_lit(\")\", 1));\n"
+        }
+        "        case TAG_"
+        <> name
+        <> "_"
+        <> variant_name
+        <> ": {\n"
+        <> prefix
+        <> field_code
+        <> "            return r;\n        }"
+      }),
+      "\n",
+    )
+  show_header(ty, recursive)
+  <> " {\n    switch (a"
+  <> access
+  <> "tag) {\n"
+  <> cases
+  <> "\n    }\n    return gleamc_string_lit(\"?\", 1);\n}\n"
 }

@@ -974,6 +974,20 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         TString,
         "string.replace",
       )
+    "gleamc", "show" -> {
+      use _ <- result.try(infer_all(env, signatures, ctors, args))
+      case args {
+        [_] -> Ok(TString)
+        _ -> Error(CheckError("gleamc.show expects 1 argument"))
+      }
+    }
+    "io", "debug" -> {
+      use _ <- result.try(infer_all(env, signatures, ctors, args))
+      case args {
+        [_] -> Ok(TNil)
+        _ -> Error(CheckError("io.debug expects 1 argument"))
+      }
+    }
     "gleamc", "key_compare" -> {
       use arg_types <- result.try(infer_all(env, signatures, ctors, args))
       case arg_types {

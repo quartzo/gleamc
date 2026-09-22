@@ -297,6 +297,8 @@ fn builtins() -> Dict(String, Scheme) {
     "gleamc.key_compare",
     Scheme([9001], Fun([Var(9001), Var(9001)], i)),
   )
+  |> dict.insert("gleamc.show", Scheme([9002], Fun([Var(9002)], s)))
+  |> dict.insert("io.debug", Scheme([9003], Fun([Var(9003)], n)))
   |> dict.insert("int.to_float", Scheme(none, Fun([i], f)))
   |> dict.insert("string.compare_bytes", Scheme(none, Fun([s, s], i)))
   |> dict.insert("float.min", Scheme(none, Fun([f, f], f)))

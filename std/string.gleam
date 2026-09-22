@@ -258,3 +258,7 @@ pub fn compare(a: String, b: String) -> Order {
       }
   }
 }
+
+pub fn inspect(term: a) -> String {
+  gleamc.show(term)
+}
