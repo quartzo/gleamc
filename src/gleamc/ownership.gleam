@@ -314,6 +314,7 @@ fn add_extract_retains(ops, handles) {
     case op {
       ir.OpField(dest, _, _, _, ty) -> extract_pair(op, dest, ty, handles)
       ir.OpTupleGet(dest, _, _, ty) -> extract_pair(op, dest, ty, handles)
+      ir.OpEnvGet(dest, _, _, ty) -> extract_pair(op, dest, ty, handles)
       _ -> [op]
     }
   })

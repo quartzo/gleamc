@@ -53,6 +53,7 @@ type State {
     type_rank: Dict(String, Int),
     fn_names: Dict(String, String),
     type_names: Dict(String, String),
+    type_generics: Dict(String, Type),
     ctor_names: Dict(String, String),
     pending_fn: List(#(String, List(Type))),
     pending_type: List(#(String, List(Type))),
@@ -108,6 +109,7 @@ fn initial_state(module: Module, program: infer.Program) -> State {
     type_rank: dict.new(),
     fn_names: dict.new(),
     type_names: dict.new(),
+    type_generics: dict.new(),
     ctor_names: dict.new(),
     pending_fn: [],
     pending_type: [],
@@ -203,6 +205,10 @@ fn request_type(
       State(
         ..state,
         type_names: dict.insert(state.type_names, key(name, args), specialized),
+        type_generics: dict.insert(state.type_generics, specialized, case args {
+          [] -> TNamed(name)
+          _ -> TApp(name, args)
+        }),
         pending_type: list.append(state.pending_type, [#(name, args)]),
       ),
     )
@@ -1050,7 +1056,11 @@ fn mono_ctor_args(state, locals, param_tys, args, subst) {
         arg,
       ))
       let #(arg_ty, state) = type_of(state, locals, arg)
-      use subst <- result_try(map_unify(param_ty, arg_ty, state.subst))
+      use subst <- result_try(map_unify(
+        param_ty,
+        unspecialize_internal(state, arg_ty),
+        state.subst,
+      ))
       let state = State(..state, subst: subst)
       use #(rest2, state, subst) <- result_try(mono_ctor_args(
         state,
@@ -1072,6 +1082,29 @@ fn mono_ctor_args(state, locals, param_tys, args, subst) {
       ))
       Ok(#([arg2, ..rest2], state, subst))
     }
+  }
+}
+
+/// Maps a specialised named type back to its generic internal form, so a
+/// captured value (an `EEnvGet` carrying a concrete type) can still be unified
+/// with a generic callee's parameters.
+fn unspecialize_internal(state: State, ty) -> types.Ty {
+  case ty {
+    Con(name, []) ->
+      case dict.get(state.type_generics, name) {
+        Ok(surface) -> ty_of_surface(surface)
+        Error(_) -> ty
+      }
+    Con(name, args) ->
+      Con(name, list.map(args, fn(arg) { unspecialize_internal(state, arg) }))
+    Fun(params, ret) ->
+      Fun(
+        list.map(params, fn(param) { unspecialize_internal(state, param) }),
+        unspecialize_internal(state, ret),
+      )
+    Tup(items) ->
+      Tup(list.map(items, fn(item) { unspecialize_internal(state, item) }))
+    _ -> ty
   }
 }
 
@@ -1129,7 +1162,7 @@ fn arg_types(
     [arg, ..rest] -> {
       let #(ty, state) = type_of(state, locals, arg)
       let #(tys, state) = arg_types(state, locals, rest)
-      #([ty, ..tys], state)
+      #([unspecialize_internal(state, ty), ..tys], state)
     }
   }
 }

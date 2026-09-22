@@ -83,8 +83,7 @@ are resolved when the prelude is attached.
   `drop`, `contains`, `repeat`, `first`, `last`, `find`, `zip`, `unzip`,
   `index_map`, `index_fold`, `filter_map`, `sort`, `intersperse`, `take_while`,
   `drop_while`, `window`, `chunk`, `sized_chunk`, `unique`, plus the non-official
-  extras `sum` and `at`. Missing: `permutations`, and others
-  (`permutations` triggers a known closure-capture bug, below).
+  extras `sum` and `at`. Missing: `permutations`, and others.
 - `gleam/string`: `length`, `append`, `uppercase`, `lowercase`, `reverse`,
   `contains`, `starts_with`, `ends_with`, `trim`, `replace`, `concat`, `join`,
   `split`, `slice`, `repeat`, `pad_start`, `pad_end`, `trim_start`, `trim_end`,
