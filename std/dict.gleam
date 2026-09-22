@@ -179,3 +179,107 @@ fn entries_of(dict: Dict(k, v)) -> List(#(k, v)) {
     Dict(entries) -> entries
   }
 }
+
+pub fn merge(into: Dict(k, v), from: Dict(k, v)) -> Dict(k, v) {
+  merge_entries(entries_of(from), into)
+}
+
+fn merge_entries(entries: List(#(k, v)), dict: Dict(k, v)) -> Dict(k, v) {
+  case entries {
+    [] -> dict
+    [entry, ..rest] -> {
+      let #(key, value) = entry
+      merge_entries(rest, insert(dict, key, value))
+    }
+  }
+}
+
+pub fn combine(
+  dict: Dict(k, v),
+  other: Dict(k, v),
+  with: fn(v, v) -> v,
+) -> Dict(k, v) {
+  combine_entries(entries_of(other), dict, with)
+}
+
+fn combine_entries(
+  entries: List(#(k, v)),
+  dict: Dict(k, v),
+  with: fn(v, v) -> v,
+) -> Dict(k, v) {
+  case entries {
+    [] -> dict
+    [entry, ..rest] -> {
+      let #(key, value) = entry
+      let next = case get(dict, key) {
+        Ok(existing) -> insert(dict, key, with(existing, value))
+        Error(_) -> insert(dict, key, value)
+      }
+      combine_entries(rest, next, with)
+    }
+  }
+}
+
+pub fn take(dict: Dict(k, v), desired_keys: List(k)) -> Dict(k, v) {
+  Dict(take_entries(entries_of(dict), desired_keys, []))
+}
+
+fn take_entries(
+  entries: List(#(k, v)),
+  desired_keys: List(k),
+  acc: List(#(k, v)),
+) -> List(#(k, v)) {
+  case entries {
+    [] -> list.reverse(acc)
+    [entry, ..rest] -> {
+      let #(key, _) = entry
+      case list.contains(desired_keys, key) {
+        True -> take_entries(rest, desired_keys, [entry, ..acc])
+        False -> take_entries(rest, desired_keys, acc)
+      }
+    }
+  }
+}
+
+pub fn drop(dict: Dict(k, v), disallowed_keys: List(k)) -> Dict(k, v) {
+  Dict(drop_entries(entries_of(dict), disallowed_keys, []))
+}
+
+fn drop_entries(
+  entries: List(#(k, v)),
+  disallowed_keys: List(k),
+  acc: List(#(k, v)),
+) -> List(#(k, v)) {
+  case entries {
+    [] -> list.reverse(acc)
+    [entry, ..rest] -> {
+      let #(key, _) = entry
+      case list.contains(disallowed_keys, key) {
+        True -> drop_entries(rest, disallowed_keys, acc)
+        False -> drop_entries(rest, disallowed_keys, [entry, ..acc])
+      }
+    }
+  }
+}
+
+pub fn group(key: fn(v) -> k, list: List(v)) -> Dict(k, List(v)) {
+  group_entries(list, key, new())
+}
+
+fn group_entries(
+  values: List(v),
+  key: fn(v) -> k,
+  dict: Dict(k, List(v)),
+) -> Dict(k, List(v)) {
+  case values {
+    [] -> dict
+    [value, ..rest] -> {
+      let value_key = key(value)
+      let next = case get(dict, value_key) {
+        Ok(existing) -> insert(dict, value_key, [value, ..existing])
+        Error(_) -> insert(dict, value_key, [value])
+      }
+      group_entries(rest, key, next)
+    }
+  }
+}

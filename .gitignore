@@ -60,5 +60,6 @@ erl_crash.dump
 /diffs/stdlib4
 /diffs/list4
 /diffs/dict
+/diffs/dict2
 /diffs/guards2
 /diffs/alias
