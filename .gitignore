@@ -30,3 +30,4 @@ erl_crash.dump
 /diffs/floats
 /diffs/lists
 /diffs/equality
+/diffs/mathops

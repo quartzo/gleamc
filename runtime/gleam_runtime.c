@@ -1,6 +1,8 @@
 /* gleamc kernel implementation (see gleam_runtime.h). */
 #include "gleam_runtime.h"
 
+#include <math.h>
+
 static size_t _gleamc_live = 0;
 
 static void _gleamc_report_leaks(void) {
@@ -124,6 +126,18 @@ GleamcString Gleamc_int_to_string(int64_t v) {
     snprintf(buf, sizeof buf, "%lld", (long long)v);
     return from_cstr(buf);
 }
+
+int64_t Gleamc_int_min(int64_t a, int64_t b) { return a < b ? a : b; }
+int64_t Gleamc_int_max(int64_t a, int64_t b) { return a > b ? a : b; }
+int64_t Gleamc_int_absolute_value(int64_t a) { return a < 0 ? -a : a; }
+
+double Gleamc_float_min(double a, double b) { return a < b ? a : b; }
+double Gleamc_float_max(double a, double b) { return a > b ? a : b; }
+double Gleamc_float_absolute_value(double a) { return fabs(a); }
+double Gleamc_float_floor(double a) { return floor(a); }
+double Gleamc_float_ceiling(double a) { return ceil(a); }
+int64_t Gleamc_float_round(double a) { return (int64_t)llround(a); }
+int64_t Gleamc_float_truncate(double a) { return (int64_t)trunc(a); }
 
 GleamcString Gleamc_float_to_string(double v) {
     /* Matches Gleam/Erlang `float_to_string`: the shortest decimal string that

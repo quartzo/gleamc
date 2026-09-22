@@ -61,6 +61,7 @@ pub fn build_command(
   <> include_flags(include_dirs)
   <> " "
   <> string.join(c_files, " ")
+  <> " -lm"
   <> " -o "
   <> out
 }

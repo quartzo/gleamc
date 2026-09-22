@@ -187,9 +187,10 @@ fn infer_unop(env, signatures, ctors, op, operand) {
     "-" ->
       case ty {
         TInt -> Ok(TInt)
+        TFloat -> Ok(TFloat)
         _ ->
           Error(CheckError(
-            "`-` expects Int, found `" <> describe_type(ty) <> "`",
+            "`-` expects Int or Float, found `" <> describe_type(ty) <> "`",
           ))
       }
     "-." ->
@@ -730,6 +731,82 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         [TBool],
         TString,
         "bool.to_string",
+      )
+    "int", "min" ->
+      check_builtin(env, signatures, ctors, args, [TInt, TInt], TInt, "int.min")
+    "int", "max" ->
+      check_builtin(env, signatures, ctors, args, [TInt, TInt], TInt, "int.max")
+    "int", "absolute_value" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TInt],
+        TInt,
+        "int.absolute_value",
+      )
+    "float", "min" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TFloat, TFloat],
+        TFloat,
+        "float.min",
+      )
+    "float", "max" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TFloat, TFloat],
+        TFloat,
+        "float.max",
+      )
+    "float", "absolute_value" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TFloat],
+        TFloat,
+        "float.absolute_value",
+      )
+    "float", "floor" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TFloat],
+        TFloat,
+        "float.floor",
+      )
+    "float", "ceiling" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TFloat],
+        TFloat,
+        "float.ceiling",
+      )
+    "float", "round" ->
+      check_builtin(env, signatures, ctors, args, [TFloat], TInt, "float.round")
+    "float", "truncate" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TFloat],
+        TInt,
+        "float.truncate",
       )
     "string", "length" ->
       check_builtin(

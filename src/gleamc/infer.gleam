@@ -250,6 +250,16 @@ fn builtins() -> Dict(String, Scheme) {
   |> dict.insert("int.to_string", Scheme(none, Fun([i], s)))
   |> dict.insert("float.to_string", Scheme(none, Fun([f], s)))
   |> dict.insert("bool.to_string", Scheme(none, Fun([b], s)))
+  |> dict.insert("int.min", Scheme(none, Fun([i, i], i)))
+  |> dict.insert("int.max", Scheme(none, Fun([i, i], i)))
+  |> dict.insert("int.absolute_value", Scheme(none, Fun([i], i)))
+  |> dict.insert("float.min", Scheme(none, Fun([f, f], f)))
+  |> dict.insert("float.max", Scheme(none, Fun([f, f], f)))
+  |> dict.insert("float.absolute_value", Scheme(none, Fun([f], f)))
+  |> dict.insert("float.floor", Scheme(none, Fun([f], f)))
+  |> dict.insert("float.ceiling", Scheme(none, Fun([f], f)))
+  |> dict.insert("float.round", Scheme(none, Fun([f], i)))
+  |> dict.insert("float.truncate", Scheme(none, Fun([f], i)))
   |> dict.insert("string.length", Scheme(none, Fun([s], i)))
   |> dict.insert("string.append", Scheme(none, Fun([s, s], s)))
   |> dict.insert("string.uppercase", Scheme(none, Fun([s], s)))
@@ -405,8 +415,15 @@ fn infer_unop(env: Env, st: St, op, operand) {
   use #(ty, st) <- result_try(infer(env, st, operand))
   case op {
     "-" -> {
-      use st <- result_try(unify_st(Con("Int", []), ty, st))
-      Ok(#(Con("Int", []), st))
+      // Negation is overloaded on Int and Float; resolve Float when known and
+      // otherwise default to Int.
+      case types.zonk(ty, st.subst) {
+        Con("Float", []) -> Ok(#(Con("Float", []), st))
+        _ -> {
+          use st <- result_try(unify_st(Con("Int", []), ty, st))
+          Ok(#(Con("Int", []), st))
+        }
+      }
     }
     "-." -> {
       use st <- result_try(unify_st(Con("Float", []), ty, st))

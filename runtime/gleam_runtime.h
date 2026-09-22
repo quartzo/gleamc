@@ -113,6 +113,20 @@ GleamcString Gleamc_string_uppercase(GleamcString s);
 GleamcString Gleamc_string_lowercase(GleamcString s);
 GleamcString Gleamc_string_reverse(GleamcString s);
 
+/* std::int */
+int64_t Gleamc_int_min(int64_t a, int64_t b);
+int64_t Gleamc_int_max(int64_t a, int64_t b);
+int64_t Gleamc_int_absolute_value(int64_t a);
+
+/* std::float */
+double Gleamc_float_min(double a, double b);
+double Gleamc_float_max(double a, double b);
+double Gleamc_float_absolute_value(double a);
+double Gleamc_float_floor(double a);
+double Gleamc_float_ceiling(double a);
+int64_t Gleamc_float_round(double a);
+int64_t Gleamc_float_truncate(double a);
+
 /* std::int / std::float / std::bool to_string */
 GleamcString Gleamc_int_to_string(int64_t v);
 GleamcString Gleamc_float_to_string(double v);
