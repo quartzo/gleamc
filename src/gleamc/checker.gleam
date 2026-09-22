@@ -1174,6 +1174,196 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         TString,
         "string.reverse",
       )
+    "bit_array", "is_utf8" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("BitArray")],
+        TBool,
+        "bit_array.is_utf8",
+      )
+    "fs", "read" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TNamed("FileResult"),
+        "fs.read",
+      )
+    "fs", "write" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TNamed("BitArray")],
+        TNamed("FileResult"),
+        "fs.write",
+      )
+    "fs", "append" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TNamed("BitArray")],
+        TNamed("FileResult"),
+        "fs.append",
+      )
+    "fs", "delete" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TNamed("FileResult"),
+        "fs.delete",
+      )
+    "fs", "create_directory" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TNamed("FileResult"),
+        "fs.create_directory",
+      )
+    "fs", "create_file" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TNamed("FileResult"),
+        "fs.create_file",
+      )
+    "fs", "exists" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TNamed("FileResult"),
+        "fs.exists",
+      )
+    "fs", "is_file" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TNamed("FileResult"),
+        "fs.is_file",
+      )
+    "fs", "is_directory" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TNamed("FileResult"),
+        "fs.is_directory",
+      )
+    "fs", "file_size" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TNamed("FileResult"),
+        "fs.file_size",
+      )
+    "fs", "current_directory" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [],
+        TNamed("FileResult"),
+        "fs.current_directory",
+      )
+    "fs", "read_directory" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TNamed("FileResult"),
+        "fs.read_directory",
+      )
+    "fs", "file_info" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TNamed("FileResult"),
+        "fs.file_info",
+      )
+    "fs", "link_info" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TNamed("FileResult"),
+        "fs.link_info",
+      )
+    "fs", "int64_at" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("BitArray"), TInt],
+        TInt,
+        "fs.int64_at",
+      )
+    "fs", "result_code" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("FileResult")],
+        TInt,
+        "fs.result_code",
+      )
+    "fs", "result_size" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("FileResult")],
+        TInt,
+        "fs.result_size",
+      )
+    "fs", "result_data" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("FileResult")],
+        TNamed("BitArray"),
+        "fs.result_data",
+      )
     _, _ ->
       Error(CheckError(
         "unknown module function `" <> module <> "." <> name <> "`",

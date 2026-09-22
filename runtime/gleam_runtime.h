@@ -117,6 +117,44 @@ GleamcBitArray Gleamc_bit_array_append(GleamcBitArray a, GleamcBitArray b);
 bool Gleamc_bit_array_eq(GleamcBitArray a, GleamcBitArray b);
 void Gleamc_bit_array_retain(GleamcBitArray a);
 void Gleamc_bit_array_release(GleamcBitArray a);
+bool Gleamc_bit_array_is_utf8(GleamcBitArray a);
+
+/* ------------------------------------------------------------------ */
+/* File I/O results: a fixed struct the runtime knowns how to build.   */
+/*                                                                     */
+/* `code` is 0 on success or a positive errno on failure. A Gleam      */
+/* wrapper (std/simplifile.gleam) turns it into a concrete Result with */
+/* the FileError type.                                                 */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    int64_t code;        /* 0 = ok, else positive errno               */
+    GleamcBitArray data; /* owned bytes when a read succeeds          */
+    int64_t size;        /* byte size or boolean (0/1) when relevant  */
+} GleamcFileResult;
+
+GleamcFileResult Gleamc_fs_read(GleamcString path);
+GleamcFileResult Gleamc_fs_write(GleamcString path, GleamcBitArray data);
+GleamcFileResult Gleamc_fs_append(GleamcString path, GleamcBitArray data);
+GleamcFileResult Gleamc_fs_delete(GleamcString path);
+GleamcFileResult Gleamc_fs_create_directory(GleamcString path);
+GleamcFileResult Gleamc_fs_create_file(GleamcString path);
+GleamcFileResult Gleamc_fs_exists(GleamcString path);
+GleamcFileResult Gleamc_fs_is_file(GleamcString path);
+GleamcFileResult Gleamc_fs_is_directory(GleamcString path);
+GleamcFileResult Gleamc_fs_file_size(GleamcString path);
+GleamcFileResult Gleamc_fs_current_directory(void);
+GleamcFileResult Gleamc_fs_read_directory(GleamcString path);
+GleamcFileResult Gleamc_fs_file_info(GleamcString path);
+GleamcFileResult Gleamc_fs_link_info(GleamcString path);
+
+/* Reads a little-endian int64 field from a packed info blob. */
+int64_t Gleamc_fs_int64_at(GleamcBitArray blob, int64_t index);
+
+/* Accessors for the fixed result struct. */
+int64_t Gleamc_fs_result_code(GleamcFileResult result);
+GleamcBitArray Gleamc_fs_result_data(GleamcFileResult result);
+int64_t Gleamc_fs_result_size(GleamcFileResult result);
 
 /* ------------------------------------------------------------------ */
 /* std::io — print (to_string is inserted by the compiler)             */
@@ -187,5 +225,46 @@ double Gleamc_float_raw_square_root(double value);
 GleamcString Gleamc_int_to_string(int64_t v);
 GleamcString Gleamc_float_to_string(double v);
 GleamcString Gleamc_bool_to_string(bool v);
+
+/* ------------------------------------------------------------------ */
+/* Futures + scheduler + libuv (ported from Vesper docs 09/11/14)      */
+/*                                                                     */
+/* A future is a refcounted heap cell. `step` is a state machine:      */
+/* true = completed (the frame holds the result); false = suspended    */
+/* with *fut_slot pointing at the pending future. The scheduler sleeps */
+/* until the deadline or runs a libuv round until the future finishes. */
+/* libuv is required; there is no synchronous fallback.                */
+/* ------------------------------------------------------------------ */
+
+typedef struct GleamcFuture {
+    GleamcHdr hdr;
+    int64_t deadline;   /* monotonic ms; ready when done             */
+    bool done;
+    bool has_error;     /* I/O: error code in error_code             */
+    int32_t error_code;
+    int64_t value_i;    /* wake value (scalars / handles / length)   */
+    void* value_p;      /* wake value by reference (structs / bytes) */
+    bool uv_armed;      /* handle registered on the libuv loop       */
+} GleamcFuture;
+
+uint64_t gleamc_now_ms(void);
+void gleamc_sleep_ms(int64_t ms);
+GleamcFuture* Gleamc_std_time_timer(int64_t ms);
+bool gleamc_sched_run(bool (*step)(void* frame), void* frame,
+                      GleamcFuture** fut_slot);
+
+void gleamc_sched_poll(void);
+void* gleamc_uv_loop(void);
+void* gleamc_uv_timer_init(void* loop);
+GleamcFuture* gleamc_uv_timer_start(void* timer, int64_t ms);
+GleamcFuture* gleamc_uv_fs_open(void* loop, const char* path,
+                                int32_t flags, int32_t mode);
+GleamcFuture* gleamc_uv_fs_read(void* loop, void* fd, int64_t n);
+GleamcFuture* gleamc_uv_fs_fstat(void* loop, void* fd);
+GleamcFuture* gleamc_uv_fs_close(void* loop, void* fd);
+
+void gleamc_task_spawn(bool (*step)(void*), void* frame,
+                       GleamcFuture** fut_slot);
+int32_t gleamc_tasks_drain(void);
 
 #endif /* GLEAMC_RUNTIME_H */

@@ -316,6 +316,58 @@ fn builtins() -> Dict(String, Scheme) {
   |> dict.insert("string.uppercase", Scheme(none, Fun([s], s)))
   |> dict.insert("string.lowercase", Scheme(none, Fun([s], s)))
   |> dict.insert("string.reverse", Scheme(none, Fun([s], s)))
+  |> dict.insert(
+    "bit_array.is_utf8",
+    Scheme(none, Fun([Con("BitArray", [])], b)),
+  )
+  |> dict.insert("fs.read", Scheme(none, Fun([s], Con("FileResult", []))))
+  |> dict.insert(
+    "fs.write",
+    Scheme(none, Fun([s, Con("BitArray", [])], Con("FileResult", []))),
+  )
+  |> dict.insert(
+    "fs.append",
+    Scheme(none, Fun([s, Con("BitArray", [])], Con("FileResult", []))),
+  )
+  |> dict.insert("fs.delete", Scheme(none, Fun([s], Con("FileResult", []))))
+  |> dict.insert(
+    "fs.create_directory",
+    Scheme(none, Fun([s], Con("FileResult", []))),
+  )
+  |> dict.insert(
+    "fs.create_file",
+    Scheme(none, Fun([s], Con("FileResult", []))),
+  )
+  |> dict.insert("fs.exists", Scheme(none, Fun([s], Con("FileResult", []))))
+  |> dict.insert("fs.is_file", Scheme(none, Fun([s], Con("FileResult", []))))
+  |> dict.insert(
+    "fs.is_directory",
+    Scheme(none, Fun([s], Con("FileResult", []))),
+  )
+  |> dict.insert("fs.file_size", Scheme(none, Fun([s], Con("FileResult", []))))
+  |> dict.insert(
+    "fs.current_directory",
+    Scheme(none, Fun([], Con("FileResult", []))),
+  )
+  |> dict.insert(
+    "fs.read_directory",
+    Scheme(none, Fun([s], Con("FileResult", []))),
+  )
+  |> dict.insert("fs.file_info", Scheme(none, Fun([s], Con("FileResult", []))))
+  |> dict.insert("fs.link_info", Scheme(none, Fun([s], Con("FileResult", []))))
+  |> dict.insert("fs.int64_at", Scheme(none, Fun([Con("BitArray", []), i], i)))
+  |> dict.insert(
+    "fs.result_code",
+    Scheme(none, Fun([Con("FileResult", [])], i)),
+  )
+  |> dict.insert(
+    "fs.result_size",
+    Scheme(none, Fun([Con("FileResult", [])], i)),
+  )
+  |> dict.insert(
+    "fs.result_data",
+    Scheme(none, Fun([Con("FileResult", [])], Con("BitArray", []))),
+  )
 }
 
 /// The names of every builtin, used by `ffi_modes` coverage checks.

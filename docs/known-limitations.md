@@ -24,6 +24,14 @@ silently unavailable.
   `list.map(xs, fn(a) { list.length(xs) + a })` is rejected. Scalar captures
   work. Workaround: pass the captured value as an
   explicit parameter instead of capturing it.
+- Nested `use` (or nested lambdas) inside a function that itself has captures
+  can read the outer environment through the inner environment pointer. When
+  an outer lambda rewrites its captures to `EEnvGet(outer_env, i)`, a nested
+  lambda lifted from its body keeps those outer references but receives only
+  its own `__env`, so the field index is read from the wrong struct. This
+  crashed `simplifile.get_files` until the nested `use` chain was rewritten as
+  explicit `case`. Workaround: avoid nested `use`/lambdas that capture an outer
+  captured value; destructure with explicit `case` instead.
 
 Two monomorphization bugs were found and fixed while
 adding list support, and are now covered by `diffs/lists.gleam`:
@@ -75,6 +83,12 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   library with no `main`, from the public API). Unused custom types are still
   emitted.
 - `fold_right` is not tail recursive (same as the official implementation).
+- libuv support is ported from Vesper: `GleamcFuture`, the state-machine
+  scheduler (`gleamc_sched_run`/`gleamc_task_spawn`/`gleamc_tasks_drain`), and
+  the `gleamc_uv_*` timer/file wrappers. libuv is required — the toolchain
+  always links `-luv` and the runtime has no synchronous fallback. The compiler
+  itself does not expose `async`/`await` yet; the file API uses the synchronous
+  `uv_fs_*` calls.
 
 ## Standard library coverage
 
@@ -135,6 +149,23 @@ their imports are resolved when the prelude is attached.
 - `gleam/result`: `unwrap`, `unwrap_or`, `lazy_unwrap`, `unwrap_error`, `map`,
   `map_error`, `try`, `then`, `is_ok`, `is_error`, `flatten`, `all`, `or`,
   `replace`, `replace_error`, `values`, `partition`, `lazy_or`, `try_recover`.
+- `simplifile` (file system, the package's public name): `read`, `read_bits`,
+  `write`, `write_bits`, `append`, `append_bits`, `delete`, `delete_file`,
+  `create_directory`, `create_file`, `exists`, `is_file`, `is_directory`,
+  `read_directory`, `get_files`, `current_directory`, `file_info`/`link_info`,
+  `file_info_type`, `file_info_permissions_octal`, `describe_error`, plus the
+  `FileError`, `FileInfo` and `FileType` types. The labels (`to`, `from`, `contents`, `bits`,
+  `filepath`, ...) match the package, and the functions are backed by
+  synchronous libuv wrappers (`fs.*` builtins) returning a fixed
+  `GleamcFileResult` that the Gleam wrapper turns into a concrete
+  `Result`/`FileError`. Directory listings are joined with `/` (which cannot
+  appear in a POSIX filename) and split in Gleam; `get_files` recurses in
+  Gleam using `read_directory`/`is_directory`. Not implemented yet:
+  `file_info`/`link_info`, permissions (`Permission`, `FilePermissions`,
+  `filepath` and `gleam/set` modules), symlinks, `copy`/`rename`, `touch`,
+  recursive `delete`/`clear_directory`, and `create_directory_all`; `exists`
+  ignores `follow_links` (it always follows). Directory deletion is
+  non-recursive.
 
 ## Toolchain
 

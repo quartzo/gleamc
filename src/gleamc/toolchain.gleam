@@ -61,7 +61,7 @@ pub fn build_command(
   <> include_flags(include_dirs)
   <> " "
   <> string.join(c_files, " ")
-  <> " -lm -lutf8proc -licuuc"
+  <> " -lm -lutf8proc -licuuc -luv"
   <> " -o "
   <> out
 }

@@ -1,9 +1,14 @@
 /* gleamc kernel implementation (see gleam_runtime.h). */
+#define _POSIX_C_SOURCE 200809L /* nanosleep / fileno / fstat (scheduler+libuv) */
 #include "gleam_runtime.h"
 
 static size_t codepoint_offset(GleamcString s, int64_t index);
 
 #include <math.h>
+#include <pthread.h>
+#include <uv.h>
+#include <fcntl.h>
+#include <string.h>
 
 #include <unicode/ustring.h>
 #include <utf8proc.h>
@@ -163,6 +168,7 @@ GleamcString Gleamc_string_show(GleamcString value) {
 int Gleamc_io_debug(GleamcString value) {
     fwrite(value.data, 1, value.len, stderr);
     fputc('\n', stderr);
+    gleamc_string_release(value);
     return 0;
 }
 
@@ -643,3 +649,608 @@ GleamcString Gleamc_float_to_string(double v) {
 GleamcString Gleamc_bool_to_string(bool v) {
     return from_cstr(v ? "True" : "False");
 }
+
+/* ------------------------------------------------------------------ */
+/* Futures + scheduler + libuv (ported from Vesper docs 09/11/14)      */
+/* ------------------------------------------------------------------ */
+
+#include <time.h>
+#include <sys/stat.h>
+
+uint64_t gleamc_now_ms(void) {
+    struct timespec ts;
+    timespec_get(&ts, TIME_UTC);
+    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+}
+
+void gleamc_sleep_ms(int64_t ms) {
+    struct timespec ts;
+    ts.tv_sec = ms / 1000;
+    ts.tv_nsec = (ms % 1000) * 1000000L;
+    nanosleep(&ts, NULL);
+}
+
+GleamcFuture* Gleamc_std_time_timer(int64_t ms) {
+    GleamcFuture* f = gleamc_alloc(sizeof(GleamcFuture));
+    f->deadline = (int64_t)gleamc_now_ms() + ms;
+    f->done = false;
+    f->has_error = false;
+    f->error_code = 0;
+    f->value_i = 0;
+    f->value_p = NULL;
+    f->uv_armed = false;
+    return f;
+}
+
+/* Scheduler task list (spawn). */
+#define GLEAMC_TASKS_MAX 64
+static struct {
+    bool (*step)(void*);
+    void* frame;
+    GleamcFuture** fut_slot;
+    bool done;
+} gleamc_tasks[GLEAMC_TASKS_MAX];
+static int gleamc_tasks_n = 0;
+
+void gleamc_task_spawn(bool (*step)(void*), void* frame,
+                       GleamcFuture** fut_slot) {
+    /* The spawn site allocates the frame with rc=1 and TRANSFERS ownership
+     * to the scheduler (no extra retain); drain releases it. */
+    if (gleamc_tasks_n >= GLEAMC_TASKS_MAX) {
+        fprintf(stderr, "gleamc: task overflow (%d) — frame discarded\n",
+                GLEAMC_TASKS_MAX);
+        gleamc_release(frame);
+        return;
+    }
+    gleamc_tasks[gleamc_tasks_n].step = step;
+    gleamc_tasks[gleamc_tasks_n].frame = frame;
+    gleamc_tasks[gleamc_tasks_n].fut_slot = fut_slot;
+    gleamc_tasks[gleamc_tasks_n].done = false;
+    gleamc_tasks_n++;
+}
+
+int32_t gleamc_tasks_drain(void) {
+    while (gleamc_tasks_n > 0) {
+        int progressed = 0;
+        for (int i = 0; i < gleamc_tasks_n; i++) {
+            if (gleamc_tasks[i].done) continue;
+            if (gleamc_tasks[i].step(gleamc_tasks[i].frame)) {
+                gleamc_release(gleamc_tasks[i].frame);
+                gleamc_tasks[i] = gleamc_tasks[gleamc_tasks_n - 1];
+                gleamc_tasks_n--;
+                i--;
+                progressed = 1;
+                continue;
+            }
+            GleamcFuture* fut = *gleamc_tasks[i].fut_slot;
+            if (fut != NULL && !fut->done && fut->deadline > 0) {
+                int64_t now = (int64_t)gleamc_now_ms();
+                if (fut->deadline > now)
+                    gleamc_sleep_ms(fut->deadline - now);
+                fut->done = true;
+                progressed = 1;
+            }
+            if (fut != NULL && fut->uv_armed) progressed = 1;
+        }
+        if (!progressed && gleamc_tasks_n > 0) {
+            break;  /* no progress and no resolved future: avoid spinning */
+        }
+    }
+    return 0;
+}
+
+bool gleamc_sched_run(bool (*step)(void* frame), void* frame,
+                      GleamcFuture** fut_slot) {
+    void* loop = gleamc_uv_loop();
+    for (;;) {
+        if (step(frame)) return true;
+        GleamcFuture* fut = *fut_slot;
+        while (fut != NULL && !fut->done) {
+            if (fut->deadline > 0) {
+                int64_t now = (int64_t)gleamc_now_ms();
+                if (fut->deadline > now)
+                    gleamc_sleep_ms(fut->deadline - now);
+                fut->done = true;
+                break;
+            }
+            uv_run((uv_loop_t*)loop, UV_RUN_ONCE);
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* libuv wrappers: the request callback completes the future. The loop */
+/* is the scheduler's; handles are born on it. Without libuv, sync.    */
+/* ------------------------------------------------------------------ */
+
+void gleamc_sched_poll(void) {
+    uv_run((uv_loop_t*)gleamc_uv_loop(), UV_RUN_ONCE);
+}
+
+void* gleamc_uv_loop(void) {
+    static uv_loop_t loop;
+    static bool init = false;
+    if (!init) { uv_loop_init(&loop); init = true; }
+    return &loop;
+}
+
+static void gleamc_timer_close_cb(uv_handle_t* h) {
+    gleamc_release(h);   /* the timer handle leaves with the shot */
+}
+
+static void gleamc_timer_cb(uv_timer_t* t) {
+    GleamcFuture* f = (GleamcFuture*)t->data;
+    if (f != NULL) { f->done = true; f->value_i = 0; }
+    uv_close((uv_handle_t*)t, gleamc_timer_close_cb);
+}
+
+void* gleamc_uv_timer_init(void* loop) {
+    uv_timer_t* t = (uv_timer_t*)gleamc_alloc(sizeof(uv_timer_t));
+    uv_timer_init((uv_loop_t*)loop, t);
+    return t;
+}
+
+GleamcFuture* gleamc_uv_timer_start(void* timer, int64_t ms) {
+    GleamcFuture* f = gleamc_alloc(sizeof(GleamcFuture));
+    f->done = false; f->has_error = false;
+    f->error_code = 0; f->value_i = 0; f->value_p = NULL;
+    f->deadline = 0;  /* armed on libuv: the wake is by callback */
+    f->uv_armed = true;
+    ((uv_timer_t*)timer)->data = f;
+    uv_timer_start((uv_timer_t*)timer, gleamc_timer_cb,
+                   (uint64_t)(ms > 0 ? ms : 0), 0);
+    return f;
+}
+
+#define GLEAMC_FS_MAX 64
+static struct { uv_fs_t* req; GleamcFuture* fut; } gleamc_fs_map[GLEAMC_FS_MAX];
+static int gleamc_fs_map_n = 0;
+
+static void gleamc_fs_bind(uv_fs_t* req, GleamcFuture* fut) {
+    if (gleamc_fs_map_n < GLEAMC_FS_MAX) {
+        gleamc_fs_map[gleamc_fs_map_n].req = req;
+        gleamc_fs_map[gleamc_fs_map_n].fut = fut;
+        gleamc_fs_map_n++;
+    }
+}
+
+static GleamcFuture* gleamc_fs_fut_of(uv_fs_t* req) {
+    for (int i = 0; i < gleamc_fs_map_n; i++)
+        if (gleamc_fs_map[i].req == req) return gleamc_fs_map[i].fut;
+    return NULL;
+}
+
+static void gleamc_fs_unbind(uv_fs_t* req) {
+    for (int i = 0; i < gleamc_fs_map_n; i++)
+        if (gleamc_fs_map[i].req == req) {
+            gleamc_fs_map[i] = gleamc_fs_map[gleamc_fs_map_n - 1];
+            gleamc_fs_map_n--;
+            return;
+        }
+}
+
+static void gleamc_fs_cb(uv_fs_t* req) {
+    GleamcFuture* f = gleamc_fs_fut_of(req);
+    gleamc_fs_unbind(req);
+    if (f == NULL) { uv_fs_req_cleanup(req); return; }
+    ssize_t n = uv_fs_get_result(req);
+    f->has_error = n < 0;
+    f->error_code = n < 0 ? (int32_t)(-n) : 0;
+    /* The bytes block is f->value_p (allocated by read); the read length
+     * goes in value_i — the wake TRANSFERS ownership of the block. */
+    if (n >= 0) f->value_i = (int64_t)n;
+    uv_fs_req_cleanup(req);
+    gleamc_release(req);   /* the request leaves when the op finishes */
+    f->done = true;
+}
+
+GleamcFuture* gleamc_uv_fs_open(void* loop, const char* path,
+                                int32_t flags, int32_t mode) {
+    GleamcFuture* f = gleamc_alloc(sizeof(GleamcFuture));
+    f->done = false; f->has_error = false;
+    f->error_code = 0; f->value_i = 0; f->value_p = NULL;
+    f->uv_armed = true;
+    uv_fs_t* req = (uv_fs_t*)gleamc_alloc(uv_req_size(UV_FS));
+    gleamc_fs_bind(req, f);
+    uv_fs_open((uv_loop_t*)loop, req, path, flags, mode, gleamc_fs_cb);
+    return f;
+}
+
+GleamcFuture* gleamc_uv_fs_read(void* loop, void* fd, int64_t n) {
+    GleamcFuture* f = gleamc_alloc(sizeof(GleamcFuture));
+    f->done = false; f->has_error = false;
+    f->error_code = 0; f->value_i = 0; f->value_p = NULL;
+    f->uv_armed = true;
+    /* The bytes block is born here (rc=1: the future owns it until the
+     * wake TRANSFERS ownership to the destination, without a copy). */
+    uint8_t* buf = (uint8_t*)gleamc_alloc((size_t)(n > 0 ? n : 1));
+    f->value_p = buf;
+    uv_buf_t iov = uv_buf_init((char*)buf, (size_t)n);
+    uv_fs_t* req = (uv_fs_t*)gleamc_alloc(uv_req_size(UV_FS));
+    gleamc_fs_bind(req, f);
+    uv_fs_read((uv_loop_t*)loop, req, (uv_file)(intptr_t)fd, &iov, 1, -1,
+               gleamc_fs_cb);
+    return f;
+}
+
+/* File size (the uv_fs_open fd is an OS fd) — synchronous. */
+GleamcFuture* gleamc_uv_fs_fstat(void* loop, void* fd) {
+    (void)loop;
+    GleamcFuture* f = gleamc_alloc(sizeof(GleamcFuture));
+    f->done = false; f->has_error = false;
+    f->error_code = 0; f->value_i = 0; f->value_p = NULL;
+    f->uv_armed = false;
+    struct stat st;
+    if (fstat((int)(intptr_t)fd, &st) != 0) {
+        f->has_error = true; f->error_code = 5;
+    } else {
+        f->value_i = (int64_t)st.st_size;
+    }
+    f->done = true;
+    return f;
+}
+
+GleamcFuture* gleamc_uv_fs_close(void* loop, void* fd) {
+    GleamcFuture* f = gleamc_alloc(sizeof(GleamcFuture));
+    f->done = false; f->has_error = false;
+    f->error_code = 0; f->value_i = 0; f->value_p = NULL;
+    f->uv_armed = true;
+    uv_fs_t* req = (uv_fs_t*)gleamc_alloc(uv_req_size(UV_FS));
+    gleamc_fs_bind(req, f);
+    uv_fs_close((uv_loop_t*)loop, req, (uv_file)(intptr_t)fd,
+                gleamc_fs_cb);
+    return f;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* File I/O: synchronous libuv wrappers returning a fixed result.      */
+/* The Gleam wrapper (std/simplifile.gleam) maps code -> FileError.    */
+/* ------------------------------------------------------------------ */
+
+bool Gleamc_bit_array_is_utf8(GleamcBitArray a) {
+    if (a.data == NULL) return true;
+    size_t i = 0;
+    while (i < a.len) {
+        utf8proc_int32_t cp;
+        utf8proc_ssize_t n =
+            utf8proc_iterate(a.data + i, (utf8proc_ssize_t)(a.len - i), &cp);
+        if (n < 0) return false;
+        i += (size_t)n;
+    }
+    return true;
+}
+
+static GleamcFileResult fs_ok(void) {
+    GleamcFileResult r;
+    r.code = 0;
+    r.data.data = NULL;
+    r.data.len = 0;
+    r.size = 0;
+    return r;
+}
+
+static GleamcFileResult fs_error(int64_t code) {
+    GleamcFileResult r = fs_ok();
+    r.code = code;
+    return r;
+}
+
+int64_t Gleamc_fs_result_code(GleamcFileResult result) {
+    return result.code;
+}
+
+GleamcBitArray Gleamc_fs_result_data(GleamcFileResult result) {
+    return result.data;
+}
+
+int64_t Gleamc_fs_result_size(GleamcFileResult result) {
+    return result.size;
+}
+
+static char* gleamc_to_cstr(GleamcString s) {
+    char* p = (char*)malloc(s.len + 1);
+    if (p == NULL) return NULL;
+    if (s.len > 0) memcpy(p, s.data, s.len);
+    p[s.len] = '\0';
+    return p;
+}
+
+int64_t Gleamc_fs_int64_at(GleamcBitArray blob, int64_t index) {
+    size_t off = (size_t)index * 8;
+    if (blob.data == NULL || off + 8 > blob.len) return 0;
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++) {
+        v |= ((uint64_t)blob.data[off + i]) << (8 * i);
+    }
+    return (int64_t)v;
+}
+
+/* Packs the ten FileInfo fields as little-endian int64s (80 bytes). */
+static GleamcFileResult fs_info_from_ints(const int64_t* values) {
+    uint8_t* out = (uint8_t*)gleamc_alloc(80);
+    for (int i = 0; i < 10; i++) {
+        uint64_t v = (uint64_t)values[i];
+        for (int j = 0; j < 8; j++) out[i * 8 + j] = (uint8_t)(v >> (8 * j));
+    }
+    GleamcFileResult r = fs_ok();
+    r.data.data = out;
+    r.data.len = 80;
+    r.size = 10;
+    return r;
+}
+
+GleamcFileResult Gleamc_fs_read(GleamcString path) {
+    char* cpath = gleamc_to_cstr(path);
+    if (cpath == NULL) return fs_error(12); /* ENOMEM */
+    uv_fs_t req;
+    uv_file fd = uv_fs_open(NULL, &req, cpath, O_RDONLY, 0, NULL);
+    free(cpath);
+    if (fd < 0) { uv_fs_req_cleanup(&req); return fs_error(-fd); }
+    uv_fs_req_cleanup(&req);
+
+    uv_fs_t sreq;
+    int sres = uv_fs_fstat(NULL, &sreq, fd, NULL);
+    if (sres < 0) {
+        int64_t code = -sres;
+        uv_fs_req_cleanup(&sreq);
+        uv_fs_close(NULL, &req, fd, NULL);
+        uv_fs_req_cleanup(&req);
+        return fs_error(code);
+    }
+    size_t size = (size_t)sreq.statbuf.st_size;
+    uv_fs_req_cleanup(&sreq);
+
+    uint8_t* buf = (uint8_t*)gleamc_alloc(size > 0 ? size : 1);
+    size_t off = 0;
+    while (off < size) {
+        uv_buf_t iov = uv_buf_init((char*)(buf + off), size - off);
+        uv_fs_t rreq;
+        ssize_t n = uv_fs_read(NULL, &rreq, fd, &iov, 1, (int64_t)off, NULL);
+        uv_fs_req_cleanup(&rreq);
+        if (n < 0) {
+            int64_t code = -n;
+            gleamc_release(buf);
+            uv_fs_close(NULL, &req, fd, NULL);
+            uv_fs_req_cleanup(&req);
+            return fs_error(code);
+        }
+        if (n == 0) break;
+        off += (size_t)n;
+    }
+    uv_fs_close(NULL, &req, fd, NULL);
+    uv_fs_req_cleanup(&req);
+
+    GleamcFileResult r = fs_ok();
+    r.data.data = buf;
+    r.data.len = off;
+    r.size = (int64_t)off;
+    return r;
+}
+
+static GleamcFileResult fs_write_flags(GleamcString path, GleamcBitArray data,
+                                       int flags) {
+    char* cpath = gleamc_to_cstr(path);
+    if (cpath == NULL) return fs_error(12); /* ENOMEM */
+    uv_fs_t req;
+    uv_file fd = uv_fs_open(NULL, &req, cpath, flags, 0644, NULL);
+    free(cpath);
+    if (fd < 0) { uv_fs_req_cleanup(&req); return fs_error(-fd); }
+    uv_fs_req_cleanup(&req);
+
+    size_t off = 0;
+    while (off < data.len) {
+        uv_buf_t iov = uv_buf_init((char*)(data.data + off), data.len - off);
+        uv_fs_t wreq;
+        ssize_t n = uv_fs_write(NULL, &wreq, fd, &iov, 1, (int64_t)off, NULL);
+        uv_fs_req_cleanup(&wreq);
+        if (n < 0) {
+            int64_t code = -n;
+            uv_fs_close(NULL, &req, fd, NULL);
+            uv_fs_req_cleanup(&req);
+            return fs_error(code);
+        }
+        off += (size_t)n;
+    }
+    uv_fs_close(NULL, &req, fd, NULL);
+    uv_fs_req_cleanup(&req);
+    return fs_ok();
+}
+
+GleamcFileResult Gleamc_fs_write(GleamcString path, GleamcBitArray data) {
+    return fs_write_flags(path, data, O_WRONLY | O_CREAT | O_TRUNC);
+}
+
+GleamcFileResult Gleamc_fs_append(GleamcString path, GleamcBitArray data) {
+    return fs_write_flags(path, data, O_WRONLY | O_CREAT | O_APPEND);
+}
+
+GleamcFileResult Gleamc_fs_delete(GleamcString path) {
+    char* cpath = gleamc_to_cstr(path);
+    if (cpath == NULL) return fs_error(12);
+    uv_fs_t req;
+    int res = uv_fs_unlink(NULL, &req, cpath, NULL);
+    uv_fs_req_cleanup(&req);
+    if (res == 0) { free(cpath); return fs_ok(); }
+    /* A directory needs rmdir; it must be empty. */
+    if (-res == 21 /* EISDIR */) {
+        res = uv_fs_rmdir(NULL, &req, cpath, NULL);
+        uv_fs_req_cleanup(&req);
+    }
+    free(cpath);
+    return res == 0 ? fs_ok() : fs_error(-res);
+}
+
+GleamcFileResult Gleamc_fs_create_directory(GleamcString path) {
+    char* cpath = gleamc_to_cstr(path);
+    if (cpath == NULL) return fs_error(12);
+    uv_fs_t req;
+    int res = uv_fs_mkdir(NULL, &req, cpath, 0755, NULL);
+    uv_fs_req_cleanup(&req);
+    free(cpath);
+    return res == 0 ? fs_ok() : fs_error(-res);
+}
+
+GleamcFileResult Gleamc_fs_create_file(GleamcString path) {
+    char* cpath = gleamc_to_cstr(path);
+    if (cpath == NULL) return fs_error(12);
+    uv_fs_t req;
+    uv_file fd = uv_fs_open(NULL, &req, cpath, O_WRONLY | O_CREAT | O_EXCL,
+                            0644, NULL);
+    free(cpath);
+    if (fd < 0) { uv_fs_req_cleanup(&req); return fs_error(-fd); }
+    uv_fs_req_cleanup(&req);
+    uv_fs_close(NULL, &req, fd, NULL);
+    uv_fs_req_cleanup(&req);
+    return fs_ok();
+}
+
+static GleamcFileResult fs_stat_mode(GleamcString path, int want) {
+    char* cpath = gleamc_to_cstr(path);
+    if (cpath == NULL) return fs_error(12);
+    uv_fs_t req;
+    int res = uv_fs_stat(NULL, &req, cpath, NULL);
+    free(cpath);
+    if (res < 0) { uv_fs_req_cleanup(&req); return fs_error(-res); }
+    uv_stat_t st = req.statbuf;
+    uv_fs_req_cleanup(&req);
+    GleamcFileResult r = fs_ok();
+    r.size = (int64_t)st.st_size;
+    if (want == 1) r.size = S_ISREG(st.st_mode) ? 1 : 0;
+    if (want == 2) r.size = S_ISDIR(st.st_mode) ? 1 : 0;
+    return r;
+}
+
+GleamcFileResult Gleamc_fs_exists(GleamcString path) {
+    return fs_stat_mode(path, 0);
+}
+
+GleamcFileResult Gleamc_fs_is_file(GleamcString path) {
+    return fs_stat_mode(path, 1);
+}
+
+GleamcFileResult Gleamc_fs_is_directory(GleamcString path) {
+    return fs_stat_mode(path, 2);
+}
+
+GleamcFileResult Gleamc_fs_file_size(GleamcString path) {
+    return fs_stat_mode(path, 0);
+}
+
+GleamcFileResult Gleamc_fs_current_directory(void) {
+    size_t size = 4096;
+    char* buf = (char*)malloc(size);
+    if (buf == NULL) return fs_error(12);
+    int res = uv_cwd(buf, &size);
+    if (res < 0) { free(buf); return fs_error(-res); }
+    size_t len = strlen(buf);
+    uint8_t* out = (uint8_t*)gleamc_alloc(len > 0 ? len : 1);
+    if (len > 0) memcpy(out, buf, len);
+    free(buf);
+    GleamcFileResult r = fs_ok();
+    r.data.data = out;
+    r.data.len = len;
+    r.size = (int64_t)len;
+    return r;
+}
+
+GleamcFileResult Gleamc_fs_read_directory(GleamcString path) {
+    char* cpath = gleamc_to_cstr(path);
+    if (cpath == NULL) return fs_error(12);
+    uv_fs_t req;
+    int res = uv_fs_scandir(NULL, &req, cpath, 0, NULL);
+    free(cpath);
+    if (res < 0) {
+        int64_t code = -res;
+        uv_fs_req_cleanup(&req);
+        return fs_error(code);
+    }
+    size_t cap = 64, len = 0;
+    char* buf = (char*)malloc(cap);
+    if (buf == NULL) { uv_fs_req_cleanup(&req); return fs_error(12); }
+    uv_dirent_t ent;
+    int first = 1;
+    int status = uv_fs_scandir_next(&req, &ent);
+    while (status != UV_EOF) {
+        if (status < 0) {
+            int64_t code = -status;
+            free(buf);
+            uv_fs_req_cleanup(&req);
+            return fs_error(code);
+        }
+        if (strcmp(ent.name, ".") != 0 && strcmp(ent.name, "..") != 0) {
+            size_t nlen = strlen(ent.name);
+            size_t need = len + nlen + 1;
+            if (need > cap) {
+                while (cap < need) cap *= 2;
+                char* nbuf = (char*)realloc(buf, cap);
+                if (nbuf == NULL) {
+                    free(buf);
+                    uv_fs_req_cleanup(&req);
+                    return fs_error(12);
+                }
+                buf = nbuf;
+            }
+            if (!first) buf[len++] = '/';
+            first = 0;
+            memcpy(buf + len, ent.name, nlen);
+            len += nlen;
+        }
+        status = uv_fs_scandir_next(&req, &ent);
+    }
+    uv_fs_req_cleanup(&req);
+    uint8_t* out = (uint8_t*)gleamc_alloc(len > 0 ? len : 1);
+    if (len > 0) memcpy(out, buf, len);
+    free(buf);
+    GleamcFileResult r = fs_ok();
+    r.data.data = out;
+    r.data.len = len;
+    r.size = (int64_t)len;
+    return r;
+}
+
+
+GleamcFileResult Gleamc_fs_file_info(GleamcString path) {
+    char* cpath = gleamc_to_cstr(path);
+    if (cpath == NULL) return fs_error(12);
+    uv_fs_t req;
+    int res = uv_fs_stat(NULL, &req, cpath, NULL);
+    free(cpath);
+    if (res < 0) {
+        int64_t code = -res;
+        uv_fs_req_cleanup(&req);
+        return fs_error(code);
+    }
+    uv_stat_t st = req.statbuf;
+    uv_fs_req_cleanup(&req);
+    int64_t v[10] = {
+        (int64_t)st.st_size, (int64_t)st.st_mode, (int64_t)st.st_nlink,
+        (int64_t)st.st_ino, (int64_t)st.st_uid, (int64_t)st.st_gid,
+        (int64_t)st.st_dev, (int64_t)st.st_atim.tv_sec,
+        (int64_t)st.st_mtim.tv_sec, (int64_t)st.st_ctim.tv_sec,
+    };
+    return fs_info_from_ints(v);
+}
+
+GleamcFileResult Gleamc_fs_link_info(GleamcString path) {
+    char* cpath = gleamc_to_cstr(path);
+    if (cpath == NULL) return fs_error(12);
+    uv_fs_t req;
+    int res = uv_fs_lstat(NULL, &req, cpath, NULL);
+    free(cpath);
+    if (res < 0) {
+        int64_t code = -res;
+        uv_fs_req_cleanup(&req);
+        return fs_error(code);
+    }
+    uv_stat_t st = req.statbuf;
+    uv_fs_req_cleanup(&req);
+    int64_t v[10] = {
+        (int64_t)st.st_size, (int64_t)st.st_mode, (int64_t)st.st_nlink,
+        (int64_t)st.st_ino, (int64_t)st.st_uid, (int64_t)st.st_gid,
+        (int64_t)st.st_dev, (int64_t)st.st_atim.tv_sec,
+        (int64_t)st.st_mtim.tv_sec, (int64_t)st.st_ctim.tv_sec,
+    };
+    return fs_info_from_ints(v);
+}
+

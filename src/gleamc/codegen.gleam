@@ -303,6 +303,7 @@ pub fn type_key(ty: Type) -> String {
   case ty {
     TString -> "str"
     TNamed("BitArray") -> "bitarray"
+    TNamed("FileResult") -> "fileresult"
     ast.TInt -> "i64"
     ast.TFloat -> "f64"
     ast.TBool -> "b"
@@ -328,6 +329,7 @@ pub fn c_type(ty: Type, recursive: Dict(String, Bool)) -> String {
     ast.TBool -> "bool"
     TString -> "GleamcString"
     TNamed("BitArray") -> "GleamcBitArray"
+    TNamed("FileResult") -> "GleamcFileResult"
     ast.TNil -> "int"
     ast.TVar(name) -> name
     TNamed("Nil") -> "int"
@@ -351,6 +353,7 @@ fn mangle_type(ty: Type) -> String {
     ast.TBool -> "b"
     TString -> "str"
     TNamed("BitArray") -> "bitarray"
+    TNamed("FileResult") -> "fileresult"
     ast.TNil -> "nil"
     ast.TVar(name) -> name
     TNamed("Nil") -> "nil"
@@ -737,20 +740,31 @@ fn emit_custom_type(custom: CustomType, recursive) -> String {
       let Variant(variant_name, fields) = variant
       case fields {
         [] -> Error(Nil)
-        _ -> Ok(field_struct(variant_name, fields, recursive))
+        _ ->
+          Ok(field_struct(base_ctor_name(variant_name, name), fields, recursive))
       }
     })
 
   let union_def = case union_fields {
     [] -> ""
-    _ -> "    union {\n" <> string.join(union_fields, "\n") <> "\n    };\n"
+    _ ->
+      "    union {\n" <> string.join(union_fields, "\n") <> "\n    } payload;\n"
   }
 
-  let body = "    " <> name <> "_Tag tag;\n" <> union_def
+  let body = "    uint8_t tag;\n" <> union_def
 
   case is_recursive(recursive, name) {
     True -> tag_def <> "struct " <> name <> " {\n" <> body <> "};\n"
     False -> tag_def <> "typedef struct {\n" <> body <> "} " <> name <> ";\n"
+  }
+}
+
+/// The union member name for a variant: the bare constructor name (`Ok`, not
+/// `Ok_Result_Int_String`).
+fn base_ctor_name(ctor, type_name) -> String {
+  case string.split(ctor, "_" <> type_name) {
+    [base, ..] -> base
+    [] -> ctor
   }
 }
 
@@ -813,7 +827,7 @@ fn expand_eq(pending, ctors, acc) {
 fn eq_key(ty: Type) -> Result(String, Nil) {
   case ty {
     TString | ast.TInt | ast.TFloat | ast.TBool | ast.TNil -> Error(Nil)
-    TNamed("Nil") | TNamed("BitArray") -> Error(Nil)
+    TNamed("Nil") | TNamed("BitArray") | TNamed("FileResult") -> Error(Nil)
     TNamed(_) | TTuple(_) -> Ok(type_key(ty))
     _ -> Error(Nil)
   }
@@ -892,8 +906,18 @@ fn named_eq(ty: Type, name, recursive, ctors) -> String {
           list.index_map(fields, fn(inner, index) {
             eq_expr(
               inner,
-              "a" <> access <> variant_name <> "._" <> int.to_string(index),
-              "b" <> access <> variant_name <> "._" <> int.to_string(index),
+              "a"
+                <> access
+                <> "payload."
+                <> base_ctor_name(variant_name, name)
+                <> "._"
+                <> int.to_string(index),
+              "b"
+                <> access
+                <> "payload."
+                <> base_ctor_name(variant_name, name)
+                <> "._"
+                <> int.to_string(index),
             )
           })
         let body = case list.is_empty(comparisons) {
@@ -996,7 +1020,7 @@ fn expand_glue(pending, ctors, acc) {
 fn glue_key(ty: Type) -> Result(String, Nil) {
   case ty {
     TString -> Error(Nil)
-    TNamed("BitArray") -> Error(Nil)
+    TNamed("BitArray") | TNamed("FileResult") -> Error(Nil)
     TTuple(_) -> Ok(type_key(ty))
     TNamed(_) -> Ok(type_key(ty))
     ast.TFun(_, _) -> Ok(type_key(ty))
@@ -1109,7 +1133,10 @@ fn byvalue_named_glue(kind, name, ty, recursive, ctors) -> String {
             <> glue_call(
               kind,
               t,
-              "v." <> variant_name <> "._" <> int.to_string(i),
+              "v.payload."
+                <> base_ctor_name(variant_name, name)
+                <> "._"
+                <> int.to_string(i),
             )
             <> ";"
           }),
@@ -1162,7 +1189,10 @@ fn recursive_glue(kind, name, ty, ctors) -> String {
                     <> glue_call(
                       "drop",
                       t,
-                      "v->" <> variant_name <> "._" <> int.to_string(i),
+                      "v->payload."
+                        <> base_ctor_name(variant_name, name)
+                        <> "._"
+                        <> int.to_string(i),
                     )
                     <> ";"
                   }),
@@ -1445,8 +1475,13 @@ fn operand_access(by_name, recursive, subject) -> String {
 }
 
 fn field_access(by_name, recursive, subject, ctor, index, _ty) -> String {
+  let member = case operand_type(by_name, subject) {
+    TNamed(name) -> base_ctor_name(ctor, name)
+    _ -> ctor
+  }
   operand_access(by_name, recursive, subject)
-  <> ctor
+  <> "payload."
+  <> member
   <> "._"
   <> int.to_string(index)
 }
@@ -1456,8 +1491,8 @@ fn recursive_ctor(by_name, ctor, type_name, args) -> String {
   let assigns =
     string.join(
       list.index_map(args, fn(arg, index) {
-        "        _node->"
-        <> ctor
+        "        _node->payload."
+        <> base_ctor_name(ctor, type_name)
         <> "._"
         <> int.to_string(index)
         <> " = "
@@ -1583,8 +1618,8 @@ fn ctor_literal(by_name, ctor, type_name, args) -> String {
       <> type_name
       <> "_"
       <> ctor
-      <> ", ."
-      <> ctor
+      <> ", .payload."
+      <> base_ctor_name(ctor, type_name)
       <> " = { "
       <> tuple_fields(by_name, args)
       <> " } }"
@@ -1856,6 +1891,7 @@ fn expand_cmp(pending, ctors, acc) {
 fn cmp_key(ty: Type) -> Result(String, Nil) {
   case ty {
     ast.TInt | ast.TFloat | ast.TBool | TString | ast.TNil -> Ok(type_key(ty))
+    TNamed("FileResult") -> Error(Nil)
     TNamed(_) | TTuple(_) | ast.TFun(_, _) -> Ok(type_key(ty))
     _ -> Error(Nil)
   }
@@ -1927,7 +1963,11 @@ fn named_cmp(ty: Type, name, recursive, ctors) -> String {
         let #(variant_name, fields) = variant
         let comparisons =
           list.index_map(fields, fn(inner, index) {
-            let base = variant_name <> "._" <> int.to_string(index)
+            let base =
+              "payload."
+              <> base_ctor_name(variant_name, name)
+              <> "._"
+              <> int.to_string(index)
             "            c = "
             <> cmp_expr(inner, "a" <> access <> base, "b" <> access <> base)
             <> "; if (c) return c;"
@@ -2029,6 +2069,7 @@ fn expand_show(pending, ctors, acc) {
 fn show_key(ty: Type) -> Result(String, Nil) {
   case ty {
     ast.TInt | ast.TFloat | ast.TBool | TString | ast.TNil -> Ok(type_key(ty))
+    TNamed("FileResult") -> Error(Nil)
     TNamed(_) | TTuple(_) | ast.TFun(_, _) -> Ok(type_key(ty))
     _ -> Error(Nil)
   }
@@ -2145,10 +2186,10 @@ fn list_show(ty, recursive, name, cons, head, tail) -> String {
   <> "        if (!first) r = Gleamc_show_concat(r, gleamc_string_lit(\", \", 2));\n"
   <> "        first = 0;\n"
   <> "        r = Gleamc_show_concat(r, "
-  <> show_expr(head, "cur->" <> cons <> "._0")
+  <> show_expr(head, "cur->payload." <> base_ctor_name(cons, name) <> "._0")
   <> ");\n"
-  <> "        cur = cur->"
-  <> cons
+  <> "        cur = cur->payload."
+  <> base_ctor_name(cons, name)
   <> "._1;\n"
   <> "    }\n"
   <> "    r = Gleamc_show_concat(r, gleamc_string_lit(\"]\", 1));\n    return r;\n}\n"
@@ -2189,7 +2230,12 @@ fn adt_show(ty, name, recursive, ctors) -> String {
                 <> "            r = Gleamc_show_concat(r, "
                 <> show_expr(
                   inner,
-                  "a" <> access <> variant_name <> "._" <> int.to_string(index),
+                  "a"
+                    <> access
+                    <> "payload."
+                    <> base_ctor_name(variant_name, name)
+                    <> "._"
+                    <> int.to_string(index),
                 )
                 <> ");\n"
               }),
