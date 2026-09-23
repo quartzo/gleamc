@@ -28,6 +28,7 @@ type Ctx {
     blocks: Dict(String, String),
     ret: Type,
     custom_types: List(ast.CustomType),
+    custom_by_name: Dict(String, ast.CustomType),
     ctors: Dict(String, checker.CtorInfo),
     tuples: List(Type),
     fn_name: String,
@@ -56,6 +57,11 @@ pub fn emit(
     list.sort(custom_types, fn(a, b) {
       string.compare(type_name_of(a), type_name_of(b))
     })
+  let custom_by_name =
+    dict.from_list(list.map(custom_types, fn(custom) {
+      let ast.CustomType(_, n, _, _, _) = custom
+      #(n, custom)
+    }))
   let recursive = ownership.recursive_types(ctors)
   let fields_of = ownership.type_fields(ctors)
   let tuples =
@@ -131,18 +137,23 @@ pub fn emit(
   let group_fns = all_groups
   let member_names =
     list.flat_map(group_fns, fn(group) { list.map(group, fn(f) { f.name }) })
+  let member_set =
+    list.fold(member_names, dict.new(), fn(acc, n) { dict.insert(acc, n, True) })
   let group_defs =
     string.join(
       list.flat_map(group_fns, fn(group) {
         let #(dispatcher, wrappers) =
-          emit_group(group, recursive, lits, custom_types, ctors, tuples)
+          emit_group(group, recursive, lits, custom_types, custom_by_name, ctors, tuples)
         list.append([dispatcher], wrappers)
       }),
       "\n\n",
     )
   let normal_fns =
     list.filter(functions, fn(function) {
-      !list.contains(member_names, function.name)
+      case dict.get(member_set, function.name) {
+        Ok(_) -> False
+        Error(_) -> True
+      }
     })
   let defs =
     group_defs
@@ -152,7 +163,7 @@ pub fn emit(
     }
     <> string.join(
       list.map(normal_fns, fn(function) {
-        emit_function(function, recursive, lits, custom_types, ctors, tuples)
+        emit_function(function, recursive, lits, custom_types, custom_by_name, ctors, tuples)
       }),
       "\n\n",
     )
@@ -503,12 +514,7 @@ fn base_ctor_name(ctor: String, type_name: String) -> String {
 
 fn variant_index(ctx: Ctx, ctor: String, type_name: String) -> Int {
   let base = base_ctor_name(ctor, type_name)
-  case
-    list.find(ctx.custom_types, fn(custom) {
-      let ast.CustomType(_, n, _, _, _) = custom
-      n == type_name
-    })
-  {
+  case dict.get(ctx.custom_by_name, type_name) {
     Ok(custom) -> {
       let ast.CustomType(_, _, _, variants, _) = custom
       case find_variant_index(variants, base, type_name) {
@@ -713,6 +719,7 @@ fn emit_function(
   recursive: Dict(String, Bool),
   lits: Dict(String, Int),
   custom_types: List(ast.CustomType),
+  custom_by_name: Dict(String, ast.CustomType),
   ctors: Dict(String, checker.CtorInfo),
   tuples: List(Type),
 ) -> String {
@@ -726,6 +733,7 @@ fn emit_function(
       blocks: block_names(blocks),
       ret: ret,
       custom_types: custom_types,
+      custom_by_name: custom_by_name,
       ctors: ctors,
       tuples: tuples,
       fn_name: name,
@@ -3385,6 +3393,7 @@ fn emit_group(
   recursive: Dict(String, Bool),
   lits: Dict(String, Int),
   custom_types: List(ast.CustomType),
+  custom_by_name: Dict(String, ast.CustomType),
   ctors: Dict(String, checker.CtorInfo),
   tuples: List(Type),
 ) -> #(String, List(String)) {
@@ -3522,6 +3531,7 @@ fn emit_group(
           blocks: block_names_prefixed(blocks, prefix),
           ret: member_ret,
           custom_types: custom_types,
+          custom_by_name: custom_by_name,
           ctors: ctors,
           tuples: tuples,
           fn_name: name,
