@@ -74,6 +74,10 @@ erl_crash.dump
 /diffs/list_extra
 /diffs/nestedclosure
 
+# audit-build artifacts
+/diffs/*_debug
+/diffs/*_debug.ll
+
 # compiler output next to the compiler sources
 /src/gleamc/*.c
 /src/gleamc/*.so
