@@ -866,21 +866,78 @@ fn infer_call(env: Env, st: St, fun, args) {
   case fun {
     EVar(name) -> {
       use #(fun_ty, st) <- result_try(infer_var(env, st, name))
-      let #(param_tys, ret) = fun_parts(fun_ty)
-      use #(arg_tys, st) <- result_try(infer_all(env, st, args))
-      use st <- result_try(unify_lists(param_tys, arg_tys, st, name))
-      Ok(#(ret, st))
+      infer_call_with(env, st, fun_ty, args, name)
     }
     EField(EVar(module), name) ->
       infer_call(env, st, EVar(module <> "." <> name), args)
     _ -> {
       use #(fun_ty, st) <- result_try(infer(env, st, fun))
-      let #(param_tys, ret) = fun_parts(fun_ty)
-      use #(arg_tys, st) <- result_try(infer_all(env, st, args))
-      use st <- result_try(unify_lists(param_tys, arg_tys, st, "call"))
-      Ok(#(ret, st))
+      infer_call_with(env, st, fun_ty, args, "call")
     }
   }
+}
+
+fn infer_call_with(env, st, fun_ty, args, ctx) {
+  let #(param_tys, ret) = fun_parts(fun_ty)
+  use #(arg_tys, st) <- result_try(infer_args_expect(env, st, param_tys, args))
+  use st <- result_try(unify_lists(param_tys, arg_tys, st, ctx))
+  Ok(#(ret, st))
+}
+
+/// Infers call arguments against the callee's parameter types, so a lambda's
+/// parameters are known before its body is checked (needed for field access).
+fn infer_args_expect(env, st, expected_list, args) {
+  case args, expected_list {
+    [], _ -> Ok(#([], st))
+    [arg, ..rest], [expected, ..rest_expected] -> {
+      use #(arg_ty, st) <- result_try(infer_arg_expect(
+        env,
+        st,
+        Some(expected),
+        arg,
+      ))
+      use st <- result_try(unify_st(expected, arg_ty, st))
+      use #(rest_tys, st) <- result_try(infer_args_expect(
+        env,
+        st,
+        rest_expected,
+        rest,
+      ))
+      Ok(#([arg_ty, ..rest_tys], st))
+    }
+    [arg, ..rest], [] -> {
+      use #(arg_ty, st) <- result_try(infer(env, st, arg))
+      use #(rest_tys, st) <- result_try(infer_args_expect(env, st, [], rest))
+      Ok(#([arg_ty, ..rest_tys], st))
+    }
+  }
+}
+
+fn infer_arg_expect(env, st, expected, arg) {
+  case arg, expected {
+    ELambda(names, body), Some(Fun(param_tys, ret)) ->
+      case list.length(names) == list.length(param_tys) {
+        True -> infer_lambda_expect(env, st, names, body, param_tys, ret)
+        False -> infer(env, st, arg)
+      }
+    ELabelled(_, value), _ -> {
+      use #(ty, st) <- result_try(infer_arg_expect(env, st, expected, value))
+      Ok(#(ty, st))
+    }
+    _, _ -> infer(env, st, arg)
+  }
+}
+
+fn infer_lambda_expect(env, st, names, body, param_tys, ret) {
+  let lambda_locals =
+    list.fold(list.zip(names, param_tys), dict.new(), fn(acc, pair) {
+      let #(name, ty) = pair
+      dict.insert(acc, name, Scheme([], ty))
+    })
+  let body_env = Env(..env, locals: merge_dicts(env.locals, lambda_locals))
+  use #(body_ty, st) <- result_try(infer(body_env, st, body))
+  let _ = ret
+  Ok(#(Fun(param_tys, body_ty), st))
 }
 
 fn infer_unop(env: Env, st: St, op, operand) {

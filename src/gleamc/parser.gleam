@@ -391,18 +391,20 @@ fn parse_type(tokens) {
   case tokens {
     [Token(Keyword("fn"), _, _), ..rest] -> parse_fun_type(rest)
     [
-      Token(NameKind(_), _, _),
+      Token(NameKind(module), _, _),
       Token(Symbol("."), _, _),
       Token(UpNameKind(name), _, _),
       ..rest
     ] -> {
-      // Qualified types (`mod.Type`); type names are global.
+      // Qualified types (`mod.Type`); the module is kept in the name so the
+      // merge pass can scope it.
+      let qualified = module <> "_" <> name
       case peek(rest) {
         Symbol("(") -> {
           use #(args, rest2) <- and_then(parse_type_args(drop_token(rest), []))
-          Ok(#(TApp(name, args), rest2))
+          Ok(#(TApp(qualified, args), rest2))
         }
-        _ -> Ok(#(TNamed(name), rest))
+        _ -> Ok(#(TNamed(qualified), rest))
       }
     }
     [Token(UpNameKind("Int"), _, _), ..rest] -> Ok(#(TInt, rest))

@@ -17,11 +17,12 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleamc/ast.{
-  type Definition, type Expr, type Module, type Pattern, type Statement, Arm,
-  CustomType, DCustomType, DFunction, DImport, EBinop, EBitArray, EBlock, EBool,
-  ECall, ECase, EClosure, ECtor, EEnvGet, EField, EFloat, EInt, ELabelled,
-  ELambda, ENil, EPanic, EString, ETuple, EUnop, EUpdate, EVar, Function, Import,
-  Let, Module, PAs, PBitArray, PCtor, PLabelled, PTuple, PVar, Stmt, Variant,
+  type Definition, type Expr, type Module, type Pattern, type Statement,
+  type Type, Arm, CustomType, DCustomType, DFunction, DImport, DTypeAlias,
+  EBinop, EBitArray, EBlock, EBool, ECall, ECase, EClosure, ECtor, EEnvGet,
+  EField, EFloat, EInt, ELabelled, ELambda, ENil, EPanic, EString, ETuple, EUnop,
+  EUpdate, EVar, Function, Import, Let, Module, PAs, PBitArray, PCtor, PLabelled,
+  PTuple, PVar, Stmt, Variant,
 }
 
 type Ctx {
@@ -36,6 +37,12 @@ type Ctx {
     fn_scope: Dict(String, Dict(String, String)),
     /// alias -> (unqualified constructor name -> canonical name).
     ctor_scope: Dict(String, Dict(String, String)),
+    /// alias -> type names the module defines.
+    types: Dict(String, List(String)),
+    /// type name -> aliases that define it.
+    type_owners: Dict(String, List(String)),
+    /// alias -> (unqualified type name -> source alias).
+    type_scope: Dict(String, Dict(String, String)),
     /// import conflicts (a name imported from two places, or shadowing a local).
     conflicts: List(String),
   )
@@ -111,13 +118,47 @@ fn build_ctx(modules) -> Ctx {
       let Module(defs) = module
       dict.insert(acc, name, module_ctor_scope(defs, name, ctors, owners))
     })
+  let types =
+    list.fold(modules, dict.new(), fn(acc, entry) {
+      let #(name, module) = entry
+      let Module(defs) = module
+      dict.insert(acc, name, module_type_names(defs))
+    })
+  let type_owners =
+    list.fold(modules, dict.new(), fn(acc, entry) {
+      let #(name, module) = entry
+      let Module(defs) = module
+      list.fold(module_type_names(defs), acc, fn(acc, item) {
+        let existing = case dict.get(acc, item) {
+          Ok(found) -> found
+          Error(_) -> []
+        }
+        dict.insert(acc, item, [name, ..existing])
+      })
+    })
+  let type_scope =
+    list.fold(modules, dict.new(), fn(acc, entry) {
+      let #(name, module) = entry
+      let Module(defs) = module
+      dict.insert(acc, name, module_type_scope(defs, types))
+    })
   let conflicts =
     list.flat_map(modules, fn(entry) {
       let #(name, module) = entry
       let Module(defs) = module
       scope_conflicts(name, defs, exports, ctors)
     })
-  Ctx(exports, ctors, owners, fn_scope, ctor_scope, conflicts)
+  Ctx(
+    exports,
+    ctors,
+    owners,
+    fn_scope,
+    ctor_scope,
+    types,
+    type_owners,
+    type_scope,
+    conflicts,
+  )
 }
 
 fn module_fn_scope(defs, _alias, exports) {
@@ -237,6 +278,94 @@ fn module_ctor_names(defs) {
   })
 }
 
+fn module_type_names(defs) {
+  list_filter_map(defs, fn(definition) {
+    case definition {
+      DCustomType(custom) -> {
+        let CustomType(_, name, _, _, _) = custom
+        Ok(name)
+      }
+      DTypeAlias(_, name, _, _) -> Ok(name)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+fn module_type_scope(defs, types) {
+  list.fold(import_decls(defs), dict.new(), fn(acc, import_decl) {
+    let Import(path, items) = import_decl
+    let source = last_segment(path)
+    case dict.get(types, source) {
+      Error(_) -> acc
+      Ok(names) ->
+        list.fold(items, acc, fn(acc, item) {
+          case list_contains(names, item) {
+            True -> dict.insert(acc, item, source)
+            False -> acc
+          }
+        })
+    }
+  })
+}
+
+/// Types that stay global (primitives, builtins and prelude types), so a
+/// module may not shadow them.
+fn is_global_type(name) -> Bool {
+  list_contains(
+    [
+      "BitArray", "FileResult", "Bool", "Int", "Float", "String", "Nil", "List",
+      "Result", "Option", "Order",
+    ],
+    name,
+  )
+}
+
+fn module_has_type(ctx: Ctx, module, name) -> Bool {
+  case dict.get(ctx.types, module) {
+    Ok(names) -> list_contains(names, name)
+    Error(_) -> False
+  }
+}
+
+/// Resolves a type reference to its module-scoped canonical name.
+fn resolve_type_name(ctx: Ctx, module, name) -> String {
+  case is_global_type(name) {
+    True -> name
+    False ->
+      case lookups(ctx.type_scope, module, name) {
+        Ok(source) -> qualify(source, name)
+        Error(_) ->
+          case module_has_type(ctx, module, name) {
+            True -> qualify(module, name)
+            False ->
+              case dict.get(ctx.type_owners, name) {
+                Ok([only]) -> qualify(only, name)
+                _ -> name
+              }
+          }
+      }
+  }
+}
+
+fn resolve_type(ctx: Ctx, module, ty) -> Type {
+  case ty {
+    ast.TNamed(name) -> ast.TNamed(resolve_type_name(ctx, module, name))
+    ast.TApp(name, args) ->
+      ast.TApp(
+        resolve_type_name(ctx, module, name),
+        list_map(args, fn(arg) { resolve_type(ctx, module, arg) }),
+      )
+    ast.TFun(params, ret) ->
+      ast.TFun(
+        list_map(params, fn(param) { resolve_type(ctx, module, param) }),
+        resolve_type(ctx, module, ret),
+      )
+    ast.TTuple(items) ->
+      ast.TTuple(list_map(items, fn(item) { resolve_type(ctx, module, item) }))
+    _ -> ty
+  }
+}
+
 fn module_ctor_set(defs) {
   list.fold(module_ctor_names(defs), dict.new(), fn(acc, ctor) {
     dict.insert(acc, ctor, True)
@@ -337,8 +466,11 @@ fn rewrite_definition(definition, module, ctx) -> Definition {
       DFunction(Function(
         function.is_pub,
         qualify(module, function.name),
-        function.params,
-        function.ret,
+        list_map(function.params, fn(param) {
+          let #(name, ty) = param
+          #(name, resolve_type(ctx, module, ty))
+        }),
+        resolve_type(ctx, module, function.ret),
         rewrite_expr(
           function.body,
           module,
@@ -350,15 +482,34 @@ fn rewrite_definition(definition, module, ctx) -> Definition {
         ),
         function.line,
       ))
+    DTypeAlias(is_pub, name, generics, ty) ->
+      DTypeAlias(
+        is_pub,
+        case is_global_type(name) {
+          True -> name
+          False -> qualify(module, name)
+        },
+        generics,
+        resolve_type(ctx, module, ty),
+      )
     DCustomType(custom) -> {
       let CustomType(is_pub, name, generics, variants, is_opaque) = custom
       DCustomType(CustomType(
         is_pub,
-        name,
+        case is_global_type(name) {
+          True -> name
+          False -> qualify(module, name)
+        },
         generics,
         list_map(variants, fn(variant) {
           let Variant(variant_name, fields) = variant
-          Variant(canonical(module, variant_name), fields)
+          Variant(
+            canonical(module, variant_name),
+            list_map(fields, fn(field) {
+              let #(field_name, field_ty) = field
+              #(field_name, resolve_type(ctx, module, field_ty))
+            }),
+          )
         }),
         is_opaque,
       ))
