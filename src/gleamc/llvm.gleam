@@ -44,6 +44,8 @@ pub fn emit(
   let ir.Module(functions) = ir_module
   let recursive = ownership.recursive_types(ctors)
   let tuples = collect_tuple_types(custom_types, functions)
+  let fn_types = collect_fn_types(custom_types, functions)
+  let env_structs = collect_env_structs(functions)
   let lit_list = collect_literals(functions)
   let lits =
     lit_list
@@ -68,6 +70,16 @@ pub fn emit(
       list.map(tuples, fn(ty) { tuple_type_decl(ty, recursive) }),
       "\n",
     )
+    <> "\n"
+    <> string.join(
+      list.map(fn_types, fn(ty) { fn_type_decl(ty, recursive) }),
+      "\n",
+    )
+    <> "\n"
+    <> string.join(
+      list.map(env_structs, fn(entry) { env_type_decl(entry, recursive) }),
+      "\n",
+    )
 
   let builtins =
     string.join(
@@ -84,6 +96,11 @@ pub fn emit(
       list.map(functions, fn(function) {
         emit_function(function, recursive, lits, custom_types, ctors, tuples)
       }),
+      "\n\n",
+    )
+  let wrappers =
+    string.join(
+      list.map(collect_wrappers(functions), fn(entry) { entry }),
       "\n\n",
     )
 
@@ -105,6 +122,8 @@ pub fn emit(
   <> builtins
   <> "\n\n"
   <> defs
+  <> "\n\n"
+  <> wrappers
   <> "\n"
   <> main_code
 }
@@ -200,6 +219,7 @@ fn llvm_ty(ty: Type, recursive: Dict(String, Bool)) -> String {
     ast.TFloat -> "double"
     ast.TBool -> "i1"
     TString -> "%GleamcString"
+    TNamed("void*") -> "i8*"
     TNamed("BitArray") -> "%GleamcBitArray"
     TNamed("FileResult") -> "%GleamcFileResult"
     ast.TNil -> "i32"
@@ -332,7 +352,7 @@ fn variant_index(ctx: Ctx, ctor: String, type_name: String) -> Int {
   {
     Ok(custom) -> {
       let ast.CustomType(_, _, _, variants, _) = custom
-      case find_variant_index(variants, base) {
+      case find_variant_index(variants, base, type_name) {
         Ok(index) -> index
         Error(_) -> 0
       }
@@ -344,15 +364,16 @@ fn variant_index(ctx: Ctx, ctor: String, type_name: String) -> Int {
 fn find_variant_index(
   variants: List(ast.Variant),
   base: String,
+  type_name: String,
 ) -> Result(Int, Nil) {
   case variants {
     [] -> Error(Nil)
     [variant, ..rest] -> {
       let ast.Variant(name, _) = variant
-      case name == base {
+      case base_ctor_name(name, type_name) == base {
         True -> Ok(0)
         False ->
-          case find_variant_index(rest, base) {
+          case find_variant_index(rest, base, type_name) {
             Ok(index) -> Ok(index + 1)
             Error(_) -> Error(Nil)
           }
@@ -755,7 +776,7 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
                 <> type_name
                 <> ", %"
                 <> type_name
-                <> "* null, i32 1) to i64",
+                <> "* null, i32 1) to i64)",
             )
           let #(p, b) = fresh(b)
           let b =
@@ -818,6 +839,136 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
       let group = variant_index(ctx, ctor, type_name) + 1
       let #(tmp, b) = extract_value(sty, sv, [group, index], b)
       let b = store_local(ctx, dest, llvm_ty(ty, ctx.recursive), tmp, b)
+      #(b, Nil)
+    }
+    ir.OpClosure(dest, code, captures, env_ty, fn_ty) -> {
+      let fn_s = llvm_ty(fn_ty, ctx.recursive)
+      let cty = code_ty(fn_ty, ctx.recursive)
+      let #(env_reg, b) = case captures {
+        [] -> #("null", b)
+        _ -> {
+          let #(b, fields) = read_typed_args(ctx, captures, b)
+          let #(sz, b) = sizeof_reg(env_ty, b)
+          let #(p, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  " <> p <> " = call i8* @gleamc_alloc(i64 " <> sz <> ")",
+            )
+          let #(ep, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  " <> ep <> " = bitcast i8* " <> p <> " to %" <> env_ty <> "*",
+            )
+          let b = store_env_fields(env_ty, ep, fields, 0, b)
+          #(p, b)
+        }
+      }
+      let #(c0, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> c0
+            <> " = insertvalue "
+            <> fn_s
+            <> " undef, "
+            <> cty
+            <> " @"
+            <> code
+            <> ", 0",
+        )
+      let #(c1, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> c1
+            <> " = insertvalue "
+            <> fn_s
+            <> " "
+            <> c0
+            <> ", i8* "
+            <> env_reg
+            <> ", 1",
+        )
+      let #(c2, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> c2
+            <> " = insertvalue "
+            <> fn_s
+            <> " "
+            <> c1
+            <> ", void (i8*)* null, 2",
+        )
+      let b = store_local(ctx, dest, fn_s, c2, b)
+      #(b, Nil)
+    }
+    ir.OpEnvGet(dest, env_ty, index, ty) -> {
+      let ty_s = llvm_ty(ty, ctx.recursive)
+      let #(envraw, b) = fresh(b)
+      let b = emit_line(b, "  " <> envraw <> " = load i8*, i8** %l.__env")
+      let #(ep, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> ep <> " = bitcast i8* " <> envraw <> " to %" <> env_ty <> "*",
+        )
+      let #(fp, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> fp
+            <> " = getelementptr %"
+            <> env_ty
+            <> ", %"
+            <> env_ty
+            <> "* "
+            <> ep
+            <> ", i32 0, i32 "
+            <> int.to_string(index),
+        )
+      let #(v, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> v <> " = load " <> ty_s <> ", " <> ty_s <> "* " <> fp,
+        )
+      let b = store_local(ctx, dest, ty_s, v, b)
+      #(b, Nil)
+    }
+    ir.OpCallIndirect(dest, fval, args, ret_ty) -> {
+      let fn_ty = operand_type(ctx.by_name, fval)
+      let fn_s = llvm_ty(fn_ty, ctx.recursive)
+      let #(_, fv, b) = read_val(ctx, fval, b)
+      let #(code, b) = extract_value(fn_s, fv, [0], b)
+      let #(env, b) = extract_value(fn_s, fv, [1], b)
+      let #(b, arg_list) = read_args(ctx, args, b)
+      let ret_s = llvm_ty(ret_ty, ctx.recursive)
+      let callargs = case arg_list {
+        "" -> "i8* " <> env
+        _ -> "i8* " <> env <> ", " <> arg_list
+      }
+      let #(tmp, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> tmp
+            <> " = call "
+            <> ret_s
+            <> " "
+            <> code
+            <> "("
+            <> callargs
+            <> ")",
+        )
+      let b = store_local(ctx, dest, ret_s, tmp, b)
       #(b, Nil)
     }
     _ -> {
@@ -1062,6 +1213,60 @@ fn float_text(v: Float) -> String {
   }
 }
 
+fn sizeof_reg(ty_name: String, b: Builder) {
+  let #(p, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  "
+        <> p
+        <> " = getelementptr %"
+        <> ty_name
+        <> ", %"
+        <> ty_name
+        <> "* null, i32 1",
+    )
+  let #(sz, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  " <> sz <> " = ptrtoint %" <> ty_name <> "* " <> p <> " to i64",
+    )
+  #(sz, b)
+}
+
+fn store_env_fields(
+  env_ty: String,
+  ep: String,
+  fields,
+  index: Int,
+  b: Builder,
+) -> Builder {
+  case fields {
+    [] -> b
+    [#(ty, v), ..rest] -> {
+      let #(fp, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> fp
+            <> " = getelementptr %"
+            <> env_ty
+            <> ", %"
+            <> env_ty
+            <> "* "
+            <> ep
+            <> ", i32 0, i32 "
+            <> int.to_string(index),
+        )
+      let b =
+        emit_line(b, "  store " <> ty <> " " <> v <> ", " <> ty <> "* " <> fp)
+      store_env_fields(env_ty, ep, rest, index + 1, b)
+    }
+  }
+}
+
 fn read_typed_args(ctx: Ctx, args: List(ir.Operand), b: Builder) {
   case args {
     [] -> #(b, [])
@@ -1122,6 +1327,215 @@ fn insert_fields(ty_s, base, fields, group, start, b) {
       insert_fields(ty_s, tmp, rest, group, start + 1, b)
     }
   }
+}
+
+fn code_ty(fn_ty: Type, recursive: Dict(String, Bool)) -> String {
+  case fn_ty {
+    ast.TFun(params, ret) -> {
+      let args = case params {
+        [] -> "i8*"
+        _ ->
+          "i8*, "
+          <> string.join(
+            list.map(params, fn(param) { llvm_ty(param, recursive) }),
+            ", ",
+          )
+      }
+      llvm_ty(ret, recursive) <> " (" <> args <> ")*"
+    }
+    _ -> "void ()*"
+  }
+}
+
+fn fn_type_decl(fn_ty: Type, recursive: Dict(String, Bool)) -> String {
+  case fn_ty {
+    ast.TFun(_, _) ->
+      "%GleamFn_"
+      <> mangle_type(fn_ty)
+      <> " = type { "
+      <> code_ty(fn_ty, recursive)
+      <> ", i8*, void (i8*)* }"
+    _ -> ""
+  }
+}
+
+fn env_type_decl(entry, recursive: Dict(String, Bool)) -> String {
+  let #(name, field_types) = entry
+  let fields = list.map(field_types, fn(ty) { llvm_ty(ty, recursive) })
+  "%" <> name <> " = type { " <> string.join(fields, ", ") <> " }"
+}
+
+fn collect_env_structs(
+  functions: List(ir.Function),
+) -> List(#(String, List(Type))) {
+  list.fold(functions, [], fn(acc: List(#(String, List(Type))), function) {
+    let by_name = locals_map(local_list(function))
+    list.fold(op_list(function), acc, fn(acc, op) {
+      case op {
+        ir.OpClosure(_, _, captures, env_ty, _) ->
+          case env_ty {
+            "" -> acc
+            _ ->
+              case list.any(acc, fn(entry) { entry.0 == env_ty }) {
+                True -> acc
+                False ->
+                  list.append(acc, [
+                    #(
+                      env_ty,
+                      list.map(captures, fn(cap) { operand_type(by_name, cap) }),
+                    ),
+                  ])
+              }
+          }
+        _ -> acc
+      }
+    })
+  })
+}
+
+fn collect_fn_types(
+  custom_types: List(ast.CustomType),
+  functions: List(ir.Function),
+) -> List(Type) {
+  let from_custom =
+    list.flat_map(custom_types, fn(custom) {
+      let ast.CustomType(_, _, _, variants, _) = custom
+      list.flat_map(variants, fn(variant) {
+        let ast.Variant(_, fields) = variant
+        list.flat_map(fields, fn(field) {
+          let #(_, ty) = field
+          fn_types_in(ty)
+        })
+      })
+    })
+  let from_fns =
+    list.flat_map(functions, fn(function) {
+      let ir.Function(_, _, ret, blocks, locals) = function
+      let from_locals =
+        list.flat_map(locals, fn(local) {
+          let ir.Local(_, ty) = local
+          fn_types_in(ty)
+        })
+      let from_ops =
+        list.flat_map(blocks, fn(block) {
+          let ir.Block(_, ops, _) = block
+          list.flat_map(ops, fn(op) { list.flat_map(op_types(op), fn_types_in) })
+        })
+      list.append(fn_types_in(ret), list.append(from_locals, from_ops))
+    })
+  dedupe_types(list.append(from_custom, from_fns), dict.new(), [])
+}
+
+fn fn_types_in(ty: Type) -> List(Type) {
+  case ty {
+    ast.TFun(params, ret) -> [
+      ty,
+      ..list.append(list.flat_map(params, fn_types_in), fn_types_in(ret))
+    ]
+    ast.TTuple(types) -> list.flat_map(types, fn_types_in)
+    ast.TApp(_, args) -> list.flat_map(args, fn_types_in)
+    _ -> []
+  }
+}
+
+fn local_list(function: ir.Function) -> List(ir.Local) {
+  let ir.Function(_, _, _, _, locals) = function
+  locals
+}
+
+fn op_list(function: ir.Function) -> List(ir.Op) {
+  let ir.Function(_, _, _, blocks, _) = function
+  list.flat_map(blocks, fn(block) {
+    let ir.Block(_, ops, _) = block
+    ops
+  })
+}
+
+fn collect_wrappers(functions: List(ir.Function)) -> List(String) {
+  let by_name =
+    list.fold(functions, dict.new(), fn(acc, f) { dict.insert(acc, f.name, f) })
+  let codes =
+    list.flat_map(functions, fn(function) {
+      list.filter_map(op_list(function), fn(op) {
+        case op {
+          ir.OpClosure(_, code, _, "", _) -> Ok(code)
+          _ -> Error(Nil)
+        }
+      })
+    })
+    |> dedupe_strings
+    |> list.filter_map(fn(code) {
+      case string.starts_with(code, "__gv_") {
+        True -> Ok(code)
+        False -> Error(Nil)
+      }
+    })
+  list.map(codes, fn(code) {
+    let name = string.slice(code, 5, string.length(code))
+    case dict.get(by_name, name) {
+      Ok(function) -> wrapper_def(function, code)
+      Error(_) -> ""
+    }
+  })
+}
+
+fn dedupe_strings(items: List(String)) -> List(String) {
+  list.fold(items, [], fn(acc, item) {
+    case list.contains(acc, item) {
+      True -> acc
+      False -> list.append(acc, [item])
+    }
+  })
+}
+
+fn wrapper_def(function: ir.Function, code: String) -> String {
+  let ir.Function(name, params, ret, _, locals) = function
+  let by_name = locals_map(locals)
+  let recursive = dict.new()
+  let decls =
+    list.index_map(params, fn(param, index) {
+      llvm_ty(local_type(by_name, param), recursive)
+      <> " %a"
+      <> int.to_string(index)
+    })
+  let args =
+    string.join(
+      list.index_map(params, fn(_, index) { "%a" <> int.to_string(index) }),
+      ", ",
+    )
+  let ret_s = llvm_ty(ret, recursive)
+  let lines = case ret_s {
+    "i32" ->
+      "  call "
+      <> ret_s
+      <> " @Gleamc_"
+      <> name
+      <> "("
+      <> args
+      <> ")\n  ret i32 0"
+    _ ->
+      "  %r = call "
+      <> ret_s
+      <> " @Gleamc_"
+      <> name
+      <> "("
+      <> args
+      <> ")\n  ret "
+      <> ret_s
+      <> " %r"
+  }
+  "define "
+  <> ret_s
+  <> " @"
+  <> code
+  <> "(i8* %env"
+  <> case decls {
+    [] -> ""
+    _ -> ", " <> string.join(decls, ", ")
+  }
+  <> ") {\n"
+  <> lines
+  <> "\n}"
 }
 
 // ---------------------------------------------------------------------------
