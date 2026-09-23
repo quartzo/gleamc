@@ -11,6 +11,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import gleamc/util
 import gleamc/ast.{
   type CustomType, type Expr, type Function, type Module, type Pattern,
   type Type, Arm, CustomType, DCustomType, DFunction, EBinop, EBitArray, EBlock,
@@ -1878,7 +1879,7 @@ fn function_type_vars(function: Function) -> List(String) {
       let #(_, surface) = param
       type_vars_in(surface)
     })
-  dedupe(list.append(from_params, type_vars_in(ret)))
+  util.dedupe(list.append(from_params, type_vars_in(ret)))
 }
 
 fn type_vars_in(surface: Type) -> List(String) {
@@ -1894,15 +1895,6 @@ fn type_vars_in(surface: Type) -> List(String) {
 
 fn merge_dicts(a, b) {
   dict.fold(b, a, fn(acc, k, v) { dict.insert(acc, k, v) })
-}
-
-fn dedupe(items) {
-  list.fold(items, [], fn(acc, item) {
-    case list.contains(acc, item) {
-      True -> acc
-      False -> list.append(acc, [item])
-    }
-  })
 }
 
 fn result_try(result, next) {

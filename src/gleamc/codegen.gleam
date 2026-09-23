@@ -15,6 +15,7 @@ import gleamc/ast.{
 import gleamc/checker
 import gleamc/ir
 import gleamc/ownership
+import gleamc/util
 
 // ---------------------------------------------------------------------------
 // entry point
@@ -579,12 +580,7 @@ fn collect_value_wrappers(functions, recursive) -> List(String) {
 }
 
 fn dedupe_strings(items) {
-  list.fold(items, [], fn(acc, item) {
-    case list.contains(acc, item) {
-      True -> acc
-      False -> list.append(acc, [item])
-    }
-  })
+  util.dedupe(items)
 }
 
 fn wrapper_for(function, code, recursive) -> String {
@@ -806,19 +802,24 @@ fn collect_eq_types(custom_types, tuple_types, ctors) -> List(Type) {
 }
 
 fn expand_eq(pending, ctors, acc) {
+  let #(out, _seen) = expand_eq_loop(pending, ctors, acc, dict.new())
+  out
+}
+
+fn expand_eq_loop(pending, ctors, acc, seen) {
   case pending {
-    [] -> acc
+    [] -> #(acc, seen)
     [ty, ..rest] -> {
       case eq_key(ty) {
-        Error(_) -> expand_eq(rest, ctors, acc)
+        Error(_) -> expand_eq_loop(rest, ctors, acc, seen)
         Ok(key) ->
-          case list.any(acc, fn(existing) { type_key(existing) == key }) {
-            True -> expand_eq(rest, ctors, acc)
-            False ->
-              expand_eq(list.append(rest, eq_fields(ty, ctors)), ctors, [
+          case dict.get(seen, key) {
+            Ok(_) -> expand_eq_loop(rest, ctors, acc, seen)
+            Error(_) ->
+              expand_eq_loop(list.append(rest, eq_fields(ty, ctors)), ctors, [
                 ty,
                 ..acc
-              ])
+              ], dict.insert(seen, key, True))
           }
       }
     }
@@ -999,17 +1000,22 @@ fn collect_glue_types(functions, _custom_types, ctors) -> List(Type) {
 }
 
 fn expand_glue(pending, ctors, acc) {
+  let #(out, _seen) = expand_glue_loop(pending, ctors, acc, dict.new())
+  out
+}
+
+fn expand_glue_loop(pending, ctors, acc, seen) {
   case pending {
-    [] -> acc
+    [] -> #(acc, seen)
     [ty, ..rest] -> {
       case glue_key(ty) {
-        Error(_) -> expand_glue(rest, ctors, acc)
+        Error(_) -> expand_glue_loop(rest, ctors, acc, seen)
         Ok(key) ->
-          case list.any(acc, fn(existing) { type_key(existing) == key }) {
-            True -> expand_glue(rest, ctors, acc)
-            False -> {
+          case dict.get(seen, key) {
+            Ok(_) -> expand_glue_loop(rest, ctors, acc, seen)
+            Error(_) -> {
               let inner = glue_fields(ty, ctors)
-              expand_glue(list.append(rest, inner), ctors, [ty, ..acc])
+              expand_glue_loop(list.append(rest, inner), ctors, [ty, ..acc], dict.insert(seen, key, True))
             }
           }
       }
@@ -1873,19 +1879,24 @@ fn collect_cmp_types(functions, ctors) -> List(Type) {
 }
 
 fn expand_cmp(pending, ctors, acc) {
+  let #(out, _seen) = expand_cmp_loop(pending, ctors, acc, dict.new())
+  out
+}
+
+fn expand_cmp_loop(pending, ctors, acc, seen) {
   case pending {
-    [] -> acc
+    [] -> #(acc, seen)
     [ty, ..rest] ->
       case cmp_key(ty) {
-        Error(_) -> expand_cmp(rest, ctors, acc)
+        Error(_) -> expand_cmp_loop(rest, ctors, acc, seen)
         Ok(key) ->
-          case list.any(acc, fn(existing) { type_key(existing) == key }) {
-            True -> expand_cmp(rest, ctors, acc)
-            False ->
-              expand_cmp(list.append(rest, cmp_fields(ty, ctors)), ctors, [
+          case dict.get(seen, key) {
+            Ok(_) -> expand_cmp_loop(rest, ctors, acc, seen)
+            Error(_) ->
+              expand_cmp_loop(list.append(rest, cmp_fields(ty, ctors)), ctors, [
                 ty,
                 ..acc
-              ])
+              ], dict.insert(seen, key, True))
           }
       }
   }
@@ -2051,19 +2062,24 @@ fn collect_show_types(functions, ctors) -> List(Type) {
 }
 
 fn expand_show(pending, ctors, acc) {
+  let #(out, _seen) = expand_show_loop(pending, ctors, acc, dict.new())
+  out
+}
+
+fn expand_show_loop(pending, ctors, acc, seen) {
   case pending {
-    [] -> acc
+    [] -> #(acc, seen)
     [ty, ..rest] ->
       case show_key(ty) {
-        Error(_) -> expand_show(rest, ctors, acc)
+        Error(_) -> expand_show_loop(rest, ctors, acc, seen)
         Ok(key) ->
-          case list.any(acc, fn(existing) { type_key(existing) == key }) {
-            True -> expand_show(rest, ctors, acc)
-            False ->
-              expand_show(list.append(rest, show_fields(ty, ctors)), ctors, [
+          case dict.get(seen, key) {
+            Ok(_) -> expand_show_loop(rest, ctors, acc, seen)
+            Error(_) ->
+              expand_show_loop(list.append(rest, show_fields(ty, ctors)), ctors, [
                 ty,
                 ..acc
-              ])
+              ], dict.insert(seen, key, True))
           }
       }
   }

@@ -12,6 +12,7 @@ import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/string
+import gleamc/util
 
 pub type Ty {
   Con(name: String, args: List(Ty))
@@ -211,13 +212,13 @@ pub fn free_rigs(ty: Ty) -> List(Int) {
 
 /// Quantifies over the rigid variables of a declaration.
 pub fn generalize_rigs(ty: Ty) -> Scheme {
-  Scheme(dedupe(free_rigs(ty)), ty)
+  Scheme(util.dedupe(free_rigs(ty)), ty)
 }
 
 /// Quantifies over the free variables of `ty` that are not free in `env`.
 pub fn generalize(env_free: List(Int), ty: Ty) -> Scheme {
   let vars =
-    list.filter(dedupe(free_vars(ty)), fn(id) { !list.contains(env_free, id) })
+    list.filter(util.dedupe(free_vars(ty)), fn(id) { !list.contains(env_free, id) })
   Scheme(vars, ty)
 }
 
@@ -323,15 +324,6 @@ pub fn var_name(id: Int) -> String {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
-
-fn dedupe(items) {
-  list.fold(items, [], fn(acc, item) {
-    case list.contains(acc, item) {
-      True -> acc
-      False -> list.append(acc, [item])
-    }
-  })
-}
 
 fn result_try(result, next) {
   case result {

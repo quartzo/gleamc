@@ -126,18 +126,23 @@ fn mutual_groups(names: List(String), edges: List(Edge)) -> List(Group) {
     })
   // Assign each name to the group of the first member that reaches it and is
   // reached by it; iterate in `names` order for determinism.
-  let groups =
-    list.fold(members, [], fn(acc, name) {
-      case list.any(acc, fn(group) { list.contains(group, name) }) {
-        True -> acc
-        False -> {
+  let #(groups, _seen) =
+    list.fold(members, #([], dict.new()), fn(acc, name) {
+      let #(groups, seen) = acc
+      case dict.get(seen, name) {
+        Ok(_) -> #(groups, seen)
+        Error(_) -> {
           let group =
             list.filter(members, fn(other) { mutually(name, other, reach) })
-          list.append(acc, [group])
+          let seen =
+            list.fold(group, seen, fn(seen, member) {
+              dict.insert(seen, member, True)
+            })
+          #([group, ..groups], seen)
         }
       }
     })
-  list.map(groups, fn(group) { Group(group, []) })
+  list.map(list.reverse(groups), fn(group) { Group(group, []) })
 }
 
 fn mutually(a, b, reach) -> Bool {

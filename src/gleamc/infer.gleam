@@ -12,6 +12,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleamc/util
 import gleamc/ast.{
   type CustomType, type Expr, type Function, type Module, type Pattern,
   type Type, type Variant, Arm, CustomType, DCustomType, DFunction, EBinop,
@@ -140,7 +141,7 @@ fn align_scheme(functions, function: Function, var_ids) {
           }
       }
     })
-  dict.insert(functions, name, Scheme(dedupe_ints(ids), zonked))
+  dict.insert(functions, name, Scheme(util.dedupe(ids), zonked))
 }
 
 fn surface_var_id(var_name, id_map) -> Result(Int, Nil) {
@@ -156,15 +157,6 @@ fn surface_var_id(var_name, id_map) -> Result(Int, Nil) {
 
 fn general_var_name(id: Int) -> String {
   "__gen_" <> int.to_string(id)
-}
-
-fn dedupe_ints(ids) -> List(Int) {
-  list.fold(ids, [], fn(acc, id) {
-    case list.contains(acc, id) {
-      True -> acc
-      False -> list.append(acc, [id])
-    }
-  })
 }
 
 fn surface_of_general(ty: Ty) -> Type {
@@ -542,7 +534,7 @@ fn function_type_vars(function: Function) -> List(String) {
       let #(_, surface) = param
       type_vars_in(surface)
     })
-  dedupe(list.append(from_params, type_vars_in(ret)))
+  util.dedupe(list.append(from_params, type_vars_in(ret)))
 }
 
 fn type_vars_in(surface: Type) -> List(String) {
@@ -1487,15 +1479,6 @@ fn generalize_in(env: Env, st: St, ty: Ty) -> Scheme {
       })
     })
   types.generalize(env_free, types.zonk(ty, st.subst))
-}
-
-fn dedupe(items) {
-  list.fold(items, [], fn(acc, item) {
-    case list.contains(acc, item) {
-      True -> acc
-      False -> list.append(acc, [item])
-    }
-  })
 }
 
 fn result_try(result, next) {
