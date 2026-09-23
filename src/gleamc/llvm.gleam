@@ -29,6 +29,9 @@ type Ctx {
     custom_types: List(ast.CustomType),
     ctors: Dict(String, checker.CtorInfo),
     tuples: List(Type),
+    fn_name: String,
+    entry: String,
+    params: List(String),
   )
 }
 
@@ -638,6 +641,12 @@ fn emit_function(
       custom_types: custom_types,
       ctors: ctors,
       tuples: tuples,
+      fn_name: name,
+      entry: case blocks {
+        [ir.Block(label, _, _), ..] -> block_name_of(blocks, label)
+        [] -> "bb0"
+      },
+      params: params,
     )
   let b = Builder(next: 0, lines: [])
   let b = emit_allocas(ctx, params, locals, b)
@@ -646,7 +655,7 @@ fn emit_function(
       emit_line(b, "  br label %" <> block_name(ctx, label))
     [] -> b
   }
-  let #(b, _) = emit_block_list(ctx, blocks, b)
+  let #(b, _) = emit_block_list(ctx, blocks, blocks, b)
   let lines = list.reverse(b.lines)
   let args =
     list.map(params, fn(param) {
@@ -701,16 +710,161 @@ fn emit_allocas(
   })
 }
 
-fn emit_block_list(ctx: Ctx, blocks: List(ir.Block), b: Builder) {
+fn emit_block_list(
+  ctx: Ctx,
+  all: List(ir.Block),
+  blocks: List(ir.Block),
+  b: Builder,
+) {
   case blocks {
     [] -> #(b, Nil)
     [block, ..rest] -> {
       let ir.Block(label, ops, term) = block
       let b = emit_line(b, "\n" <> block_name(ctx, label) <> ":")
-      let #(b, _) = emit_ops(ctx, ops, b)
-      let b = emit_term(ctx, term, b)
-      emit_block_list(ctx, rest, b)
+      let b = case detect_self_tail(ctx, all, ops, term) {
+        Ok(#(pre, args, post)) -> emit_self_tail(ctx, pre, args, post, b)
+        Error(_) -> {
+          let #(b, _) = emit_ops(ctx, ops, b)
+          emit_term(ctx, term, b)
+        }
+      }
+      emit_block_list(ctx, all, rest, b)
     }
+  }
+}
+
+/// A self tail call in the IR is `... OpCall(d, self, args) ...drops... ;
+/// Ret(d)`. The block already carries the correct ownership retains/drops, so
+/// it is emitted as `rebind params + goto entry` (constant stack) without
+/// touching the ownership pass.
+fn detect_self_tail(
+  ctx: Ctx,
+  all: List(ir.Block),
+  ops: List(ir.Op),
+  term: ir.Terminator,
+) {
+  case term {
+    ir.Ret(ir.Var(dest)) -> find_tail_call(ctx.fn_name, dest, ops, [])
+    ir.Jmp(end) -> find_tail_call_join(ctx.fn_name, end, all, ops, [])
+    _ -> Error(Nil)
+  }
+}
+
+/// Tail call whose result is copied into the `case` result local and jumps to
+/// the return block: `OpCall(d, self, args); OpCopy(res, d); ... ; Jmp(end)`
+/// with `end: Ret(res)`.
+fn find_tail_call_join(fn_name, end, all, ops, before_rev) {
+  case ops {
+    [] -> Error(Nil)
+    [op, ..rest] ->
+      case op {
+        ir.OpCall(d, fun, args, _) ->
+          case fun == fn_name {
+            True ->
+              case rest {
+                [ir.OpCopy(res, src, _), ..after] ->
+                  case
+                    src == ir.Var(d)
+                    && list.all(after, is_cleanup)
+                    && returns_local(all, end, res)
+                  {
+                    True -> Ok(#(list.reverse(before_rev), args, after))
+                    False ->
+                      find_tail_call_join(fn_name, end, all, rest, [
+                        op,
+                        ..before_rev
+                      ])
+                  }
+                _ ->
+                  find_tail_call_join(fn_name, end, all, rest, [
+                    op,
+                    ..before_rev
+                  ])
+              }
+            False ->
+              find_tail_call_join(fn_name, end, all, rest, [op, ..before_rev])
+          }
+        _ -> find_tail_call_join(fn_name, end, all, rest, [op, ..before_rev])
+      }
+  }
+}
+
+fn returns_local(all, label, local) -> Bool {
+  case
+    list.find(all, fn(block) {
+      let ir.Block(l, _, _) = block
+      l == label
+    })
+  {
+    Ok(ir.Block(_, _, ir.Ret(ir.Var(v)))) -> v == local
+    _ -> False
+  }
+}
+
+fn find_tail_call(fn_name, dest, ops, before_rev) {
+  case ops {
+    [] -> Error(Nil)
+    [op, ..rest] ->
+      case op {
+        ir.OpCall(d, fun, args, _) ->
+          case d == dest {
+            True ->
+              case fun == fn_name {
+                True ->
+                  case list.all(rest, is_cleanup) {
+                    True -> Ok(#(list.reverse(before_rev), args, rest))
+                    False -> Error(Nil)
+                  }
+                False -> Error(Nil)
+              }
+            False -> find_tail_call(fn_name, dest, rest, [op, ..before_rev])
+          }
+        _ -> find_tail_call(fn_name, dest, rest, [op, ..before_rev])
+      }
+  }
+}
+
+fn is_cleanup(op) -> Bool {
+  case op {
+    ir.OpDrop(_, _) | ir.OpRetain(_, _) -> True
+    _ -> False
+  }
+}
+
+fn emit_self_tail(ctx: Ctx, pre, args, post, b) -> Builder {
+  let #(b, _) = emit_ops(ctx, pre, b)
+  let #(b, vals) = read_typed_args(ctx, args, b)
+  let #(b, _) = emit_ops(ctx, post, b)
+  let b =
+    list.index_fold(vals, b, fn(b, pair, index) {
+      let #(ty, v) = pair
+      case list_at(ctx.params, index) {
+        Ok(pname) ->
+          emit_line(
+            b,
+            "  store " <> ty <> " " <> v <> ", " <> ty <> "* %l." <> safe(pname),
+          )
+        Error(_) -> b
+      }
+    })
+  emit_line(b, "  br label %" <> ctx.entry)
+}
+
+fn block_name_of(blocks: List(ir.Block), label: String) -> String {
+  case
+    list.find(blocks, fn(block) {
+      let ir.Block(l, _, _) = block
+      l == label
+    })
+  {
+    Ok(ir.Block(_, _, _)) -> {
+      let names = block_names(blocks)
+      case dict.get(names, label) {
+        Ok(found) -> found
+        Error(_) -> "bb0"
+      }
+    }
+    Error(_) -> "bb0"
   }
 }
 
@@ -1249,23 +1403,50 @@ fn emit_term(ctx: Ctx, term: ir.Terminator, b: Builder) {
       emit_line(b, "  ret " <> ret_ty <> " " <> v)
     }
     ir.Tailcall(fun, args) -> {
-      let ret_s = llvm_ty(ctx.ret, ctx.recursive)
-      let #(b, arg_list) = read_args(ctx, args, b)
-      let #(r, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  "
-            <> r
-            <> " = musttail call "
-            <> ret_s
-            <> " @Gleamc_"
-            <> fun
-            <> "("
-            <> arg_list
-            <> ")",
-        )
-      emit_line(b, "  ret " <> ret_s <> " " <> r)
+      case fun == ctx.fn_name {
+        True -> {
+          let #(b, vals) = read_typed_args(ctx, args, b)
+          let b =
+            list.index_fold(vals, b, fn(b, pair, index) {
+              let #(ty, v) = pair
+              case list_at(ctx.params, index) {
+                Ok(pname) ->
+                  emit_line(
+                    b,
+                    "  store "
+                      <> ty
+                      <> " "
+                      <> v
+                      <> ", "
+                      <> ty
+                      <> "* %l."
+                      <> safe(pname),
+                  )
+                Error(_) -> b
+              }
+            })
+          emit_line(b, "  br label %" <> ctx.entry)
+        }
+        False -> {
+          let ret_s = llvm_ty(ctx.ret, ctx.recursive)
+          let #(b, arg_list) = read_args(ctx, args, b)
+          let #(r, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> r
+                <> " = call "
+                <> ret_s
+                <> " @Gleamc_"
+                <> fun
+                <> "("
+                <> arg_list
+                <> ")",
+            )
+          emit_line(b, "  ret " <> ret_s <> " " <> r)
+        }
+      }
     }
     ir.Unreachable -> emit_line(b, "  unreachable")
   }
@@ -1536,6 +1717,18 @@ fn store_env_fields(
       let b =
         emit_line(b, "  store " <> ty <> " " <> v <> ", " <> ty <> "* " <> fp)
       store_env_fields(env_ty, ep, rest, index + 1, b)
+    }
+  }
+}
+
+fn list_at(items: List(String), index: Int) -> Result(String, Nil) {
+  case items {
+    [] -> Error(Nil)
+    [first, ..rest] -> {
+      case index {
+        0 -> Ok(first)
+        _ -> list_at(rest, index - 1)
+      }
     }
   }
 }
