@@ -103,6 +103,21 @@ pub fn emit(
       list.map(collect_wrappers(functions), fn(entry) { entry }),
       "\n\n",
     )
+  let eq_glue =
+    string.join(
+      {
+        let seeds =
+          list.append(
+            list.map(custom_types, fn(custom) {
+              let ast.CustomType(_, name, _, _, _) = custom
+              TNamed(name)
+            }),
+            tuples,
+          )
+        list.map(seeds, fn(ty) { emit_eq_glue(recursive, custom_types, ty) })
+      },
+      "\n\n",
+    )
 
   let main_code = case list.any(functions, fn(f) { f.name == "main" }) {
     True ->
@@ -124,6 +139,8 @@ pub fn emit(
   <> defs
   <> "\n\n"
   <> wrappers
+  <> "\n\n"
+  <> eq_glue
   <> "\n"
   <> main_code
 }
@@ -665,11 +682,49 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
     ir.OpBinop(dest, op_name, left, right) -> {
       let #(lty, lv, b) = read_val(ctx, left, b)
       let #(_, rv, b) = read_val(ctx, right, b)
-      let #(rhs, res_ty) = binop_rhs(op_name, lty, lv, rv)
-      let #(tmp, b) = fresh(b)
-      let b = emit_line(b, "  " <> tmp <> " = " <> rhs)
-      let b = store_local(ctx, dest, res_ty, tmp, b)
-      #(b, Nil)
+      let oty = operand_type(ctx.by_name, left)
+      case op_name == "==" || op_name == "!=", is_eq_aggregate_ty(oty) {
+        True, True -> {
+          let eq = eq_name_ty(oty)
+          let #(c0, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> c0
+                <> " = call i1 @"
+                <> eq
+                <> "("
+                <> lty
+                <> " "
+                <> lv
+                <> ", "
+                <> lty
+                <> " "
+                <> rv
+                <> ")",
+            )
+          case op_name {
+            "==" -> {
+              let b = store_local(ctx, dest, "i1", c0, b)
+              #(b, Nil)
+            }
+            _ -> {
+              let #(c1, b) = fresh(b)
+              let b = emit_line(b, "  " <> c1 <> " = xor i1 " <> c0 <> ", true")
+              let b = store_local(ctx, dest, "i1", c1, b)
+              #(b, Nil)
+            }
+          }
+        }
+        _, _ -> {
+          let #(rhs, res_ty) = binop_rhs(op_name, lty, lv, rv)
+          let #(tmp, b) = fresh(b)
+          let b = emit_line(b, "  " <> tmp <> " = " <> rhs)
+          let b = store_local(ctx, dest, res_ty, tmp, b)
+          #(b, Nil)
+        }
+      }
     }
     ir.OpUnop(dest, op_name, operand) -> {
       let #(ty, v, b) = read_val(ctx, operand, b)
@@ -761,23 +816,10 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
             <> ", 0",
         )
       let #(val, b) =
-        insert_fields("%" <> type_name, base, fields, index + 1, 0, b)
+        insert_fields("%" <> type_name, base, fields, [index + 1], 0, b)
       case is_recursive(ctx.recursive, type_name) {
         True -> {
-          let #(sz, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  "
-                <> sz
-                <> " = ptrtoint (%"
-                <> type_name
-                <> "* getelementptr (%"
-                <> type_name
-                <> ", %"
-                <> type_name
-                <> "* null, i32 1) to i64)",
-            )
+          let #(sz, b) = sizeof_reg(type_name, b)
           let #(p, b) = fresh(b)
           let b =
             emit_line(
@@ -1296,12 +1338,12 @@ fn build_struct(b: Builder, ty_s: String, fields: List(#(String, String))) {
             <> v
             <> ", 0",
         )
-      insert_fields(ty_s, tmp, rest, 0, 1, b)
+      insert_fields(ty_s, tmp, rest, [], 1, b)
     }
   }
 }
 
-fn insert_fields(ty_s, base, fields, group, start, b) {
+fn insert_fields(ty_s, base, fields, prefix: List(Int), index: Int, b) {
   case fields {
     [] -> #(base, b)
     [#(ty, v), ..rest] -> {
@@ -1320,11 +1362,12 @@ fn insert_fields(ty_s, base, fields, group, start, b) {
             <> " "
             <> v
             <> ", "
-            <> int.to_string(group)
-            <> ", "
-            <> int.to_string(start),
+            <> string.join(
+            list.map(list.append(prefix, [index]), int.to_string),
+            ", ",
+          ),
         )
-      insert_fields(ty_s, tmp, rest, group, start + 1, b)
+      insert_fields(ty_s, tmp, rest, prefix, index + 1, b)
     }
   }
 }
@@ -1536,6 +1579,347 @@ fn wrapper_def(function: ir.Function, code: String) -> String {
   <> ") {\n"
   <> lines
   <> "\n}"
+}
+
+fn mangle_glue(ty: Type) -> String {
+  case ty {
+    ast.TTuple(types) ->
+      "tuple_" <> string.join(list.map(types, mangle_type), "_")
+    TNamed(name) -> name
+    _ -> mangle_type(ty)
+  }
+}
+
+fn eq_name_ty(ty: Type) -> String {
+  "Gleamc_Eq_" <> mangle_glue(ty)
+}
+
+fn is_eq_aggregate_ty(ty: Type) -> Bool {
+  case ty {
+    TString | ast.TInt | ast.TFloat | ast.TBool | ast.TNil -> False
+    TNamed("Nil") | TNamed("BitArray") | TNamed("void*") -> False
+    TNamed(_) | ast.TTuple(_) | ast.TFun(_, _) | ast.TApp(_, _) -> True
+    _ -> False
+  }
+}
+
+fn variant_fields_of(
+  custom_types: List(ast.CustomType),
+  type_name: String,
+) -> List(#(String, List(Type))) {
+  case
+    list.find(custom_types, fn(custom) {
+      let ast.CustomType(_, n, _, _, _) = custom
+      n == type_name
+    })
+  {
+    Ok(custom) -> {
+      let ast.CustomType(_, _, _, variants, _) = custom
+      list.map(variants, fn(variant) {
+        let ast.Variant(vn, fields) = variant
+        #(
+          base_ctor_name(vn, type_name),
+          list.map(fields, fn(field) { field.1 }),
+        )
+      })
+    }
+    Error(_) -> []
+  }
+}
+
+fn emit_eq_glue(
+  recursive: Dict(String, Bool),
+  custom_types: List(ast.CustomType),
+  ty: Type,
+) -> String {
+  let ty_s = llvm_ty(ty, recursive)
+  let name = eq_name_ty(ty)
+  let b = Builder(next: 0, lines: [])
+  let b =
+    emit_line(
+      b,
+      "define i1 @" <> name <> "(" <> ty_s <> " %a, " <> ty_s <> " %b) {",
+    )
+  let #(b, _) = eq_body(recursive, custom_types, ty, ty_s, b)
+  let lines = list.reverse(b.lines)
+  string.join(lines, "\n") <> "\n}\n"
+}
+
+fn eq_body(recursive, custom_types, ty, ty_s, b) {
+  case ty {
+    ast.TFun(_, _) -> {
+      let #(ac, b) = extract_value(ty_s, "%a", [0], b)
+      let #(bc, b) = extract_value(ty_s, "%b", [0], b)
+      let #(c0, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> c0
+            <> " = icmp eq "
+            <> code_ty(ty, recursive)
+            <> " "
+            <> ac
+            <> ", "
+            <> bc,
+        )
+      let #(ae, b) = extract_value(ty_s, "%a", [1], b)
+      let #(be, b) = extract_value(ty_s, "%b", [1], b)
+      let #(c1, b) = fresh(b)
+      let b = emit_line(b, "  " <> c1 <> " = icmp eq i8* " <> ae <> ", " <> be)
+      let #(r, b) = fresh(b)
+      let b = emit_line(b, "  " <> r <> " = and i1 " <> c0 <> ", " <> c1)
+      let b = emit_line(b, "  ret i1 " <> r)
+      #(b, Nil)
+    }
+    ast.TTuple(types) -> {
+      let #(acc, b) =
+        compare_fields(
+          recursive,
+          "%" <> "GleamcTuple_" <> tuple_suffix(types),
+          "%a",
+          "%b",
+          types,
+          [],
+          0,
+          b,
+        )
+      let b = emit_line(b, "  ret i1 " <> acc)
+      #(b, Nil)
+    }
+    TNamed(type_name) ->
+      eq_named(recursive, custom_types, ty, type_name, ty_s, b)
+    _ -> {
+      let b = emit_line(b, "  ret i1 true")
+      #(b, Nil)
+    }
+  }
+}
+
+fn eq_named(recursive, custom_types, _ty, type_name, ty_s, b) {
+  let is_rec = is_recursive(recursive, type_name)
+  let struct_ty = "%" <> type_name
+  let b = case is_rec {
+    True -> {
+      let #(an, b) = fresh(b)
+      let b = emit_line(b, "  " <> an <> " = icmp eq " <> ty_s <> " %a, null")
+      let #(bn, b) = fresh(b)
+      let b = emit_line(b, "  " <> bn <> " = icmp eq " <> ty_s <> " %b, null")
+      let #(both, b) = fresh(b)
+      let b = emit_line(b, "  " <> both <> " = and i1 " <> an <> ", " <> bn)
+      let b =
+        emit_line(b, "  br i1 " <> both <> ", label %eqtrue, label %eqnotboth")
+      let b = emit_line(b, "\neqnotboth:")
+      let #(either, b) = fresh(b)
+      let b = emit_line(b, "  " <> either <> " = or i1 " <> an <> ", " <> bn)
+      let b =
+        emit_line(b, "  br i1 " <> either <> ", label %eqfalse, label %eqbody")
+      let b = emit_line(b, "\neqbody:")
+      let #(av, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> av <> " = load " <> struct_ty <> ", " <> ty_s <> " %a",
+        )
+      let #(bv, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> bv <> " = load " <> struct_ty <> ", " <> ty_s <> " %b",
+        )
+      #(av, bv, b)
+    }
+    False -> #("%a", "%b", b)
+  }
+  let #(av, bv, b) = b
+  let #(at, b) = extract_value(struct_ty, av, [0], b)
+  let #(bt, b) = extract_value(struct_ty, bv, [0], b)
+  let #(ne, b) = fresh(b)
+  let b = emit_line(b, "  " <> ne <> " = icmp ne i8 " <> at <> ", " <> bt)
+  let b = emit_line(b, "  br i1 " <> ne <> ", label %eqfalse, label %eqswitch")
+  let b = emit_line(b, "\neqfalse:")
+  let b = emit_line(b, "  ret i1 false")
+  let b = emit_line(b, "\neqtrue:")
+  let b = emit_line(b, "  ret i1 true")
+  let b = emit_line(b, "\neqswitch:")
+  let variants = variant_fields_of(custom_types, type_name)
+  let arms =
+    list.index_map(variants, fn(variant, index) {
+      let #(_, _) = variant
+      " i8 " <> int.to_string(index) <> ", label %eqv" <> int.to_string(index)
+    })
+  let b =
+    emit_line(
+      b,
+      "  switch i8 "
+        <> at
+        <> ", label %eqtrue ["
+        <> string.join(arms, "")
+        <> " ]",
+    )
+  let b =
+    list.fold(
+      list.index_map(variants, fn(variant, index) { #(index, variant) }),
+      b,
+      fn(b, entry) {
+        let #(index, variant) = entry
+        let #(_, fields) = variant
+        let b = emit_line(b, "\neqv" <> int.to_string(index) <> ":")
+        let #(acc, b) =
+          compare_fields(
+            recursive,
+            struct_ty,
+            av,
+            bv,
+            fields,
+            [index + 1],
+            0,
+            b,
+          )
+        emit_line(b, "  ret i1 " <> acc)
+      },
+    )
+  #(b, Nil)
+}
+
+fn compare_fields(
+  recursive,
+  struct_ty,
+  av,
+  bv,
+  fields,
+  prefix: List(Int),
+  index: Int,
+  b,
+) {
+  case fields {
+    [] -> #("true", b)
+    [ty, ..rest] -> {
+      let idxs = list.append(prefix, [index])
+      let #(lv, b) = extract_value(struct_ty, av, idxs, b)
+      let #(rv, b) = extract_value(struct_ty, bv, idxs, b)
+      let #(e, b) = eq_expr(recursive, ty, lv, rv, b)
+      let #(ar, b) =
+        compare_fields(recursive, struct_ty, av, bv, rest, prefix, index + 1, b)
+      case ar {
+        "true" -> #(e, b)
+        _ -> {
+          let #(r, b) = fresh(b)
+          let b = emit_line(b, "  " <> r <> " = and i1 " <> e <> ", " <> ar)
+          #(r, b)
+        }
+      }
+    }
+  }
+}
+
+fn eq_expr(recursive, ty, left, right, b) {
+  case ty {
+    TString -> {
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> r
+            <> " = call i1 @gleamc_string_eq(%GleamcString "
+            <> left
+            <> ", %GleamcString "
+            <> right
+            <> ")",
+        )
+      #(r, b)
+    }
+    TNamed("BitArray") -> {
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> r
+            <> " = call i1 @Gleamc_bit_array_eq(%GleamcBitArray "
+            <> left
+            <> ", %GleamcBitArray "
+            <> right
+            <> ")",
+        )
+      #(r, b)
+    }
+    ast.TInt -> {
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(b, "  " <> r <> " = icmp eq i64 " <> left <> ", " <> right)
+      #(r, b)
+    }
+    ast.TFloat -> {
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> r <> " = fcmp oeq double " <> left <> ", " <> right,
+        )
+      #(r, b)
+    }
+    ast.TBool -> {
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(b, "  " <> r <> " = icmp eq i1 " <> left <> ", " <> right)
+      #(r, b)
+    }
+    ast.TNil | TNamed("Nil") -> {
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(b, "  " <> r <> " = icmp eq i32 " <> left <> ", " <> right)
+      #(r, b)
+    }
+    ast.TFun(_, _) -> {
+      let ty_s = llvm_ty(ty, recursive)
+      let #(ac, b) = extract_value(ty_s, left, [0], b)
+      let #(bc, b) = extract_value(ty_s, right, [0], b)
+      let #(c0, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> c0
+            <> " = icmp eq "
+            <> code_ty(ty, recursive)
+            <> " "
+            <> ac
+            <> ", "
+            <> bc,
+        )
+      let #(ae, b) = extract_value(ty_s, left, [1], b)
+      let #(be, b) = extract_value(ty_s, right, [1], b)
+      let #(c1, b) = fresh(b)
+      let b = emit_line(b, "  " <> c1 <> " = icmp eq i8* " <> ae <> ", " <> be)
+      let #(r, b) = fresh(b)
+      let b = emit_line(b, "  " <> r <> " = and i1 " <> c0 <> ", " <> c1)
+      #(r, b)
+    }
+    _ -> {
+      let ty_s = llvm_ty(ty, recursive)
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> r
+            <> " = call i1 @"
+            <> eq_name_ty(ty)
+            <> "("
+            <> ty_s
+            <> " "
+            <> left
+            <> ", "
+            <> ty_s
+            <> " "
+            <> right
+            <> ")",
+        )
+      #(r, b)
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
