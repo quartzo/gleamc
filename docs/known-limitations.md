@@ -53,8 +53,6 @@ adding list support, and are now covered by `diffs/lists.gleam`:
 - `@external(...)` declarations and bit-array string segments
   (`<<"...":utf8>>`) are not parsed.
 - `let` bindings take no type annotation (`let x: T = ...`).
-- A top-level function cannot be used as a value (e.g. passing `insert` to
-  `list.fold`); wrap it in a lambda.
 
 ## Type system
 
@@ -76,6 +74,11 @@ adding list support, and are now covered by `diffs/lists.gleam`:
 - A no-argument polymorphic value used where a specific type is expected
   (e.g. `set.new()` as a record field) is not unified with that expected type
   and defaults to `Nil`; pin the type by deriving it from another value.
+- A bare top-level function used as a value is eta-expanded into a lambda,
+  which needs the expected function type to be resolved. It therefore fails
+  when the surrounding call's types are themselves unresolved (for example
+  passing `insert` next to a no-argument polymorphic `set.new()`); wrap it in
+  an explicit lambda there.
 
 ## Backend and runtime
 

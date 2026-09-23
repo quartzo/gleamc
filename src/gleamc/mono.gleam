@@ -9,7 +9,7 @@
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import gleamc/ast.{
   type CustomType, type Expr, type Function, type Module, type Pattern,
@@ -551,7 +551,46 @@ fn mono_expr_ex(state, locals, expected, expr) {
       })
       Ok(#(EPanic(message, ty), state))
     }
+    EVar(name) ->
+      case dict.get(locals, name) {
+        Ok(_) -> Ok(#(expr, state))
+        Error(_) ->
+          case eta_expand(state, locals, name, expected) {
+            Ok(expanded) -> Ok(expanded)
+            Error(_) -> Ok(#(expr, state))
+          }
+      }
     _ -> mono_expr(state, locals, expr)
+  }
+}
+
+/// Turns a reference to a top-level function used as a value into a lambda
+/// that calls it (`eta`-expansion), so the existing lambda lifting and
+/// specialisation handle it. Requires an expected function type with the
+/// same arity.
+fn eta_expand(
+  state: State,
+  locals: Dict(String, Scheme),
+  name: String,
+  expected: Option(types.Ty),
+) -> Result(#(Expr, State), String) {
+  case dict.get(state.globals, name), expected {
+    Ok(scheme), Some(Fun(expected_params, _)) -> {
+      let Scheme(_, fun_ty) = scheme
+      let #(param_tys, _) = fun_parts(fun_ty)
+      case list.length(param_tys) == list.length(expected_params) {
+        True -> {
+          let names =
+            list.index_map(param_tys, fn(_, index) {
+              "__fnarg_" <> int.to_string(index)
+            })
+          let args = list.map(names, fn(param) { EVar(param) })
+          mono_expr_ex(state, locals, expected, ELambda(names, ECall(EVar(name), args)))
+        }
+        False -> Error("cannot eta-expand `" <> name <> "`")
+      }
+    }
+    _, _ -> Error("cannot eta-expand `" <> name <> "`")
   }
 }
 
