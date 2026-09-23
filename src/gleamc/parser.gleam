@@ -274,28 +274,46 @@ fn variant(tokens) {
   use #(name, rest) <- and_then(expect_upname(tokens))
   case peek(rest) {
     Symbol("(") -> {
-      use #(fields, rest2) <- and_then(variant_fields(drop_token(rest), []))
+      use #(fields, rest2) <- and_then(variant_fields(drop_token(rest), [], 0))
       Ok(#(Variant(name, fields), rest2))
     }
     _ -> Ok(#(Variant(name, []), rest))
   }
 }
 
-fn variant_fields(tokens, acc) {
+fn variant_fields(tokens, acc, index) {
   case peek(tokens) {
     Symbol(")") -> Ok(#(list.reverse(acc), drop_token(tokens)))
     _ -> {
-      use #(field_name, rest) <- and_then(expect_name(tokens))
-      use rest1 <- and_then(expect_symbol(rest, ":"))
-      use #(ty, rest2) <- and_then(parse_type(rest1))
-      let acc2 = [#(field_name, ty), ..acc]
-      case peek(rest2) {
-        Symbol(",") -> variant_fields(drop_token(rest2), acc2)
-        Symbol(")") -> Ok(#(list.reverse(acc2), drop_token(rest2)))
-        _ -> fail(rest2, "expected `,` or `)` in variant fields")
+      case peek(tokens), peek(drop_token(tokens)) {
+        NameKind(field_name), Symbol(":") -> {
+          use rest1 <- and_then(expect_symbol(drop_token(tokens), ":"))
+          use #(ty, rest2) <- and_then(parse_type(rest1))
+          variant_fields_tail(rest2, [#(field_name, ty), ..acc], index + 1)
+        }
+        _, _ -> {
+          use #(ty, rest2) <- and_then(parse_type(tokens))
+          variant_fields_tail(
+            rest2,
+            [#(positional_field_name(index), ty), ..acc],
+            index + 1,
+          )
+        }
       }
     }
   }
+}
+
+fn variant_fields_tail(rest2, acc, index) {
+  case peek(rest2) {
+    Symbol(",") -> variant_fields(skip_newlines(drop_token(rest2)), acc, index)
+    Symbol(")") -> Ok(#(list.reverse(acc), drop_token(rest2)))
+    _ -> fail(rest2, "expected `,` or `)` in variant fields")
+  }
+}
+
+fn positional_field_name(index: Int) -> String {
+  "_" <> int.to_string(index)
 }
 
 fn import_decl(tokens) {
@@ -324,6 +342,7 @@ fn import_path(tokens, acc) {
 }
 
 fn import_items(tokens, acc) {
+  let tokens = skip_newlines(tokens)
   case peek(tokens) {
     Symbol("}") -> Ok(#(list.reverse(acc), drop_token(tokens)))
     _ -> {
