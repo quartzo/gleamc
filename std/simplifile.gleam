@@ -254,6 +254,73 @@ pub fn copy_file(at: String, to: String) -> Result(Nil, FileError) {
   }
 }
 
+pub fn create_symlink(to: String, from: String) -> Result(Nil, FileError) {
+  write_result(fs.symlink(to, from))
+}
+
+pub fn create_link(to: String, from: String) -> Result(Nil, FileError) {
+  write_result(fs.link(to, from))
+}
+
+pub fn touch(at: String) -> Result(Nil, FileError) {
+  write_result(fs.touch(at))
+}
+
+pub fn resolve(path: String) -> Result(String, FileError) {
+  use bits <- result.try(read_result(fs.realpath(path)))
+  Ok(bit_array.raw_to_string(bits))
+}
+
+pub fn copy(src: String, dest: String) -> Result(Nil, FileError) {
+  case is_directory(src) {
+    Error(err) -> Error(err)
+    Ok(True) -> copy_directory(at: src, to: dest)
+    Ok(False) -> copy_file(at: src, to: dest)
+  }
+}
+
+pub fn copy_directory(at: String, to: String) -> Result(Nil, FileError) {
+  case create_directory(to) {
+    Ok(_) -> copy_children(at, to)
+    Error(Eexist) -> copy_children(at, to)
+    Error(err) -> Error(err)
+  }
+}
+
+fn copy_children(from_dir: String, to_dir: String) -> Result(Nil, FileError) {
+  case read_directory(at: from_dir) {
+    Error(err) -> Error(err)
+    Ok(names) -> copy_entries(from_dir, to_dir, names)
+  }
+}
+
+fn copy_entries(
+  from_dir: String,
+  to_dir: String,
+  names: List(String),
+) -> Result(Nil, FileError) {
+  case names {
+    [] -> Ok(Nil)
+    [name, ..rest] -> {
+      let src = join(from_dir, name)
+      let dest = join(to_dir, name)
+      case is_directory(src) {
+        Error(err) -> Error(err)
+        Ok(True) ->
+          case copy_directory(at: src, to: dest) {
+            Error(err) -> Error(err)
+            Ok(Nil) -> copy_entries(from_dir, to_dir, rest)
+          }
+        Ok(False) ->
+          case copy_file(at: src, to: dest) {
+            Error(err) -> Error(err)
+            Ok(Nil) -> copy_entries(from_dir, to_dir, rest)
+          }
+      }
+    }
+  }
+}
+
 pub fn delete_file(at: String) -> Result(Nil, FileError) {
   write_result(fs.delete(at))
 }

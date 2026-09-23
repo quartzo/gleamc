@@ -1121,6 +1121,82 @@ GleamcFileResult Gleamc_fs_rename(GleamcString path, GleamcString new_path) {
     return res == 0 ? fs_ok() : fs_error(-res);
 }
 
+GleamcFileResult Gleamc_fs_symlink(GleamcString target, GleamcString path) {
+    char* ctarget = gleamc_to_cstr(target);
+    char* cpath = gleamc_to_cstr(path);
+    if (ctarget == NULL || cpath == NULL) {
+        free(ctarget);
+        free(cpath);
+        return fs_error(12);
+    }
+    uv_fs_t req;
+    int res = uv_fs_symlink(NULL, &req, ctarget, cpath, 0, NULL);
+    uv_fs_req_cleanup(&req);
+    free(ctarget);
+    free(cpath);
+    return res == 0 ? fs_ok() : fs_error(-res);
+}
+
+GleamcFileResult Gleamc_fs_link(GleamcString target, GleamcString path) {
+    char* ctarget = gleamc_to_cstr(target);
+    char* cpath = gleamc_to_cstr(path);
+    if (ctarget == NULL || cpath == NULL) {
+        free(ctarget);
+        free(cpath);
+        return fs_error(12);
+    }
+    uv_fs_t req;
+    int res = uv_fs_link(NULL, &req, ctarget, cpath, NULL);
+    uv_fs_req_cleanup(&req);
+    free(ctarget);
+    free(cpath);
+    return res == 0 ? fs_ok() : fs_error(-res);
+}
+
+GleamcFileResult Gleamc_fs_touch(GleamcString path) {
+    char* cpath = gleamc_to_cstr(path);
+    if (cpath == NULL) return fs_error(12);
+    uv_fs_t req;
+    uv_file fd = uv_fs_open(NULL, &req, cpath, O_WRONLY | O_CREAT, 0644, NULL);
+    if (fd < 0) {
+        int64_t code = -fd;
+        uv_fs_req_cleanup(&req);
+        free(cpath);
+        return fs_error(code);
+    }
+    uv_fs_req_cleanup(&req);
+    uv_fs_close(NULL, &req, fd, NULL);
+    uv_fs_req_cleanup(&req);
+    double now = (double)gleamc_now_ms() / 1000.0;
+    int res = uv_fs_utime(NULL, &req, cpath, now, now, NULL);
+    uv_fs_req_cleanup(&req);
+    free(cpath);
+    return res == 0 ? fs_ok() : fs_error(-res);
+}
+
+GleamcFileResult Gleamc_fs_realpath(GleamcString path) {
+    char* cpath = gleamc_to_cstr(path);
+    if (cpath == NULL) return fs_error(12);
+    uv_fs_t req;
+    int res = uv_fs_realpath(NULL, &req, cpath, NULL);
+    free(cpath);
+    if (res < 0) {
+        int64_t code = -res;
+        uv_fs_req_cleanup(&req);
+        return fs_error(code);
+    }
+    const char* resolved = (const char*)req.ptr;
+    size_t len = resolved != NULL ? strlen(resolved) : 0;
+    uint8_t* out = (uint8_t*)gleamc_alloc(len > 0 ? len : 1);
+    if (len > 0) memcpy(out, resolved, len);
+    uv_fs_req_cleanup(&req);
+    GleamcFileResult r = fs_ok();
+    r.data.data = out;
+    r.data.len = len;
+    r.size = (int64_t)len;
+    return r;
+}
+
 static GleamcFileResult fs_stat_mode(GleamcString path, int want) {
     char* cpath = gleamc_to_cstr(path);
     if (cpath == NULL) return fs_error(12);

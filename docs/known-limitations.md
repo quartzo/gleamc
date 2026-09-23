@@ -160,19 +160,21 @@ their imports are resolved when the prelude is attached.
   `write`, `write_bits`, `append`, `append_bits`, `delete` (recursive),
   `delete_file`, `delete_all`, `clear_directory`, `create_directory`,
   `create_directory_all`, `create_file`, `rename`/`rename_file`/
-  `rename_directory`, `copy_file`, `exists`, `is_file`, `is_directory`,
+  `rename_directory`, `copy`/`copy_file`/`copy_directory`, `create_symlink`/
+  `create_link`, `touch`, `resolve`, `exists`, `is_file`, `is_directory`,
   `is_symlink`, `read_directory`, `get_files`, `current_directory`,
   `file_info`/`link_info`, `file_info_type`, `file_info_permissions_octal`,
   `describe_error`, plus the `FileError`, `FileInfo` and `FileType` types. The
-  labels (`to`, `from`, `contents`, `bits`, `filepath`, ...) match the package,
-  and the functions are backed by synchronous libuv wrappers (`fs.*` builtins)
-  returning a fixed `GleamcFileResult` that the Gleam wrapper turns into a
-  concrete `Result`/`FileError`. Directory listings are joined with `/` (which
-  cannot appear in a POSIX filename) and split in Gleam; `get_files`,
-  `create_directory_all`, `delete`, `clear_directory` and `delete_all` recurse
-  in Gleam. Not implemented yet: `file_info_permissions` (needs `gleam/set`),
-  `file_permissions_to_octal`, `set_permissions`, `create_symlink`/`create_link`,
-  `copy`/`copy_directory`, `touch`, and `resolve` (needs `filepath`).
+  labels (`to`, `from`, `contents`, `bits`, `filepath`, `src`, `dest`, ...)
+  match the package, and the functions are backed by synchronous libuv
+  wrappers (`fs.*` builtins) returning a fixed `GleamcFileResult` that the
+  Gleam wrapper turns into a concrete `Result`/`FileError`. Directory listings
+  are joined with `/` (which cannot appear in a POSIX filename) and split in
+  Gleam; `get_files`, `create_directory_all`, `delete`, `clear_directory`,
+  `delete_all`, `copy`/`copy_directory` recurse in Gleam. Not implemented yet:
+  the permission helpers `file_info_permissions`, `file_permissions_to_octal`,
+  `set_permissions` and `set_permissions_octal` (they need `FilePermissions`
+  and `gleam/set`).
 
 ## Self-host
 

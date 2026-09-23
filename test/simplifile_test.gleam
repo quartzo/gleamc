@@ -151,3 +151,34 @@ pub fn main() {
   let output = compile_and_run("dir_ops", source)
   assert string.contains(output, "hello\ndone\n") as output
 }
+
+pub fn simplifile_copy_links_test() {
+  let source =
+    "import gleam/io
+import simplifile
+
+pub fn main() {
+  let base = \"/tmp/gleamc-fs/cp\"
+  let _ = simplifile.delete_all([base])
+  let assert Ok(Nil) = simplifile.create_directory_all(base <> \"/src/sub\")
+  let assert Ok(Nil) = simplifile.write(to: base <> \"/src/a.txt\", contents: \"A\")
+  let assert Ok(Nil) =
+    simplifile.write(to: base <> \"/src/sub/b.txt\", contents: \"B\")
+  let assert Ok(Nil) =
+    simplifile.copy(src: base <> \"/src\", dest: base <> \"/dst\")
+  let assert Ok(\"A\") = simplifile.read(from: base <> \"/dst/a.txt\")
+  let assert Ok(\"B\") = simplifile.read(from: base <> \"/dst/sub/b.txt\")
+  let assert Ok(Nil) = simplifile.touch(at: base <> \"/touched.txt\")
+  let assert Ok(True) = simplifile.is_file(base <> \"/touched.txt\")
+  let assert Ok(Nil) =
+    simplifile.create_symlink(to: \"a.txt\", from: base <> \"/dst/link.txt\")
+  let assert Ok(True) = simplifile.is_symlink(base <> \"/dst/link.txt\")
+  let assert Ok(True) =
+    simplifile.exists(filepath: base <> \"/dst/link.txt\", follow_links: True)
+  let assert Ok(abs) = simplifile.resolve(path: base <> \"/dst/a.txt\")
+  io.println(abs)
+}
+"
+  let output = compile_and_run("copy_links", source)
+  assert string.contains(output, "/tmp/gleamc-fs/cp/dst/a.txt") as output
+}

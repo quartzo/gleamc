@@ -1334,6 +1334,46 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         TNamed("FileResult"),
         "fs.rename",
       )
+    "fs", "symlink" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TString],
+        TNamed("FileResult"),
+        "fs.symlink",
+      )
+    "fs", "link" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TString],
+        TNamed("FileResult"),
+        "fs.link",
+      )
+    "fs", "touch" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TNamed("FileResult"),
+        "fs.touch",
+      )
+    "fs", "realpath" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TNamed("FileResult"),
+        "fs.realpath",
+      )
     "fs", "int64_at" ->
       check_builtin(
         env,
