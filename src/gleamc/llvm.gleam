@@ -166,6 +166,16 @@ pub fn emit(
       ),
       "\n\n",
     )
+  let rc_glue =
+    string.join(
+      list.flat_map(seeds, fn(ty) {
+        [
+          emit_rc_glue(recursive, custom_types, ctors, "retain", ty),
+          emit_rc_glue(recursive, custom_types, ctors, "drop", ty),
+        ]
+      }),
+      "\n\n",
+    )
   let show_glue =
     string.join(
       list.append(
@@ -206,6 +216,8 @@ pub fn emit(
   <> wrappers
   <> "\n\n"
   <> eq_glue
+  <> "\n\n"
+  <> rc_glue
   <> "\n\n"
   <> show_glue
   <> "\n\n"
@@ -877,6 +889,22 @@ fn emit_tail(ctx: Ctx, callee: String, pre, args, post, b) -> Builder {
     Error(_) -> #(ctx.prefix, ctx.params, ctx.entry)
   }
   let #(prefix, params, entry) = target
+  // The call arguments are transferred into the callee's slots; their drops
+  // are suppressed (running them before the jump would free the values).
+  let arg_names =
+    list.filter_map(args, fn(arg) {
+      case arg {
+        ir.Var(name) -> Ok(name)
+        ir.Lit(_) -> Error(Nil)
+      }
+    })
+  let post =
+    list.filter(post, fn(op) {
+      case op {
+        ir.OpDrop(name, _) -> !list.contains(arg_names, name)
+        _ -> True
+      }
+    })
   let #(b, _) = emit_ops(ctx, pre, b)
   let #(b, vals) = read_typed_args(ctx, args, b)
   let #(b, _) = emit_ops(ctx, post, b)
@@ -1135,11 +1163,16 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
       let b = store_local(ctx, dest, ty_s, v, b)
       #(b, Nil)
     }
-    ir.OpRetain(_, _) | ir.OpDrop(_, _) -> {
-      // Retain/drop glue for aggregates is not ported yet; freeing here
-      // would expose the missing per-field glue as use-after-free. Kept as a
-      // no-op (leak) until the ownership-glue stage.
-      #(b, Nil)
+    ir.OpRetain(src, ty) -> {
+      let #(ty_s, v, b) = read_val(ctx, ir.Var(src), b)
+      #(
+        rc_expr(ctx.recursive, records_ctors(ctx), "retain", ty, ty_s, v, b),
+        Nil,
+      )
+    }
+    ir.OpDrop(src, ty) -> {
+      let #(ty_s, v, b) = read_val(ctx, ir.Var(src), b)
+      #(rc_expr(ctx.recursive, records_ctors(ctx), "drop", ty, ty_s, v, b), Nil)
     }
     ir.OpTuple(dest, elems, ty) -> {
       let ty_s = llvm_ty(ty, ctx.recursive)
@@ -1800,6 +1833,10 @@ fn list_at(items: List(String), index: Int) -> Result(String, Nil) {
       }
     }
   }
+}
+
+fn records_ctors(ctx: Ctx) -> Dict(String, checker.CtorInfo) {
+  ctx.ctors
 }
 
 fn first_arg(args: List(ir.Operand)) -> ir.Operand {
@@ -3636,6 +3673,258 @@ fn wrapper_for_group(
   <> "  ret "
   <> ret_s
   <> " %__r\n}\n"
+}
+
+// ---------------------------------------------------------------------------
+// retain/drop glue
+// ---------------------------------------------------------------------------
+
+fn rc_runtime(which: String) -> String {
+  case which {
+    "retain" -> "retain"
+    _ -> "release"
+  }
+}
+
+fn rc_name(which: String, ty: Type) -> String {
+  "Gleamc_Rc_" <> which <> "_" <> mangle_glue(ty)
+}
+
+fn rc_expr(_recursive, ctors, which, ty, ty_s, reg, b) -> Builder {
+  case ty {
+    TString | TNamed("BitArray") -> {
+      let #(d, b) = extract_value(ty_s, reg, [0], b)
+      emit_line(
+        b,
+        "  call void @Gleamc_rc_" <> rc_runtime(which) <> "(i8* " <> d <> ")",
+      )
+    }
+    TNamed(_) | ast.TTuple(_) -> {
+      let _ = ctors
+      emit_line(
+        b,
+        "  call void @"
+          <> rc_name(which, ty)
+          <> "("
+          <> ty_s
+          <> " "
+          <> reg
+          <> ")",
+      )
+    }
+    _ -> b
+  }
+}
+
+fn emit_rc_glue(recursive, custom_types, ctors, which, ty) -> String {
+  let ty_s = llvm_ty(ty, recursive)
+  let name = rc_name(which, ty)
+  let b = Builder(next: 0, lines: [])
+  let b = case ty {
+    ast.TTuple(types) -> {
+      let b = emit_line(b, "define void @" <> name <> "(" <> ty_s <> " %v) {")
+      let b =
+        list.fold(
+          list.index_map(types, fn(inner, index) { #(inner, index) }),
+          b,
+          fn(b, pair) {
+            let #(inner, index) = pair
+            case ownership.needs_drop(inner, ctors) {
+              True -> {
+                let #(fv, b) = extract_value(ty_s, "%v", [index], b)
+                rc_expr(
+                  recursive,
+                  ctors,
+                  which,
+                  inner,
+                  llvm_ty(inner, recursive),
+                  fv,
+                  b,
+                )
+              }
+              False -> b
+            }
+          },
+        )
+      emit_line(b, "  ret void")
+    }
+    TNamed(type_name) ->
+      case is_recursive(recursive, type_name) {
+        True ->
+          rc_glue_recursive(
+            recursive,
+            custom_types,
+            ctors,
+            which,
+            type_name,
+            ty_s,
+            name,
+            b,
+          )
+        False ->
+          rc_glue_byvalue(
+            recursive,
+            custom_types,
+            ctors,
+            which,
+            type_name,
+            ty_s,
+            name,
+            b,
+          )
+      }
+    _ -> b
+  }
+  case list.length(b.lines) {
+    0 -> ""
+    _ -> string.join(list.reverse(emit_line(b, "\n}").lines), "\n") <> "\n"
+  }
+}
+
+fn rc_glue_byvalue(
+  recursive,
+  custom_types,
+  ctors,
+  which,
+  type_name,
+  ty_s,
+  name,
+  b,
+) {
+  let variants = variant_fields_of(custom_types, type_name)
+  let b = emit_line(b, "define void @" <> name <> "(" <> ty_s <> " %v) {")
+  let b = emit_line(b, "  %tag = extractvalue " <> ty_s <> " %v, 0")
+  let arms =
+    list.index_map(variants, fn(_, index) {
+      " i8 " <> int.to_string(index) <> ", label %v" <> int.to_string(index)
+    })
+  let b =
+    emit_line(
+      b,
+      "  switch i8 %tag, label %done [" <> string.join(arms, "") <> " ]",
+    )
+  let b =
+    list.fold(
+      list.index_map(variants, fn(variant, index) { #(variant, index) }),
+      b,
+      fn(b, entry) {
+        let #(variant, index) = entry
+        let #(_, fields) = variant
+        let b = emit_line(b, "\nv" <> int.to_string(index) <> ":")
+        let b =
+          list.fold(
+            list.index_map(fields, fn(inner, i) { #(inner, i) }),
+            b,
+            fn(b, fp) {
+              let #(inner, i) = fp
+              case ownership.needs_drop(inner, ctors) {
+                True -> {
+                  let #(fv, b) = extract_value(ty_s, "%v", [index + 1, i], b)
+                  rc_expr(
+                    recursive,
+                    ctors,
+                    which,
+                    inner,
+                    llvm_ty(inner, recursive),
+                    fv,
+                    b,
+                  )
+                }
+                False -> b
+              }
+            },
+          )
+        let b = emit_line(b, "  br label %done")
+        b
+      },
+    )
+  let b = emit_line(b, "\ndone:")
+  emit_line(b, "  ret void")
+}
+
+fn rc_glue_recursive(
+  recursive,
+  custom_types,
+  ctors,
+  which,
+  type_name,
+  ty_s,
+  name,
+  b,
+) {
+  let variants = variant_fields_of(custom_types, type_name)
+  let b = emit_line(b, "define void @" <> name <> "(" <> ty_s <> " %v) {")
+  let b = emit_line(b, "  %isnull = icmp eq " <> ty_s <> " %v, null")
+  let b = emit_line(b, "  br i1 %isnull, label %done, label %notnull")
+  let b = emit_line(b, "\nnotnull:")
+  let b = emit_line(b, "  %vp = bitcast " <> ty_s <> " %v to i8*")
+  let b = case which {
+    "retain" -> {
+      let b = emit_line(b, "  call void @Gleamc_rc_retain(i8* %vp)")
+      emit_line(b, "  br label %done")
+    }
+    _ -> {
+      let b = emit_line(b, "  %hp = getelementptr i8, i8* %vp, i64 -8")
+      let b = emit_line(b, "  %h = bitcast i8* %hp to i64*")
+      let b = emit_line(b, "  %rc = load i64, i64* %h")
+      let b = emit_line(b, "  %last = icmp eq i64 %rc, 1")
+      let b = emit_line(b, "  br i1 %last, label %frees, label %rel")
+      let b = emit_line(b, "\nfrees:")
+      let struct_ty = "%" <> type_name
+      let b =
+        emit_line(b, "  %av = load " <> struct_ty <> ", " <> ty_s <> " %v")
+      let b = emit_line(b, "  %ftag = extractvalue " <> struct_ty <> " %av, 0")
+      let arms =
+        list.index_map(variants, fn(_, index) {
+          " i8 " <> int.to_string(index) <> ", label %f" <> int.to_string(index)
+        })
+      let b =
+        emit_line(
+          b,
+          "  switch i8 %ftag, label %rel [" <> string.join(arms, "") <> " ]",
+        )
+      let b =
+        list.fold(
+          list.index_map(variants, fn(variant, index) { #(variant, index) }),
+          b,
+          fn(b, entry) {
+            let #(variant, index) = entry
+            let #(_, fields) = variant
+            let b = emit_line(b, "\nf" <> int.to_string(index) <> ":")
+            let b =
+              list.fold(
+                list.index_map(fields, fn(inner, i) { #(inner, i) }),
+                b,
+                fn(b, fp) {
+                  let #(inner, i) = fp
+                  case ownership.needs_drop(inner, ctors) {
+                    True -> {
+                      let #(fv, b) =
+                        extract_value(struct_ty, "%av", [index + 1, i], b)
+                      rc_expr(
+                        recursive,
+                        ctors,
+                        which,
+                        inner,
+                        llvm_ty(inner, recursive),
+                        fv,
+                        b,
+                      )
+                    }
+                    False -> b
+                  }
+                },
+              )
+            emit_line(b, "  br label %rel")
+          },
+        )
+      let b = emit_line(b, "\nrel:")
+      let b = emit_line(b, "  call void @Gleamc_rc_release(i8* %vp)")
+      emit_line(b, "  br label %done")
+    }
+  }
+  let b = emit_line(b, "\ndone:")
+  emit_line(b, "  ret void")
 }
 
 // ---------------------------------------------------------------------------
