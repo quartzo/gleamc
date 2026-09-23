@@ -156,6 +156,13 @@ fn insert_fn(function: ir.Function, ctors, modes, ffi) -> ir.Function {
         False -> acc
       }
     })
+  // Borrow-only field/tuple/env extractions *of a parameter* (or of another
+  // such view) are references into the container, not owned values: they
+  // carry no retain/drop. Mirrors Vesper's `FieldRef`.
+  let borrow = borrow_only_uses(blocks, modes, ffi)
+  let views = extraction_views(blocks, borrow, params)
+  let handles =
+    dict.filter(handles, fn(view_name, _) { !has_key(views, view_name) })
   case dict.is_empty(handles) {
     True -> function
     False -> {
@@ -167,11 +174,108 @@ fn insert_fn(function: ir.Function, ctors, modes, ffi) -> ir.Function {
         name,
         params,
         ret,
-        insert_blocks(blocks, params, locals, handles, modes, ffi, param_modes),
+        insert_blocks(
+          blocks,
+          params,
+          locals,
+          handles,
+          modes,
+          ffi,
+          param_modes,
+          views,
+        ),
         locals,
       )
     }
   }
+}
+
+/// Reads of a view count as reads of its container (transitively), so the
+/// container stays live while the view is used.
+fn expand_names(names, views) -> List(ir.Operand) {
+  list.fold(names, names, fn(acc, operand) {
+    case operand {
+      ir.Var(name) ->
+        case dict.get(views, name) {
+          Ok(container) ->
+            list.append(acc, expand_names([ir.Var(container)], views))
+          Error(_) -> acc
+        }
+      ir.Lit(_) -> acc
+    }
+  })
+}
+
+fn has_key(d, key) {
+  case dict.get(d, key) {
+    Ok(_) -> True
+    Error(_) -> False
+  }
+}
+
+fn set_add_var(set, operand) {
+  case operand {
+    ir.Var(name) -> dict.insert(set, name, True)
+    ir.Lit(_) -> set
+  }
+}
+
+/// Names whose every use is a borrow position (never moved/owned).
+fn borrow_only_uses(blocks, modes, ffi) -> Dict(String, Bool) {
+  let all =
+    list.fold(blocks, dict.new(), fn(acc, block) {
+      let ir.Block(_, ops, term) = block
+      let acc =
+        list.fold(ops, acc, fn(acc, op) {
+          list.fold(ir.op_reads(op), acc, set_add_var)
+        })
+      list.fold(ir.term_reads(term), acc, set_add_var)
+    })
+  let owning =
+    list.fold(blocks, dict.new(), fn(acc, block) {
+      let ir.Block(_, ops, term) = block
+      let acc =
+        list.fold(ops, acc, fn(acc, op) {
+          list.fold(ir.op_owning_modes(op, modes, ffi), acc, set_add_var)
+        })
+      list.fold(ir.term_reads(term), acc, set_add_var)
+    })
+  list.fold(dict.keys(all), dict.new(), fn(acc, name) {
+    case set_member(owning, name) {
+      True -> acc
+      False -> dict.insert(acc, name, True)
+    }
+  })
+}
+
+/// Extraction dests that are borrow-only and whose container is a parameter
+/// (or another such view): safe references. Views of owned temporaries are
+/// left owning (their container may be released while the view is used).
+fn extraction_views(blocks, borrow, params) -> Dict(String, String) {
+  list.fold(blocks, dict.new(), fn(acc, block) {
+    let ir.Block(_, ops, _) = block
+    list.fold(ops, acc, fn(acc, op) {
+      let pair = case op {
+        ir.OpField(dest, ir.Var(subject), _, _, _) -> #(dest, subject)
+        ir.OpTupleGet(dest, ir.Var(subject), _, _) -> #(dest, subject)
+        ir.OpEnvGet(dest, _, _, _) -> #(dest, "")
+        _ -> #("", "")
+      }
+      let #(dest, subject) = pair
+      case dest {
+        "" -> acc
+        _ ->
+          case set_member(borrow, dest) {
+            True ->
+              case list.contains(params, subject) || has_key(acc, subject) {
+                True -> dict.insert(acc, dest, subject)
+                False -> acc
+              }
+            False -> acc
+          }
+      }
+    })
+  })
 }
 
 fn insert_blocks(
@@ -182,6 +286,7 @@ fn insert_blocks(
   modes,
   ffi,
   param_modes,
+  views,
 ) {
   let succ_map =
     list.fold(blocks, dict.new(), fn(acc, block) {
@@ -199,7 +304,7 @@ fn insert_blocks(
     })
   let use_def =
     list.fold(blocks, dict.new(), fn(acc, block) {
-      dict.insert(acc, block.label, block_use_def(block, handles))
+      dict.insert(acc, block.label, block_use_def(block, handles, views))
     })
   let live_in = compute_liveness(blocks, succ_map, use_def)
   let live_out =
@@ -217,7 +322,7 @@ fn insert_blocks(
         Ok(found) -> found
         Error(_) -> dict.new()
       }
-      let live = add_term_reads(base_live, block.term, handles)
+      let live = add_term_reads(base_live, block.term, handles, views)
       let reversed = list.reverse(block.ops)
       let #(pre, moved) =
         back_ops(
@@ -229,6 +334,7 @@ fn insert_blocks(
           dict.new(),
           modes,
           ffi,
+          views,
         )
       let #(pre, moved) = case block.term {
         ir.Tailcall(fun, args) ->
@@ -335,8 +441,8 @@ fn add_extract_retains(ops, handles) {
   })
 }
 
-/// Extracting a handle field is a shallow copy: the new local needs its own
-/// reference, otherwise dropping the container frees the payload under it.
+/// Owning extraction needs its own reference; borrow-only views were removed
+/// from `handles`, so they are not retained here.
 fn extract_pair(op, dest, ty, handles) {
   case dict.get(handles, dest) {
     Ok(_) -> [op, ir.OpRetain(dest, ty)]
@@ -358,17 +464,21 @@ fn successors(term: ir.Terminator) -> List(String) {
 // liveness (backward, straight from Vesper's analyze/insert)
 // ---------------------------------------------------------------------------
 
-fn block_use_def(block: ir.Block, handles: Dict(String, Type)) {
+fn block_use_def(block: ir.Block, handles: Dict(String, Type), views) {
   let #(used, defs) =
     list.fold(block.ops, #(dict.new(), dict.new()), fn(acc, op) {
       let #(use_acc, defs_acc) = acc
       let use_acc =
-        list.fold(handle_names(ir.op_reads(op), handles), use_acc, fn(u, name) {
-          case dict.get(defs_acc, name) {
-            Ok(_) -> u
-            Error(_) -> set_add(u, name)
-          }
-        })
+        list.fold(
+          handle_names(expand_names(ir.op_reads(op), views), handles),
+          use_acc,
+          fn(u, name) {
+            case dict.get(defs_acc, name) {
+              Ok(_) -> u
+              Error(_) -> set_add(u, name)
+            }
+          },
+        )
       let defs_acc = case ir.op_dest(op) {
         Ok(dest_name) ->
           case dict.get(handles, dest_name) {
@@ -381,7 +491,7 @@ fn block_use_def(block: ir.Block, handles: Dict(String, Type)) {
     })
   let used =
     list.fold(
-      handle_names(ir.term_reads(block.term), handles),
+      handle_names(expand_names(ir.term_reads(block.term), views), handles),
       used,
       fn(u, name) {
         case dict.get(defs, name) {
@@ -451,19 +561,23 @@ fn successors_live(
   })
 }
 
-fn add_term_reads(live, term: ir.Terminator, handles) {
-  list.fold(handle_names(ir.term_reads(term), handles), live, set_add)
+fn add_term_reads(live, term: ir.Terminator, handles, views) {
+  list.fold(
+    handle_names(expand_names(ir.term_reads(term), views), handles),
+    live,
+    set_add,
+  )
 }
 
 // ---------------------------------------------------------------------------
 // backward op walk: retains + moved set
 // ---------------------------------------------------------------------------
 
-fn back_ops(reversed_ops, index, handles, live, pre, moved, modes, ffi) {
+fn back_ops(reversed_ops, index, handles, live, pre, moved, modes, ffi, views) {
   case reversed_ops {
     [] -> #(pre, moved)
     [op, ..rest] -> {
-      let reads = handle_names(ir.op_reads(op), handles)
+      let reads = handle_names(expand_names(ir.op_reads(op), views), handles)
       let defs = case ir.op_dest(op) {
         Ok(dest_name) ->
           case dict.get(handles, dest_name) {
@@ -500,7 +614,7 @@ fn back_ops(reversed_ops, index, handles, live, pre, moved, modes, ffi) {
           },
         )
       let live = set_union(sets_from(reads), set_diff(live, sets_from(defs)))
-      back_ops(rest, index - 1, handles, live, pre, moved, modes, ffi)
+      back_ops(rest, index - 1, handles, live, pre, moved, modes, ffi, views)
     }
   }
 }
