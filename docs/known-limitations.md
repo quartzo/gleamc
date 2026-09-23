@@ -84,6 +84,9 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   when the surrounding call's types are themselves unresolved (for example
   passing `insert` next to a no-argument polymorphic `set.new()`); wrap it in
   an explicit lambda there.
+- A self-recursive top-level function used as a value (for example
+  `list.map([x], f)` inside `f`) is miscompiled (it crashed while compiling the
+  compiler's own `mangle_type`). Pass an explicit lambda instead.
 
 ## Backend and runtime
 

@@ -77,22 +77,223 @@ pub fn check_resolved(
 ) -> Result(#(Module, Program), InferError) {
   let Module(definitions) = module
   let st = St(types.empty(), 0)
-  let #(types_map, ctors, functions, st) = collect(definitions, st)
-  let globals =
-    builtins()
-    |> merge_globals(functions)
-    |> merge_globals(ctor_schemes(ctors))
-  let env = Env(globals, dict.new(), ctors, types_map)
-  use st <- result_try(check_definitions(definitions, env, st))
+  let #(types_map, ctors, functions, var_ids, st) = collect(definitions, st)
+  let functions_by_name =
+    list.fold(definitions, dict.new(), fn(acc, def) {
+      case def {
+        DFunction(function) -> dict.insert(acc, function.name, function)
+        _ -> acc
+      }
+    })
+  use #(functions, st) <- result_try(infer_in_order(
+    order_functions(definitions),
+    functions_by_name,
+    ctors,
+    types_map,
+    var_ids,
+    functions,
+    st,
+  ))
   let resolved =
     list.map(definitions, fn(def) {
       case def {
         DFunction(function) ->
-          DFunction(resolve_function(function, functions, st.subst))
+          DFunction(resolve_function(function, var_ids, st.subst))
         _ -> def
       }
     })
   Ok(#(Module(resolved), Program(functions, ctors, types_map)))
+}
+
+fn infer_in_order(
+  order,
+  functions_by_name,
+  ctors,
+  types_map,
+  var_ids,
+  functions,
+  st,
+) {
+  case order {
+    [] -> Ok(#(functions, st))
+    [name, ..rest] -> {
+      use #(functions, st) <- result_try(infer_one(
+        name,
+        functions_by_name,
+        ctors,
+        types_map,
+        var_ids,
+        functions,
+        st,
+      ))
+      infer_in_order(
+        rest,
+        functions_by_name,
+        ctors,
+        types_map,
+        var_ids,
+        functions,
+        st,
+      )
+    }
+  }
+}
+
+fn infer_one(
+  name: String,
+  functions_by_name: Dict(String, Function),
+  ctors,
+  types_map,
+  var_ids,
+  functions,
+  st: St,
+) {
+  case dict.get(functions_by_name, name) {
+    Error(_) -> Ok(#(functions, st))
+    Ok(function) -> {
+      let globals =
+        builtins()
+        |> merge_globals(functions)
+        |> merge_globals(ctor_schemes(ctors))
+      let scheme = case dict.get(functions, name) {
+        Ok(found) -> found
+        Error(_) -> Scheme([], Fun([], Con("Nil", [])))
+      }
+      let Scheme(_, fun_ty) = scheme
+      let #(param_types, ret_ty) = fun_parts(fun_ty)
+      let locals =
+        list.fold(
+          list.zip(function.params, param_types),
+          dict.new(),
+          fn(acc, pair) {
+            let #(#(param_name, _), param_ty) = pair
+            dict.insert(acc, param_name, Scheme([], param_ty))
+          },
+        )
+      let env = Env(globals, locals, ctors, types_map)
+      use #(body_ty, st) <- result_try(with_function(
+        name,
+        function.line,
+        infer(env, st, function.body),
+      ))
+      use st <- result_try(unify_st(ret_ty, body_ty, st))
+      let zonked = types.zonk(fun_ty, st.subst)
+      let id_map = case dict.get(var_ids, name) {
+        Ok(found) -> found
+        Error(_) -> dict.new()
+      }
+      let frozen = types.env_free_vars(dict.values(dict.delete(globals, name)))
+      let vars =
+        list.filter_map(function_type_vars(function), fn(var_name) {
+          case dict.get(id_map, var_name) {
+            Error(_) -> Error(Nil)
+            Ok(id) ->
+              case
+                list.contains(types.free_vars(zonked), id)
+                && !list.contains(frozen, id)
+              {
+                True -> Ok(id)
+                False -> Error(Nil)
+              }
+          }
+        })
+      Ok(#(dict.insert(functions, name, Scheme(vars, zonked)), st))
+    }
+  }
+}
+
+fn order_functions(definitions) {
+  let functions =
+    list.filter_map(definitions, fn(def) {
+      case def {
+        DFunction(function) -> Ok(function)
+        _ -> Error(Nil)
+      }
+    })
+  let names = list.map(functions, fn(function) { function.name })
+  let refs =
+    list.fold(functions, dict.new(), fn(acc, function) {
+      dict.insert(acc, function.name, referenced_names(function.body, names))
+    })
+  let #(order, _visited) =
+    list.fold(functions, #([], dict.new()), fn(acc, function) {
+      let #(order, visited) = acc
+      visit_function(function.name, refs, visited, order)
+    })
+  order
+}
+
+fn visit_function(name, refs, visited, order) {
+  case dict.get(visited, name) {
+    Ok(_) -> #(order, visited)
+    Error(_) -> {
+      let visited = dict.insert(visited, name, True)
+      let deps = case dict.get(refs, name) {
+        Ok(found) -> found
+        Error(_) -> []
+      }
+      let #(order, visited) =
+        list.fold(deps, #(order, visited), fn(acc, dep) {
+          let #(order, visited) = acc
+          visit_function(dep, refs, visited, order)
+        })
+      #(list.append(order, [name]), visited)
+    }
+  }
+}
+
+fn referenced_names(expr: Expr, names: List(String)) -> List(String) {
+  list.filter(expr_var_names(expr, []), fn(name) { list.contains(names, name) })
+}
+
+fn expr_var_names(expr: Expr, acc: List(String)) -> List(String) {
+  case expr {
+    EVar(name) -> [name, ..acc]
+    EField(obj, _) -> expr_var_names(obj, acc)
+    ECtor(_, args) -> expr_var_names_all(args, acc)
+    ECall(fun, args) -> expr_var_names_all(args, expr_var_names(fun, acc))
+    EBinop(_, left, right) -> expr_var_names(right, expr_var_names(left, acc))
+    EUnop(_, operand) -> expr_var_names(operand, acc)
+    EBlock(statements) ->
+      list.fold(statements, acc, fn(acc, statement) {
+        case statement {
+          Let(_, value) -> expr_var_names(value, acc)
+          Stmt(e) -> expr_var_names(e, acc)
+        }
+      })
+    ECase(subject, arms) -> {
+      let acc = expr_var_names(subject, acc)
+      list.fold(arms, acc, fn(acc, arm) {
+        let Arm(_, guard, body) = arm
+        let acc = case guard {
+          Some(e) -> expr_var_names(e, acc)
+          None -> acc
+        }
+        expr_var_names(body, acc)
+      })
+    }
+    ETuple(items) -> expr_var_names_all(items, acc)
+    ELabelled(_, value) -> expr_var_names(value, acc)
+    ELambda(_, body) -> expr_var_names(body, acc)
+    EClosure(_, captures, _, _) -> expr_var_names_all(captures, acc)
+    EUpdate(_, base, fields) ->
+      list.fold(fields, expr_var_names(base, acc), fn(acc, field) {
+        let #(_, value) = field
+        expr_var_names(value, acc)
+      })
+    EBitArray(items) -> expr_var_names_all(items, acc)
+    EInt(_)
+    | EFloat(_)
+    | EString(_)
+    | EBool(_)
+    | ENil
+    | EEnvGet(_, _, _)
+    | EPanic(_, _) -> acc
+  }
+}
+
+fn expr_var_names_all(exprs: List(Expr), acc: List(String)) -> List(String) {
+  list.fold(exprs, acc, fn(acc, expr) { expr_var_names(expr, acc) })
 }
 
 fn is_infer_var(surface: Type) -> Bool {
@@ -102,27 +303,47 @@ fn is_infer_var(surface: Type) -> Bool {
   }
 }
 
-fn resolve_function(function: Function, functions, subst) -> Function {
+fn resolve_function(function: Function, var_ids, subst) -> Function {
   let Function(is_pub, name, params, ret, body, line) = function
-  case dict.get(functions, name) {
-    Error(_) -> function
-    Ok(scheme) -> {
-      let Scheme(_, fun_ty) = scheme
-      let #(param_tys, ret_ty) = fun_parts(types.zonk(fun_ty, subst))
-      let params2 =
-        list.map2(params, param_tys, fn(param, ty) {
-          let #(param_name, surface) = param
-          case is_infer_var(surface) {
-            True -> #(param_name, surface_of(ty))
-            False -> param
+  let id_map = case dict.get(var_ids, name) {
+    Ok(found) -> found
+    Error(_) -> dict.new()
+  }
+  let params2 =
+    list.map(params, fn(param) {
+      let #(param_name, surface) = param
+      #(param_name, resolve_infer_surface(surface, id_map, subst))
+    })
+  Function(
+    is_pub,
+    name,
+    params2,
+    resolve_infer_surface(ret, id_map, subst),
+    body,
+    line,
+  )
+}
+
+/// Replaces an inferred marker with its concrete type when it is no longer
+/// generic; generic ones stay as variables so the monomorphiser can
+/// specialise them per call site.
+fn resolve_infer_surface(surface, id_map, subst) {
+  case is_infer_var(surface) {
+    False -> surface
+    True ->
+      case surface {
+        ast.TVar(var_name) ->
+          case dict.get(id_map, var_name) {
+            Error(_) -> surface
+            Ok(id) ->
+              case types.zonk(Var(id), subst) {
+                Var(_) -> surface
+                Rig(_) -> surface
+                concrete -> surface_of(concrete)
+              }
           }
-        })
-      let ret2 = case is_infer_var(ret) {
-        True -> surface_of(ret_ty)
-        False -> ret
+        _ -> surface
       }
-      Function(is_pub, name, params2, ret2, body, line)
-    }
   }
 }
 
@@ -157,18 +378,24 @@ pub fn globals_of(program: Program) -> Dict(String, Scheme) {
 fn collect(definitions, st: St) {
   list.fold(
     definitions,
-    #(dict.new(), dict.new(), dict.new(), st),
+    #(dict.new(), dict.new(), dict.new(), dict.new(), st),
     fn(acc, def) {
-      let #(types_map, ctors, functions, st) = acc
+      let #(types_map, ctors, functions, var_ids, st) = acc
       case def {
         DCustomType(custom) -> {
           let #(types_map, ctors, st) =
             collect_type(custom, types_map, ctors, st)
-          #(types_map, ctors, functions, st)
+          #(types_map, ctors, functions, var_ids, st)
         }
         DFunction(function) -> {
-          let #(scheme, st) = function_scheme(function, st)
-          #(types_map, ctors, dict.insert(functions, function.name, scheme), st)
+          let #(scheme, id_map, st) = function_scheme(function, st)
+          #(
+            types_map,
+            ctors,
+            dict.insert(functions, function.name, scheme),
+            dict.insert(var_ids, function.name, id_map),
+            st,
+          )
         }
         _ -> acc
       }
@@ -235,24 +462,24 @@ fn variant_def(variant: Variant, mapping) -> VariantDef {
 fn function_scheme(function: Function, st: St) {
   let Function(_, _, params, ret, _, _) = function
   let surface_vars = function_type_vars(function)
-  let #(mapping, param_ids, st) =
-    list.fold(surface_vars, #(dict.new(), [], st), fn(acc, name) {
-      let #(map, ids, st) = acc
+  let #(mapping, param_ids, id_map, st) =
+    list.fold(surface_vars, #(dict.new(), [], dict.new(), st), fn(acc, name) {
+      let #(map, ids, id_map, st) = acc
       let id = st.counter
       let st = St(..st, counter: id + 1)
       // Inferred markers (`__infer_*`, from unannotated parameters and return
-      // types) are kept monomorphic for now, so the body constrains a single
-      // shared type instead of an over-generalised one.
+      // types) are flexible vars; declared type variables are rigid.
       let inferred = string.starts_with(name, "__infer_")
-      let ids = case inferred {
-        True -> ids
-        False -> list.append(ids, [id])
-      }
       let ty = case inferred {
         True -> Var(id)
         False -> Rig(id)
       }
-      #(dict.insert(map, name, ty), ids, st)
+      #(
+        dict.insert(map, name, ty),
+        list.append(ids, [id]),
+        dict.insert(id_map, name, id),
+        st,
+      )
     })
   let param_types =
     list.map(params, fn(param) {
@@ -260,7 +487,7 @@ fn function_scheme(function: Function, st: St) {
       convert(surface, mapping)
     })
   let ret_ty = convert(ret, mapping)
-  #(Scheme(param_ids, Fun(param_types, ret_ty)), st)
+  #(Scheme(param_ids, Fun(param_types, ret_ty)), id_map, st)
 }
 
 fn function_type_vars(function: Function) -> List(String) {
@@ -473,40 +700,6 @@ fn merge_globals(a, b) {
 // ---------------------------------------------------------------------------
 // function body checking
 // ---------------------------------------------------------------------------
-
-fn check_definitions(definitions, env: Env, st: St) {
-  case definitions {
-    [] -> Ok(st)
-    [DFunction(function), ..rest] -> {
-      use st <- result_try(check_function(function, env, st))
-      check_definitions(rest, env, st)
-    }
-    [_, ..rest] -> check_definitions(rest, env, st)
-  }
-}
-
-fn check_function(function: Function, env: Env, st) {
-  let Function(_, name, params, ret, body, line) = function
-  let scheme = case dict.get(env.globals, name) {
-    Ok(found) -> found
-    Error(_) -> Scheme([], Fun([], Con("Nil", [])))
-  }
-  let Scheme(_, fun_ty) = scheme
-  let #(param_types, ret_ty) = fun_parts(fun_ty)
-  let locals =
-    list.fold(list.zip(params, param_types), dict.new(), fn(acc, pair) {
-      let #(#(param_name, _), param_ty) = pair
-      dict.insert(acc, param_name, Scheme([], param_ty))
-    })
-  let env = Env(..env, locals: locals)
-  use #(body_ty, st) <- result_try(with_function(
-    name,
-    line,
-    infer(env, st, body),
-  ))
-  let _ = ret
-  with_function(name, line, unify_st(ret_ty, body_ty, st))
-}
 
 fn with_function(name, line, result) {
   case result {
