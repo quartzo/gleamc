@@ -289,7 +289,18 @@ fn specialise_fn_inner(state: State, name, type_args) {
           dict.insert(acc, param_name, Scheme([], internal))
         })
       let internal_ret = ty_of_surface(subst_surface(surface_map, ret))
-      let state0 = State(..state, subst: types.empty())
+      // Pre-infer the body so that type variables which are resolved by later
+      // uses (e.g. a nullary constructor among a call's arguments) are known
+      // before monomorphisation specialises those expressions. Variables that
+      // stay free are genuinely unconstrained and default to `Nil`.
+      let env = infer.Env(state.globals, locals, state.ctors, state.types)
+      let #(pre_subst, pre_counter) = case
+        infer.infer(env, infer.St(types.empty(), state.counter), body)
+      {
+        Ok(#(_, st2)) -> #(st2.subst, st2.counter)
+        Error(_) -> #(types.empty(), state.counter)
+      }
+      let state0 = State(..state, subst: pre_subst, counter: pre_counter)
       use #(body2, state1) <- result_try(mono_expr_ex(
         state0,
         locals,
@@ -1161,6 +1172,44 @@ fn expected_param_tys(state: State, name, type_args) -> List(types.Ty) {
 }
 
 fn mono_args_expect(
+  state: State,
+  locals: Dict(String, Scheme),
+  expected_list: List(types.Ty),
+  args: List(Expr),
+) {
+  // Infer and unify every argument's type with its parameter first, so a
+  // nullary constructor or empty collection among the arguments is
+  // specialised with a resolved expected type (e.g. `Some(None, 42)`).
+  use #(state, _) <- result_try(unify_arg_types(
+    state,
+    locals,
+    expected_list,
+    args,
+  ))
+  mono_args_expect_go(state, locals, expected_list, args)
+}
+
+fn unify_arg_types(state: State, locals, expected_list, args) {
+  case args, expected_list {
+    [], _ -> Ok(#(state, Nil))
+    [arg, ..rest], [expected, ..rest_expected] -> {
+      let #(arg_ty, state) = type_of(state, locals, arg)
+      use subst <- result_try(map_unify(
+        expected,
+        unspecialize_internal(state, arg_ty),
+        state.subst,
+      ))
+      let state = State(..state, subst: subst)
+      unify_arg_types(state, locals, rest_expected, rest)
+    }
+    [arg, ..rest], [] -> {
+      let #(_arg_ty, state) = type_of(state, locals, arg)
+      unify_arg_types(state, locals, [], rest)
+    }
+  }
+}
+
+fn mono_args_expect_go(
   state: State,
   locals: Dict(String, Scheme),
   expected_list: List(types.Ty),
