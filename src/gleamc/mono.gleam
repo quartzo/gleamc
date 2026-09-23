@@ -585,24 +585,66 @@ fn lift_lambda(
         surface_of(ret_ty),
       ))
       let fn_ty = TFun(param_surfaces, ret_surface)
-      use #(body_caps, captures2, env_ty, state) <- result_try(prepare_captures(
-        state,
-        locals,
-        fname,
-        captured,
-        body,
-      ))
-      let lam_locals =
+      let env_ty = "__Env_" <> fname
+      let #(with_types, state) =
+        list.fold(captured, #([], state), fn(acc, name) {
+          let #(pairs, acc_state) = acc
+          case
+            list.any(pairs, fn(existing) {
+              let #(existing_name, _) = existing
+              existing_name == name
+            })
+          {
+            True -> acc
+            False -> {
+              let #(ty, next_state) =
+                capture_surface_type(acc_state, locals, name)
+              #(list.append(pairs, [#(name, ty)]), next_state)
+            }
+          }
+        })
+      let replacements =
+        list.fold(
+          list.index_map(with_types, fn(pair, index) {
+            let #(name, ty) = pair
+            #(name, EEnvGet(env_ty, index, ty))
+          }),
+          dict.new(),
+          fn(acc, pair) {
+            let #(name, expr) = pair
+            dict.insert(acc, name, expr)
+          },
+        )
+      let captures2 =
+        list.map(with_types, fn(pair) {
+          let #(name, _) = pair
+          EVar(name)
+        })
+      // Captures are locals of the lifted function: the body sees them as
+      // ordinary variables, so a nested lambda captures them into its own
+      // environment. They are only rewritten to `EEnvGet` after the nested
+      // lambdas have been lifted, otherwise the inner function would inherit
+      // an `EEnvGet` of the outer `__env` while receiving a different one.
+      let param_schemes =
         list.fold(list.zip(names, param_tys), dict.new(), fn(acc, pair) {
           let #(name, ty) = pair
           dict.insert(acc, name, Scheme([], ty))
         })
-      use #(body2, state) <- result_try(mono_expr_ex(
+      let lam_locals =
+        list.fold(with_types, param_schemes, fn(acc, pair) {
+          let #(name, _) = pair
+          case dict.get(locals, name) {
+            Ok(scheme) -> dict.insert(acc, name, scheme)
+            Error(_) -> acc
+          }
+        })
+      use #(body_mono, state) <- result_try(mono_expr_ex(
         state,
         lam_locals,
         Some(ret_ty),
-        body_caps,
+        body,
       ))
+      let body2 = replace_vars(body_mono, replacements)
       let env_param = #("__env", TNamed("void*"))
       let fn_def =
         Function(
@@ -660,38 +702,14 @@ fn find_update_field(fields, name) {
   }
 }
 
-/// Builds the closure environment for the captured variables: allocates a
-/// context, rewrites the body to read captures from `__env`, and returns the
-/// captured operands plus the environment type name.
-fn prepare_captures(state, locals, fname, captured, body) {
-  case captured {
-    [] -> Ok(#(body, [], "", state))
-    _ -> {
-      let env_ty = "__Env_" <> fname
-      let with_types =
-        list.map(captured, fn(name) {
-          #(name, scheme_surface_type(state, locals, name))
-        })
-      let replacements =
-        list.fold(
-          list.index_map(with_types, fn(pair, index) {
-            let #(name, ty) = pair
-            #(name, EEnvGet(env_ty, index, ty))
-          }),
-          dict.new(),
-          fn(acc, pair) {
-            let #(name, expr) = pair
-            dict.insert(acc, name, expr)
-          },
-        )
-      let body2 = replace_vars(body, replacements)
-      let captures =
-        list.map(with_types, fn(pair) {
-          let #(name, _) = pair
-          EVar(name)
-        })
-      Ok(#(body2, captures, env_ty, state))
-    }
+/// Like `scheme_surface_type`, but specialized: the `EEnvGet` built from it is
+/// created after the body has been monomorphised, so it is not passed through
+/// `mono_expr` again and must already carry a concrete type.
+fn capture_surface_type(state: State, locals, name) -> #(Type, State) {
+  let surface = scheme_surface_type(state, locals, name)
+  case mono_type(state, dict.new(), surface) {
+    Ok(#(specialized, state2)) -> #(specialized, state2)
+    Error(_) -> #(surface, state)
   }
 }
 
@@ -1434,7 +1452,7 @@ fn type_of(
   let st = infer.St(state.subst, state.counter)
   case infer.infer(env, st, expr) {
     Ok(#(ty, st2)) -> #(
-      ty,
+      types.zonk(ty, st2.subst),
       State(..state, subst: st2.subst, counter: st2.counter),
     )
     Error(_) -> #(Con("?", []), state)

@@ -19,19 +19,17 @@ silently unavailable.
 
 ## Known bugs
 
-- A closure that captures a collection/ADT value (not a scalar) and uses it in
-  a call to a generic function mis-specialises the captured type. For example
-  `list.map(xs, fn(a) { list.length(xs) + a })` is rejected. Scalar captures
-  work. Workaround: pass the captured value as an
-  explicit parameter instead of capturing it.
-- Nested `use` (or nested lambdas) inside a function that itself has captures
-  can read the outer environment through the inner environment pointer. When
-  an outer lambda rewrites its captures to `EEnvGet(outer_env, i)`, a nested
-  lambda lifted from its body keeps those outer references but receives only
-  its own `__env`, so the field index is read from the wrong struct. This
-  crashed `simplifile.get_files` until the nested `use` chain was rewritten as
-  explicit `case`. Workaround: avoid nested `use`/lambdas that capture an outer
-  captured value; destructure with explicit `case` instead.
+None open right now. Bugs found and fixed in this area:
+
+- A `let`-bound lambda with no expected function type was given the
+  unzonked inferred type, leaving its parameter/return types as unresolved
+  variables (`let f = fn(b: Int) { b + 1 }` then `f(1)` was rejected).
+  `mono.type_of` now zonks the inferred type before using it as the expected
+  type; `diffs/nestedclosure.gleam` covers it.
+- The nested-capture bug found while adding `simplifile.get_files` — an inner
+  lambda reading the outer `EEnvGet` through its own `__env` — was fixed by
+  monomorphising the body before applying capture substitutions and giving the
+  `EEnvGet` a specialised type up front; `diffs/nestedclosure.gleam` covers it.
 
 Two monomorphization bugs were found and fixed while
 adding list support, and are now covered by `diffs/lists.gleam`:
@@ -48,6 +46,13 @@ adding list support, and are now covered by `diffs/lists.gleam`:
 - Exhaustiveness for tuple subjects (and multiple `case` subjects, which
   desugar to a tuple) checks each column independently. This never rejects a
   genuinely exhaustive case but may accept some that are not.
+- Labelled function parameters (`fn f(label name: T)`) are not parsed. The
+  argument matcher keys on the parameter name, so a labelled call only works
+  when the parameter is named after the label (`fn f(label: T)`) — impossible
+  for keyword-like labels such as `get_files(in directory)`.
+- `@external(...)` declarations and bit-array string segments
+  (`<<"...":utf8>>`) are not parsed.
+- `let` bindings take no type annotation (`let x: T = ...`).
 
 ## Type system
 
@@ -112,7 +117,9 @@ their imports are resolved when the prelude is attached.
   `index_map`, `index_fold`, `filter_map`, `sort`, `intersperse`, `take_while`,
   `drop_while`, `window`, `window_by_2`, `chunk`, `sized_chunk`, `split`,
   `map_fold`, `reduce`, `permutations`, `scan`, `transpose`, `unique`, plus the
-  non-official extras `sum` and `at`.
+  non-official extras `sum` and `at`. Divergence: `sort` takes an explicit
+  comparator (`List(a)`, `fn(a, a) -> Order`), whereas the official `sort` is
+  single-argument.
 - `gleam/string`: `length`, `append`, `uppercase`, `lowercase`, `reverse`,
   `contains`, `starts_with`, `ends_with`, `trim`, `replace`, `concat`, `join`,
   `split`, `slice`, `repeat`, `pad_start`, `pad_end`, `trim_start`, `trim_end`,
@@ -161,11 +168,24 @@ their imports are resolved when the prelude is attached.
   `Result`/`FileError`. Directory listings are joined with `/` (which cannot
   appear in a POSIX filename) and split in Gleam; `get_files` recurses in
   Gleam using `read_directory`/`is_directory`. Not implemented yet:
-  `file_info`/`link_info`, permissions (`Permission`, `FilePermissions`,
-  `filepath` and `gleam/set` modules), symlinks, `copy`/`rename`, `touch`,
-  recursive `delete`/`clear_directory`, and `create_directory_all`; `exists`
-  ignores `follow_links` (it always follows). Directory deletion is
-  non-recursive.
+  `file_info_permissions` (needs `gleam/set`), `file_permissions_to_octal`,
+  `set_permissions`, symlinks, `copy`/`rename`, `touch`, recursive
+  `delete`/`clear_directory`, and `create_directory_all`; `exists` ignores
+  `follow_links` (it always follows). Directory deletion is non-recursive.
+
+## Self-host
+
+The goal is for `gleamc` to compile its own source (`src/gleamc/*.gleam`), so
+that source must stay inside the supported subset and use the same standard
+library under both the official toolchain and gleamc.
+
+- `src/gleamc/ffi.gleam` still binds `run`, `read_file`, `write_file`, `which`,
+  `get_env` and `argv` via `@external(erlang, "gleamc_ffi", ...)`. File
+  reads/writes are to be migrated to `simplifile` (the real package under the
+  official toolchain, `std/simplifile.gleam` under gleamc); the process,
+  environment and argument bindings still need a portable replacement.
+- `std/simplifile.gleam` must keep growing until it covers every file call the
+  compiler makes.
 
 ## Toolchain
 

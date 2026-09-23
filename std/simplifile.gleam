@@ -278,18 +278,14 @@ fn get_files_loop(
     [] -> Ok([])
     [name, ..rest] -> {
       let path = join(directory, name)
-      case get_files_loop(directory, rest) {
-        Error(err) -> Error(err)
-        Ok(tail) ->
-          case is_directory(path) {
-            Error(err) -> Error(err)
-            Ok(True) ->
-              case get_files(in: path) {
-                Error(err) -> Error(err)
-                Ok(nested) -> Ok(list.append(nested, tail))
-              }
-            Ok(False) -> Ok([path, ..tail])
-          }
+      use tail <- result.try(get_files_loop(directory, rest))
+      use is_dir <- result.try(is_directory(path))
+      case is_dir {
+        True -> {
+          use nested <- result.try(get_files(in: path))
+          Ok(list.append(nested, tail))
+        }
+        False -> Ok([path, ..tail])
       }
     }
   }
