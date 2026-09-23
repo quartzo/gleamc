@@ -928,6 +928,15 @@ fn free_var_names(expr) -> List(String) {
     EField(obj, _) -> free_var_names(obj)
     ELabelled(_, value) -> free_var_names(value)
     ELambda(_, body) -> free_var_names(body)
+    EUpdate(_, base, fields) ->
+      list.append(
+        free_var_names(base),
+        list.flat_map(fields, fn(field) {
+          let #(_, value) = field
+          free_var_names(value)
+        }),
+      )
+    EBitArray(elements) -> list.flat_map(elements, free_var_names)
     _ -> []
   }
 }
