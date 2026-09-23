@@ -220,6 +220,8 @@ fn header() -> String {
   <> "%GleamcBitArray = type { i8*, i64 }\n\n"
   <> "declare void @Gleamc_set_args(i32, i8**)\n"
   <> "declare i8* @gleamc_alloc(i64)\n"
+  <> "declare void @Gleamc_rc_retain(i8*)\n"
+  <> "declare void @Gleamc_rc_release(i8*)\n"
   <> "declare %GleamcString @gleamc_string_lit(i8*, i64)\n"
   <> "declare %GleamcString @Gleamc_show_concat(%GleamcString, %GleamcString)\n"
   <> "declare %GleamcString @Gleamc_int_to_string(i64)\n"
@@ -1134,8 +1136,9 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
       #(b, Nil)
     }
     ir.OpRetain(_, _) | ir.OpDrop(_, _) -> {
-      // Ownership ops: ownership semantics for handle types are added once
-      // the glue is emitted (retain/release per type). Value types are no-ops.
+      // Retain/drop glue for aggregates is not ported yet; freeing here
+      // would expose the missing per-field glue as use-after-free. Kept as a
+      // no-op (leak) until the ownership-glue stage.
       #(b, Nil)
     }
     ir.OpTuple(dest, elems, ty) -> {
@@ -1823,7 +1826,9 @@ fn runtime_declared(name: String) -> Bool {
     | "gleamc_string_eq"
     | "Gleamc_bit_array_eq"
     | "Gleamc_bit_array_new"
-    | "Gleamc_bit_array_from_bytes" -> True
+    | "Gleamc_bit_array_from_bytes"
+    | "Gleamc_rc_retain"
+    | "Gleamc_rc_release" -> True
     _ -> False
   }
 }

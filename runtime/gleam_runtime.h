@@ -60,6 +60,11 @@ void gleamc_release_slow(GleamcHdr* h);
 
 size_t gleamc_live_blocks(void);   /* live blocks (tests) */
 
+/* Generic refcount ops on a payload pointer (NULL-safe, static-safe).
+ * Used by the LLVM backend to emit retain/drop without the C macros. */
+void Gleamc_rc_retain(void* p);
+void Gleamc_rc_release(void* p);
+
 /* ------------------------------------------------------------------ */
 /* String — UTF-8 text (bytes + length)                                */
 /* ------------------------------------------------------------------ */

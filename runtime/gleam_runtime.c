@@ -14,6 +14,20 @@ static size_t codepoint_offset(GleamcString s, int64_t index);
 #include <unicode/ustring.h>
 #include <utf8proc.h>
 
+void Gleamc_rc_retain(void* p) {
+    if (p == NULL) return;
+    GleamcHdr* h = (GleamcHdr*)((uint8_t*)p - sizeof(GleamcHdr));
+    if (h->refcount != GLEAMC_RC_STATIC) h->refcount++;
+}
+
+void Gleamc_rc_release(void* p) {
+    if (p == NULL) return;
+    GleamcHdr* h = (GleamcHdr*)((uint8_t*)p - sizeof(GleamcHdr));
+    if (h->refcount != GLEAMC_RC_STATIC && --h->refcount == 0) {
+        gleamc_release_slow(h);
+    }
+}
+
 static size_t _gleamc_live = 0;
 
 static void _gleamc_report_leaks(void) {
