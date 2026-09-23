@@ -83,14 +83,24 @@ pub fn insert(dict: Dict(k, v), key: k, value: v) -> Dict(k, v) {
 }
 
 fn insert_entries(entries: List(#(k, v)), key: k, value: v) -> List(#(k, v)) {
+  insert_entries_loop(entries, key, value, [])
+}
+
+fn insert_entries_loop(
+  entries: List(#(k, v)),
+  key: k,
+  value: v,
+  passed: List(#(k, v)),
+) -> List(#(k, v)) {
   case entries {
-    [] -> [#(key, value)]
+    [] -> list.reverse([#(key, value), ..passed])
     [entry, ..rest] -> {
       let #(entry_key, _) = entry
       case key_order(key, entry_key) {
-        order.Lt -> [#(key, value), ..entries]
-        order.Eq -> [#(key, value), ..rest]
-        order.Gt -> [entry, ..insert_entries(rest, key, value)]
+        order.Lt ->
+          list.append(list.reverse(passed), [#(key, value), ..entries])
+        order.Eq -> list.append(list.reverse(passed), [#(key, value), ..rest])
+        order.Gt -> insert_entries_loop(rest, key, value, [entry, ..passed])
       }
     }
   }

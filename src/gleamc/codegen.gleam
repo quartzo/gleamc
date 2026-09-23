@@ -1547,6 +1547,19 @@ fn emit_term(by_name, term) {
     ir.Ret(value) -> "return " <> operand_c(by_name, value) <> ";"
     ir.Tailcall(fun, args) ->
       "return Gleamc_" <> fun <> "(" <> call_args(by_name, args) <> ");"
+    ir.TailcallIndirect(fval, args) -> {
+      let f = operand_c(by_name, fval)
+      "return "
+      <> f
+      <> ".code("
+      <> f
+      <> ".env"
+      <> case args {
+        [] -> ""
+        _ -> ", " <> call_args(by_name, args)
+      }
+      <> ");"
+    }
     ir.Unreachable -> "abort();"
   }
 }

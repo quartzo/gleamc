@@ -78,6 +78,10 @@ erl_crash.dump
 /diffs/*_debug
 /diffs/*_debug.ll
 
+# ownership-phase IR dumps (--ir)
+/diffs/*.ir
+/src/*.ir
+
 # compiler output next to the compiler sources
 /src/gleamc/*.c
 /src/gleamc/*.so

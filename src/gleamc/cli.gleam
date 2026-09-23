@@ -3,8 +3,10 @@
 import gleam/int
 import gleam/io
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import gleamc/ffi
+import gleamc/ir
 import gleamc/loader
 import gleamc/pipeline
 import gleamc/toolchain
@@ -24,6 +26,7 @@ pub type Options {
     run: Bool,
     quiet: Bool,
     llvm: Bool,
+    ir: Bool,
   )
 }
 
@@ -41,6 +44,7 @@ fn default_options() -> Options {
     run: False,
     quiet: False,
     llvm: False,
+    ir: False,
   )
 }
 
@@ -79,6 +83,7 @@ fn parse(
         "--run" -> parse(rest, Options(..options, run: True), source)
         "--quiet" -> parse(rest, Options(..options, quiet: True), source)
         "--llvm" -> parse(rest, Options(..options, llvm: True), source)
+        "--ir" -> parse(rest, Options(..options, ir: True), source)
         "smoke" -> parse(rest, options, source)
         _ ->
           case string.split(arg, "=") {
@@ -107,6 +112,8 @@ fn usage() -> Nil {
   io.println(
     "usage: gleamc <file.gleam> [--cc=clang|gcc|tcc] [--release] [--run]",
   )
+  io.println("       gleamc <file.gleam> --llvm     # emit LLVM IR")
+  io.println("       gleamc <file.gleam> --ir       # dump ownership-phase IR")
   io.println("       gleamc smoke        # end-to-end pipeline smoke test")
   io.println("       gleamc --version")
 }
@@ -123,34 +130,49 @@ fn compile_file(source: String, options: Options) -> Nil {
 }
 
 fn compile_modules(modules, base: String, options: Options) -> Nil {
-  let result = case options.llvm {
-    True -> pipeline.compile_modules_llvm(modules)
-    False -> pipeline.compile_modules(modules)
+  let result = case options.llvm, options.ir {
+    True, _ -> pipeline.compile_modules_llvm(modules)
+    False, True -> ownership_ir(modules)
+    False, False -> pipeline.compile_modules(modules)
   }
   case result {
     Error(err) -> io.println(base <> ".gleam: " <> err)
-    Ok(c_code) -> {
-      let audit = case ffi.get_env("GLEAMC_RC_AUDIT") {
-        Ok(_) -> True
-        Error(_) -> False
-      }
-      // Audit builds carry extra refcount site strings, so they get their own
-      // files (`_debug`) and never clobber the normal artifacts.
-      let c_path = case options.llvm, audit {
-        True, True -> base <> "_debug.ll"
-        True, False -> base <> ".ll"
-        False, _ -> base <> ".c"
-      }
-      let bin_path = case audit {
-        True -> base <> "_debug"
-        False -> base
-      }
-      case ffi.write_file(c_path, c_code) {
-        Error(err) -> io.println("error writing " <> c_path <> ": " <> err)
-        Ok(_) -> build(c_path, bin_path, options)
+    Ok(output) -> {
+      case options.ir {
+        // Ownership-phase IR dump: a text artifact, nothing to link.
+        True -> case ffi.write_file(base <> ".ir", output) {
+          Error(err) -> io.println("error writing " <> base <> ".ir: " <> err)
+          Ok(_) -> Nil
+        }
+        False -> {
+          let audit = case ffi.get_env("GLEAMC_RC_AUDIT") {
+            Ok(_) -> True
+            Error(_) -> False
+          }
+          // Audit builds carry extra refcount site strings, so they get their
+          // own files (`_debug`) and never clobber the normal artifacts.
+          let c_path = case options.llvm, audit {
+            True, True -> base <> "_debug.ll"
+            True, False -> base <> ".ll"
+            False, _ -> base <> ".c"
+          }
+          let bin_path = case audit {
+            True -> base <> "_debug"
+            False -> base
+          }
+          case ffi.write_file(c_path, output) {
+            Error(err) -> io.println("error writing " <> c_path <> ": " <> err)
+            Ok(_) -> build(c_path, bin_path, options)
+          }
+        }
       }
     }
   }
+}
+
+fn ownership_ir(modules) -> Result(String, String) {
+  use owned <- result.try(pipeline.compile_ir_modules(modules))
+  Ok(ir.to_text(owned))
 }
 
 fn build(c_path: String, bin_path: String, options: Options) -> Nil {

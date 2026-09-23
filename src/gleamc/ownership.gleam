@@ -363,6 +363,16 @@ fn insert_blocks(
             modes,
             ffi,
           )
+        // The callee is unknown, so every argument is treated as owning.
+        ir.TailcallIndirect(_, args) ->
+          term_retains_owning(
+            args,
+            list.length(block.ops),
+            handles,
+            base_live,
+            pre,
+            moved,
+          )
         _ -> #(pre, moved)
       }
       dict.insert(acc, block.label, #(pre, moved))
@@ -467,6 +477,7 @@ fn successors(term: ir.Terminator) -> List(String) {
     ir.Branch(_, then, otherwise) -> [then, otherwise]
     ir.Ret(_) -> []
     ir.Tailcall(_, _) -> []
+    ir.TailcallIndirect(_, _) -> []
     ir.Unreachable -> []
   }
 }
@@ -827,6 +838,10 @@ fn forward_loop(
 }
 fn term_retains(fun, args, index, handles, base_live, pre, moved, modes, ffi) {
   let owning = ir.tailcall_owning_modes(fun, args, modes, ffi)
+  term_retains_owning(owning, index, handles, base_live, pre, moved)
+}
+
+fn term_retains_owning(owning, index, handles, base_live, pre, moved) {
   list.fold(dict.to_list(owning_counts(owning)), #(pre, moved), fn(acc, entry) {
     let #(pre_acc, moved_acc) = acc
     let #(var_name, count) = entry
@@ -855,6 +870,7 @@ fn transferred_set(term: ir.Terminator, handles, modes, ffi) {
         ir.tailcall_owning_modes(fun, args, modes, ffi),
         handles,
       ))
+    ir.TailcallIndirect(_, args) -> sets_from(handle_names(args, handles))
     _ -> dict.new()
   }
 }

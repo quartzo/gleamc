@@ -1,6 +1,6 @@
 //// The compilation cascade: source(s) -> C (M2/M3/M4/M6/M8).
 ////
-////   merge -> check -> lower -> ownership -> codegen
+////   merge -> check -> lower -> ownership -> cps -> codegen
 ////
 //// `compile_to_ir` stops after the ownership pass (useful for dumps/tests).
 
@@ -11,6 +11,7 @@ import gleamc/ast.{type CustomType, type Module, DCustomType, Module}
 import gleamc/checker
 import gleamc/codegen
 import gleamc/consts
+import gleamc/cps
 import gleamc/dce
 import gleamc/ir
 import gleamc/llvm
@@ -92,6 +93,7 @@ fn cascade(modules: List(#(String, Module))) {
     lower.describe_error,
   ))
   let owned = ownership.insert(ir_module, checked.ctors)
+  let owned = cps.normalize(owned)
   Ok(#(checked.module, owned, checked.ctors, custom_types_of(checked.module)))
 }
 

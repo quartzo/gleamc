@@ -230,6 +230,8 @@ fn consumed_params(function, ffi, state) {
       // Tail calls move their arguments (the caller does not return).
       ir.Tailcall(_, args) ->
         list.fold(args, acc, fn(set, arg) { consume_param(set, param_set, arg) })
+      ir.TailcallIndirect(_, args) ->
+        list.fold(args, acc, fn(set, arg) { consume_param(set, param_set, arg) })
       _ -> acc
     }
   })

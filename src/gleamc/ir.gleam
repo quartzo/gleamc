@@ -69,6 +69,8 @@ pub type Terminator {
   Ret(value: Operand)
   /// Tail call: control leaves the function directly into `fun` (no return).
   Tailcall(fun: String, args: List(Operand))
+  /// Tail call through a function value: the callee is `fval` (an operand).
+  TailcallIndirect(fval: Operand, args: List(Operand))
   Unreachable
 }
 
@@ -222,6 +224,7 @@ pub fn term_reads(term: Terminator) -> List(Operand) {
     Branch(cond, _, _) -> [cond]
     Ret(value) -> [value]
     Tailcall(_, args) -> args
+    TailcallIndirect(fval, args) -> [fval, ..args]
     Unreachable -> []
   }
 }
@@ -431,6 +434,12 @@ fn term_text(term: Terminator) -> String {
     Tailcall(fun, args) ->
       "tailcall "
       <> fun
+      <> "("
+      <> string.join(list.map(args, operand_text), ", ")
+      <> ")"
+    TailcallIndirect(fval, args) ->
+      "tailcallindirect "
+      <> operand_text(fval)
       <> "("
       <> string.join(list.map(args, operand_text), ", ")
       <> ")"

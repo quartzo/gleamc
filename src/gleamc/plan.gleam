@@ -95,10 +95,33 @@ pub fn plan(module: ir.Module) -> Plan {
 /// `end: Ret(res)`).
 fn tail_edges(function: ir.Function) -> List(Edge) {
   let ir.Function(name, _, _, blocks, _) = function
+  // Top-level functions used as values are closures whose code is
+  // `__gv_<name>` and whose capture list is empty. Resolving those lets an
+  // indirect tail call (continuation) participate in the same dispatcher as
+  // a direct one.
+  let known =
+    list.fold(blocks, dict.new(), fn(acc, block) {
+      let ir.Block(_, ops, _) = block
+      list.fold(ops, acc, fn(acc2, op) {
+        case op {
+          ir.OpClosure(dest, code, [], "", _) ->
+            case string.starts_with(code, "__gv_") {
+              True -> dict.insert(acc2, dest, string.drop_start(code, 5))
+              False -> acc2
+            }
+          _ -> acc2
+        }
+      })
+    })
   list.filter_map(blocks, fn(block) {
     let ir.Block(_, _, term) = block
     case term {
       ir.Tailcall(fun, _) -> Ok(Edge(name, fun))
+      ir.TailcallIndirect(ir.Var(v), _) ->
+        case dict.get(known, v) {
+          Ok(target) -> Ok(Edge(name, target))
+          Error(_) -> Error(Nil)
+        }
       _ -> Error(Nil)
     }
   })

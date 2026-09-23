@@ -7,9 +7,13 @@ pub type List(a) {
 }
 
 pub fn length(list: List(a)) -> Int {
+  length_loop(list, 0)
+}
+
+fn length_loop(list: List(a), acc: Int) -> Int {
   case list {
-    ListCons(_, rest) -> 1 + length(rest)
-    ListEmpty -> 0
+    ListCons(_, rest) -> length_loop(rest, acc + 1)
+    ListEmpty -> acc
   }
 }
 
@@ -25,27 +29,39 @@ fn reverse_helper(list: List(a), acc: List(a)) -> List(a) {
 }
 
 pub fn sum(list: List(Int)) -> Int {
+  sum_loop(list, 0)
+}
+
+fn sum_loop(list: List(Int), acc: Int) -> Int {
   case list {
-    ListCons(head, rest) -> head + sum(rest)
-    ListEmpty -> 0
+    ListCons(head, rest) -> sum_loop(rest, acc + head)
+    ListEmpty -> acc
   }
 }
 
 pub fn map(list: List(a), with: fn(a) -> b) -> List(b) {
+  map_loop(list, with, ListEmpty)
+}
+
+fn map_loop(list: List(a), with: fn(a) -> b, acc: List(b)) -> List(b) {
   case list {
-    ListCons(head, rest) -> ListCons(with(head), map(rest, with))
-    ListEmpty -> ListEmpty
+    ListCons(head, rest) -> map_loop(rest, with, ListCons(with(head), acc))
+    ListEmpty -> reverse(acc)
   }
 }
 
 pub fn filter(list: List(a), keeping: fn(a) -> Bool) -> List(a) {
+  filter_loop(list, keeping, ListEmpty)
+}
+
+fn filter_loop(list: List(a), keeping: fn(a) -> Bool, acc: List(a)) -> List(a) {
   case list {
     ListCons(head, rest) ->
       case keeping(head) {
-        True -> ListCons(head, filter(rest, keeping))
-        False -> filter(rest, keeping)
+        True -> filter_loop(rest, keeping, ListCons(head, acc))
+        False -> filter_loop(rest, keeping, acc)
       }
-    ListEmpty -> ListEmpty
+    ListEmpty -> reverse(acc)
   }
 }
 
@@ -57,10 +73,7 @@ pub fn fold(over: List(a), from: b, with: fn(b, a) -> b) -> b {
 }
 
 pub fn fold_right(over: List(a), from: b, with: fn(b, a) -> b) -> b {
-  case over {
-    ListCons(head, rest) -> with(fold_right(rest, from, with), head)
-    ListEmpty -> from
-  }
+  fold(reverse(over), from, fn(acc, item) { with(acc, item) })
 }
 
 pub fn any(over: List(a), satisfying: fn(a) -> Bool) -> Bool {
@@ -96,33 +109,42 @@ pub fn each(over: List(a), with: fn(a) -> b) -> Nil {
 }
 
 pub fn append(first: List(a), second: List(a)) -> List(a) {
-  case first {
-    ListCons(head, rest) -> ListCons(head, append(rest, second))
-    ListEmpty -> second
+  append_loop(reverse(first), second)
+}
+
+fn append_loop(reversed: List(a), acc: List(a)) -> List(a) {
+  case reversed {
+    ListCons(head, rest) -> append_loop(rest, ListCons(head, acc))
+    ListEmpty -> acc
   }
 }
 
 pub fn flatten(lists: List(List(a))) -> List(a) {
+  flatten_loop(reverse(lists), ListEmpty)
+}
+
+fn flatten_loop(lists: List(List(a)), acc: List(a)) -> List(a) {
   case lists {
-    ListCons(head, rest) -> append(head, flatten(rest))
-    ListEmpty -> ListEmpty
+    ListCons(head, rest) -> flatten_loop(rest, append(head, acc))
+    ListEmpty -> acc
   }
 }
 
 pub fn flat_map(over: List(a), with: fn(a) -> List(b)) -> List(b) {
-  case over {
-    ListCons(head, rest) -> append(with(head), flat_map(rest, with))
-    ListEmpty -> ListEmpty
-  }
+  flatten(map(over, with))
 }
 
 pub fn take(over: List(a), up_to: Int) -> List(a) {
+  take_loop(over, up_to, ListEmpty)
+}
+
+fn take_loop(over: List(a), up_to: Int, acc: List(a)) -> List(a) {
   case up_to <= 0 {
-    True -> ListEmpty
+    True -> reverse(acc)
     False ->
       case over {
-        ListCons(head, rest) -> ListCons(head, take(rest, up_to - 1))
-        ListEmpty -> ListEmpty
+        ListCons(head, rest) -> take_loop(rest, up_to - 1, ListCons(head, acc))
+        ListEmpty -> reverse(acc)
       }
   }
 }
@@ -150,9 +172,13 @@ pub fn contains(list: List(a), element: a) -> Bool {
 }
 
 pub fn repeat(item: a, times: Int) -> List(a) {
+  repeat_loop(item, times, ListEmpty)
+}
+
+fn repeat_loop(item: a, times: Int, acc: List(a)) -> List(a) {
   case times <= 0 {
-    True -> ListEmpty
-    False -> ListCons(item, repeat(item, times - 1))
+    True -> acc
+    False -> repeat_loop(item, times - 1, ListCons(item, acc))
   }
 }
 
@@ -179,36 +205,47 @@ pub fn at(list: List(a), index: Int) -> Result(a, Nil) {
 }
 
 pub fn zip(list: List(a), other: List(b)) -> List(#(a, b)) {
-  case list {
-    ListCons(x, xs) ->
-      case other {
-        ListCons(y, ys) -> ListCons(#(x, y), zip(xs, ys))
-        ListEmpty -> ListEmpty
-      }
-    ListEmpty -> ListEmpty
+  zip_loop(list, other, ListEmpty)
+}
+
+fn zip_loop(list: List(a), other: List(b), acc: List(#(a, b))) -> List(#(a, b)) {
+  case list, other {
+    ListCons(x, xs), ListCons(y, ys) -> zip_loop(xs, ys, ListCons(#(x, y), acc))
+    _, _ -> reverse(acc)
   }
 }
 
 pub fn map2(list: List(a), other: List(b), with: fn(a, b) -> c) -> List(c) {
-  case list {
-    ListCons(x, xs) ->
-      case other {
-        ListCons(y, ys) -> ListCons(with(x, y), map2(xs, ys, with))
-        ListEmpty -> ListEmpty
-      }
-    ListEmpty -> ListEmpty
+  map2_loop(list, other, with, ListEmpty)
+}
+
+fn map2_loop(
+  list: List(a),
+  other: List(b),
+  with: fn(a, b) -> c,
+  acc: List(c),
+) -> List(c) {
+  case list, other {
+    ListCons(x, xs), ListCons(y, ys) ->
+      map2_loop(xs, ys, with, ListCons(with(x, y), acc))
+    _, _ -> reverse(acc)
   }
 }
 
 pub fn index_map(list: List(a), with: fn(a, Int) -> b) -> List(b) {
-  index_map_loop(list, with, 0)
+  index_map_loop(list, with, 0, ListEmpty)
 }
 
-fn index_map_loop(list: List(a), with: fn(a, Int) -> b, index: Int) -> List(b) {
+fn index_map_loop(
+  list: List(a),
+  with: fn(a, Int) -> b,
+  index: Int,
+  acc: List(b),
+) -> List(b) {
   case list {
     ListCons(head, rest) ->
-      ListCons(with(head, index), index_map_loop(rest, with, index + 1))
-    ListEmpty -> ListEmpty
+      index_map_loop(rest, with, index + 1, ListCons(with(head, index), acc))
+    ListEmpty -> reverse(acc)
   }
 }
 
@@ -251,28 +288,36 @@ fn unzip_helper(
 }
 
 pub fn unique(list: List(a)) -> List(a) {
-  unique_loop(list, ListEmpty)
+  unique_loop(list, ListEmpty, ListEmpty)
 }
 
-fn unique_loop(list: List(a), seen: List(a)) -> List(a) {
+fn unique_loop(list: List(a), seen: List(a), acc: List(a)) -> List(a) {
   case list {
     ListCons(head, rest) ->
       case contains(seen, head) {
-        True -> unique_loop(rest, seen)
-        False -> ListCons(head, unique_loop(rest, ListCons(head, seen)))
+        True -> unique_loop(rest, seen, acc)
+        False -> unique_loop(rest, ListCons(head, seen), ListCons(head, acc))
       }
-    ListEmpty -> ListEmpty
+    ListEmpty -> reverse(acc)
   }
 }
 
 pub fn filter_map(list: List(a), with: fn(a) -> Result(b, e)) -> List(b) {
+  filter_map_loop(list, with, ListEmpty)
+}
+
+fn filter_map_loop(
+  list: List(a),
+  with: fn(a) -> Result(b, e),
+  acc: List(b),
+) -> List(b) {
   case list {
     ListCons(head, rest) ->
       case with(head) {
-        Ok(value) -> ListCons(value, filter_map(rest, with))
-        Error(_) -> filter_map(rest, with)
+        Ok(value) -> filter_map_loop(rest, with, ListCons(value, acc))
+        Error(_) -> filter_map_loop(rest, with, acc)
       }
-    ListEmpty -> ListEmpty
+    ListEmpty -> reverse(acc)
   }
 }
 
@@ -322,24 +367,28 @@ fn index_fold_loop(
 pub fn intersperse(list: List(a), separator: a) -> List(a) {
   case list {
     [] -> []
-    [first, ..rest] -> [first, ..intersperse_rest(rest, separator)]
+    [first, ..rest] -> reverse(intersperse_loop(rest, separator, [first]))
   }
 }
 
-fn intersperse_rest(list: List(a), separator: a) -> List(a) {
+fn intersperse_loop(list: List(a), separator: a, acc: List(a)) -> List(a) {
   case list {
-    [] -> []
-    [head, ..rest] -> [separator, head, ..intersperse_rest(rest, separator)]
+    [] -> acc
+    [head, ..rest] -> intersperse_loop(rest, separator, [head, separator, ..acc])
   }
 }
 
 pub fn take_while(list: List(a), satisfying: fn(a) -> Bool) -> List(a) {
+  take_while_loop(list, satisfying, [])
+}
+
+fn take_while_loop(list: List(a), satisfying: fn(a) -> Bool, acc: List(a)) -> List(a) {
   case list {
-    [] -> []
+    [] -> reverse(acc)
     [head, ..rest] ->
       case satisfying(head) {
-        True -> [head, ..take_while(rest, satisfying)]
-        False -> []
+        True -> take_while_loop(rest, satisfying, [head, ..acc])
+        False -> reverse(acc)
       }
   }
 }
@@ -570,12 +619,16 @@ pub fn rest(list: List(a)) -> Result(List(a), Nil) {
 }
 
 pub fn count(list: List(a), where: fn(a) -> Bool) -> Int {
+  count_loop(list, where, 0)
+}
+
+fn count_loop(list: List(a), where: fn(a) -> Bool, acc: Int) -> Int {
   case list {
-    ListEmpty -> 0
+    ListEmpty -> acc
     ListCons(head, tail) ->
       case where(head) {
-        True -> 1 + count(tail, where)
-        False -> count(tail, where)
+        True -> count_loop(tail, where, acc + 1)
+        False -> count_loop(tail, where, acc)
       }
   }
 }
@@ -625,16 +678,20 @@ pub fn try_map(
   over: List(a),
   with: fn(a) -> Result(b, e),
 ) -> Result(List(b), e) {
+  try_map_loop(over, with, [])
+}
+
+fn try_map_loop(
+  over: List(a),
+  with: fn(a) -> Result(b, e),
+  acc: List(b),
+) -> Result(List(b), e) {
   case over {
-    ListEmpty -> Ok([])
+    ListEmpty -> Ok(reverse(acc))
     ListCons(head, tail) ->
       case with(head) {
         Error(err) -> Error(err)
-        Ok(value) ->
-          case try_map(tail, with) {
-            Error(err) -> Error(err)
-            Ok(rest) -> Ok([value, ..rest])
-          }
+        Ok(value) -> try_map_loop(tail, with, [value, ..acc])
       }
   }
 }
@@ -662,12 +719,16 @@ pub fn key_find(in: List(#(k, v)), find: k) -> Result(v, Nil) {
 }
 
 pub fn key_filter(in: List(#(k, v)), find: k) -> List(v) {
+  key_filter_loop(in, find, [])
+}
+
+fn key_filter_loop(in: List(#(k, v)), find: k, acc: List(v)) -> List(v) {
   case in {
-    ListEmpty -> []
+    ListEmpty -> reverse(acc)
     ListCons(#(key, value), tail) ->
       case key == find {
-        True -> [value, ..key_filter(tail, find)]
-        False -> key_filter(tail, find)
+        True -> key_filter_loop(tail, find, [value, ..acc])
+        False -> key_filter_loop(tail, find, acc)
       }
   }
 }
@@ -706,13 +767,18 @@ pub fn key_set(list: List(#(k, v)), key: k, value: v) -> List(#(k, v)) {
 }
 
 pub fn strict_zip(list: List(a), with: List(b)) -> Result(List(#(a, b)), Nil) {
-  case list, with {
-    [], [] -> Ok([])
+  strict_zip_loop(list, with, [])
+}
+
+fn strict_zip_loop(
+  list: List(a),
+  other: List(b),
+  acc: List(#(a, b)),
+) -> Result(List(#(a, b)), Nil) {
+  case list, other {
+    [], [] -> Ok(reverse(acc))
     [first, ..firsts], [second, ..seconds] ->
-      case strict_zip(firsts, seconds) {
-        Ok(rest) -> Ok([#(first, second), ..rest])
-        Error(_) -> Error(Nil)
-      }
+      strict_zip_loop(firsts, seconds, [#(first, second), ..acc])
     _, _ -> Error(Nil)
   }
 }
@@ -721,15 +787,21 @@ pub fn split_while(
   list: List(a),
   satisfying: fn(a) -> Bool,
 ) -> #(List(a), List(a)) {
+  let #(taken, rest) = split_while_loop(list, satisfying, [])
+  #(reverse(taken), rest)
+}
+
+fn split_while_loop(
+  list: List(a),
+  satisfying: fn(a) -> Bool,
+  acc: List(a),
+) -> #(List(a), List(a)) {
   case list {
-    [] -> #([], [])
+    [] -> #(acc, [])
     [head, ..tail] ->
       case satisfying(head) {
-        True -> {
-          let #(yes, no) = split_while(tail, satisfying)
-          #([head, ..yes], no)
-        }
-        False -> #([], list)
+        True -> split_while_loop(tail, satisfying, [head, ..acc])
+        False -> #(acc, list)
       }
   }
 }
@@ -796,15 +868,22 @@ pub fn max(over: List(a), with: fn(a, a) -> Order) -> Result(a, Nil) {
 }
 
 pub fn partition(list: List(a), with: fn(a) -> Bool) -> #(List(a), List(a)) {
+  partition_loop(list, with, [], [])
+}
+
+fn partition_loop(
+  list: List(a),
+  with: fn(a) -> Bool,
+  yes: List(a),
+  no: List(a),
+) -> #(List(a), List(a)) {
   case list {
-    [] -> #([], [])
-    [head, ..tail] -> {
-      let #(yes, no) = partition(tail, with)
+    [] -> #(reverse(yes), reverse(no))
+    [head, ..tail] ->
       case with(head) {
-        True -> #([head, ..yes], no)
-        False -> #(yes, [head, ..no])
+        True -> partition_loop(tail, with, [head, ..yes], no)
+        False -> partition_loop(tail, with, yes, [head, ..no])
       }
-    }
   }
 }
 

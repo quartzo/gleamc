@@ -1466,6 +1466,34 @@ fn emit_term(ctx: Ctx, term: ir.Terminator, b: Builder) {
           }
       }
     }
+    ir.TailcallIndirect(fval, args) -> {
+      let fn_ty = operand_type(ctx.by_name, fval)
+      let fn_s = llvm_ty(fn_ty, ctx.recursive)
+      let #(_, fv, b) = read_val(ctx, fval, b)
+      let #(code, b) = extract_value(fn_s, fv, [0], b)
+      let #(env, b) = extract_value(fn_s, fv, [1], b)
+      let #(b, arg_list) = read_args(ctx, args, b)
+      let ret_s = llvm_ty(ctx.ret, ctx.recursive)
+      let callargs = case arg_list {
+        "" -> "i8* " <> env
+        _ -> "i8* " <> env <> ", " <> arg_list
+      }
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> r
+            <> " = call "
+            <> ret_s
+            <> " "
+            <> code
+            <> "("
+            <> callargs
+            <> ")",
+        )
+      emit_line(b, "  ret " <> ret_s <> " " <> r)
+    }
     ir.Unreachable -> emit_line(b, "  unreachable")
   }
 }
@@ -3800,12 +3828,37 @@ fn emit_env_drop(entry, recursive, fields_of, lits) -> String {
   let safe_ty = safe(env_ty)
   let done = "ed_" <> safe_ty <> "_done"
   let body = "ed_" <> safe_ty <> "_body"
+  let teardown = "ed_" <> safe_ty <> "_teardown"
+  let rel = "ed_" <> safe_ty <> "_rel"
   let b = Builder(next: 0, lines: [])
   let b = emit_line(b, "define void @" <> env_ty <> "_drop(i8* %env) {")
   let b = emit_line(b, "  %isnull = icmp eq i8* %env, null")
   let b =
     emit_line(b, "  br i1 %isnull, label %" <> done <> ", label %" <> body)
   let b = emit_line(b, "\n" <> body <> ":")
+  // The environment is a refcounted cell: only the final reference tears the
+  // captured fields down; earlier drops just release. Mirrors Vesper's
+  // generated `env_release` (teardown on 1->0).
+  let #(hp, b) = fresh(b)
+  let #(hh, b) = fresh(b)
+  let #(rc, b) = fresh(b)
+  let #(last, b) = fresh(b)
+  let b =
+    emit_line(b, "  " <> hp <> " = getelementptr i8, i8* %env, i64 -8")
+  let b = emit_line(b, "  " <> hh <> " = bitcast i8* " <> hp <> " to i64*")
+  let b = emit_line(b, "  " <> rc <> " = load i64, i64* " <> hh)
+  let b = emit_line(b, "  " <> last <> " = icmp eq i64 " <> rc <> ", 1")
+  let b =
+    emit_line(
+      b,
+      "  br i1 "
+        <> last
+        <> ", label %"
+        <> teardown
+        <> ", label %"
+        <> rel,
+    )
+  let b = emit_line(b, "\n" <> teardown <> ":")
   let #(e, b) = fresh(b)
   let b = emit_line(b, "  " <> e <> " = bitcast i8* %env to %" <> env_ty <> "*")
   let b =
@@ -3844,6 +3897,15 @@ fn emit_env_drop(entry, recursive, fields_of, lits) -> String {
         }
       },
     )
+  let b =
+    emit_line(
+      b,
+      "  call void @Gleamc_rc_release(i8* %env, "
+        <> cstring_arg(lits, "env")
+        <> ")",
+    )
+  let b = emit_line(b, "  br label %" <> done)
+  let b = emit_line(b, "\n" <> rel <> ":")
   let b =
     emit_line(
       b,
