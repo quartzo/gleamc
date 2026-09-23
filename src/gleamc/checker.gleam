@@ -1502,6 +1502,36 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         TNamed("BitArray"),
         "host.run",
       )
+    "host", "char_code_at" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TInt],
+        TInt,
+        "host.char_code_at",
+      )
+    "host", "char_byte_len" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TInt],
+        TInt,
+        "host.char_byte_len",
+      )
+    "host", "byte_slice" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TInt, TInt],
+        TString,
+        "host.byte_slice",
+      )
     "host", "argv" ->
       check_builtin(
         env,

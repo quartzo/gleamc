@@ -1743,3 +1743,34 @@ int64_t Gleamc_uv_error(GleamcFuture* f) {
     gleamc_future_wait(f);
     return f->has_error ? (int64_t)f->error_code : 0;
 }
+
+/* Byte-indexed string access for the tokenizer (O(1) per character). */
+int64_t Gleamc_host_char_code_at(GleamcString s, int64_t off) {
+    if (off < 0 || (size_t)off >= s.len) return -1;
+    utf8proc_int32_t cp;
+    utf8proc_ssize_t n = utf8proc_iterate(
+        (const utf8proc_uint8_t*)s.data + off,
+        (utf8proc_ssize_t)(s.len - (size_t)off), &cp);
+    return n <= 0 ? -1 : (int64_t)cp;
+}
+
+int64_t Gleamc_host_char_byte_len(GleamcString s, int64_t off) {
+    if (off < 0 || (size_t)off >= s.len) return 0;
+    utf8proc_int32_t cp;
+    utf8proc_ssize_t n = utf8proc_iterate(
+        (const utf8proc_uint8_t*)s.data + off,
+        (utf8proc_ssize_t)(s.len - (size_t)off), &cp);
+    return n <= 0 ? 1 : (int64_t)n;
+}
+
+GleamcString Gleamc_host_byte_slice(GleamcString s, int64_t start, int64_t len) {
+    if (start < 0) start = 0;
+    if (start > (int64_t)s.len) start = (int64_t)s.len;
+    int64_t end = start + len;
+    if (end > (int64_t)s.len) end = (int64_t)s.len;
+    size_t n = (size_t)(end - start);
+    char* buf = (char*)gleamc_alloc(n + 1);
+    if (n > 0) memcpy(buf, s.data + start, n);
+    buf[n] = '\0';
+    return (GleamcString){buf, n};
+}

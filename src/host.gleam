@@ -29,3 +29,15 @@ pub fn blob_slice(blob: BitArray, offset: Int) -> BitArray
 /// Reads a little-endian int64 at `index` (0-based, over 8-byte fields).
 @external(erlang, "gleamc_ffi", "int64_at")
 pub fn int64_at(blob: BitArray, index: Int) -> Int
+
+/// Unicode codepoint at byte offset `off`, or -1 past the end.
+@external(erlang, "gleamc_ffi", "char_code_at")
+pub fn char_code_at(string: String, off: Int) -> Int
+
+/// Byte length of the character starting at byte offset `off` (0 past the end).
+@external(erlang, "gleamc_ffi", "char_byte_len")
+pub fn char_byte_len(string: String, off: Int) -> Int
+
+/// Copies `len` bytes from byte offset `start`.
+@external(erlang, "gleamc_ffi", "byte_slice")
+pub fn byte_slice(string: String, start: Int, len: Int) -> String

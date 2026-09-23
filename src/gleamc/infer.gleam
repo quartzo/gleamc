@@ -797,6 +797,18 @@ fn builtins() -> Dict(String, Scheme) {
   |> dict.insert("fs.realpath", Scheme(none, Fun([s], Con("FileResult", []))))
   |> dict.insert("fs.chmod", Scheme(none, Fun([s, i], Con("FileResult", []))))
   |> dict.insert("host.run", Scheme(none, Fun([s], Con("BitArray", []))))
+  |> dict.insert(
+    "host.char_code_at",
+    Scheme(none, Fun([s, i], i)),
+  )
+  |> dict.insert(
+    "host.char_byte_len",
+    Scheme(none, Fun([s, i], i)),
+  )
+  |> dict.insert(
+    "host.byte_slice",
+    Scheme(none, Fun([s, i, i], s)),
+  )
   |> dict.insert("host.argv", Scheme(none, Fun([], Con("BitArray", []))))
   |> dict.insert("host.get_env", Scheme(none, Fun([s], s)))
   |> dict.insert("host.which", Scheme(none, Fun([s], s)))

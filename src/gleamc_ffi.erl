@@ -12,7 +12,10 @@
     get_env_bin/1,
     which_bin/1,
     blob_slice/2,
-    int64_at/2
+    int64_at/2,
+    char_code_at/2,
+    char_byte_len/2,
+    byte_slice/3
 ]).
 
 %% Runs a command through the shell and returns a blob: 8-byte little-endian
@@ -78,3 +81,36 @@ int64_at(Blob, Index) ->
     catch
         _:_ -> 0
     end.
+
+%% Byte-indexed string access for the tokenizer.
+char_code_at(String, Off) ->
+    Bin = iolist_to_binary(String),
+    case Off >= 0 andalso Off < byte_size(Bin) of
+        false -> -1;
+        true ->
+            <<_:Off/binary, Rest/binary>> = Bin,
+            {Code, _} = next_cp(Rest),
+            Code
+    end.
+
+char_byte_len(String, Off) ->
+    Bin = iolist_to_binary(String),
+    case Off >= 0 andalso Off < byte_size(Bin) of
+        false -> 0;
+        true ->
+            <<_:Off/binary, Rest/binary>> = Bin,
+            {_, Len} = next_cp(Rest),
+            Len
+    end.
+
+byte_slice(String, Start, Len) ->
+    Bin = iolist_to_binary(String),
+    Size = byte_size(Bin),
+    S = max(0, min(Start, Size)),
+    E = max(S, min(S + Len, Size)),
+    binary:part(Bin, S, E - S).
+
+next_cp(<<C/utf8, _/binary>>) ->
+    {C, byte_size(<<C/utf8>>)};
+next_cp(<<B, _/binary>>) ->
+    {B, 1}.

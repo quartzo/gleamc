@@ -323,4 +323,9 @@ int64_t Gleamc_uv_await_int(GleamcFuture* f);
 GleamcBitArray Gleamc_uv_await_bytes(GleamcFuture* f);
 int64_t Gleamc_uv_error(GleamcFuture* f);
 
+/* Byte-indexed string access for the tokenizer. */
+int64_t Gleamc_host_char_code_at(GleamcString s, int64_t off);
+int64_t Gleamc_host_char_byte_len(GleamcString s, int64_t off);
+GleamcString Gleamc_host_byte_slice(GleamcString s, int64_t start, int64_t len);
+
 #endif /* GLEAMC_RUNTIME_H */
