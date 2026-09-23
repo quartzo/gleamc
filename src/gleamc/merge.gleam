@@ -693,6 +693,7 @@ fn rewrite_pattern(pattern, module, ctx) -> Pattern {
       )
     PLabelled(label, inner) ->
       PLabelled(label, rewrite_pattern(inner, module, ctx))
+    PAs(inner, name) -> PAs(rewrite_pattern(inner, module, ctx), name)
     _ -> pattern
   }
 }

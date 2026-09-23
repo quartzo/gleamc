@@ -809,8 +809,12 @@ pub fn infer(env: Env, st: St, expr: Expr) -> Result(#(Ty, St), InferError) {
     EUpdate(name, base, fields) ->
       case dict.get(env.ctors, name) {
         Error(_) -> Error(InferError("unknown record `" <> name <> "`"))
-        Ok(CtorDef(_, field_names, _)) -> {
+        Ok(CtorDef(_, field_names, scheme)) -> {
           use _ <- result_try(check_update_fields(fields, field_names))
+          let #(ctor_ty, st) = instantiate_ty(scheme, st)
+          let #(_, ret) = fun_parts(ctor_ty)
+          use #(base_ty, st) <- result_try(infer(env, st, base))
+          use st <- result_try(unify_st(ret, base_ty, st))
           let args =
             list.map(field_names, fn(field_name) {
               case find_update_field(fields, field_name) {
