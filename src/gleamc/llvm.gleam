@@ -908,6 +908,32 @@ fn emit_tail(ctx: Ctx, callee: String, pre, args, post, b) -> Builder {
         ir.Lit(_) -> Error(Nil)
       }
     })
+  // Ownership of the target slots after the rebind: a slot is owned only when
+  // the corresponding argument was owned by the caller (its drop is present
+  // in the original `post` and is being suppressed). Borrowed args stay
+  // borrowed.
+  let mask =
+    list.fold(
+      list.index_map(args, fn(arg, index) {
+        case arg {
+          ir.Var(n) ->
+            case
+              list.any(post, fn(op) {
+                case op {
+                  ir.OpDrop(m, _) -> m == n
+                  _ -> False
+                }
+              })
+            {
+              True -> mask_value(index + 1) - mask_value(index)
+              False -> 0
+            }
+          ir.Lit(_) -> 0
+        }
+      }),
+      0,
+      fn(acc, bit) { acc + bit },
+    )
   let post =
     list.filter(post, fn(op) {
       case op {
@@ -938,31 +964,6 @@ fn emit_tail(ctx: Ctx, callee: String, pre, args, post, b) -> Builder {
         Error(_) -> b
       }
     })
-  // Ownership of the target slots after the rebind: a slot is owned only when
-  // the corresponding argument was owned by the caller (its drop was present
-  // in `post` and is being suppressed). Borrowed args stay borrowed.
-  let mask =
-    list.fold(
-      list.index_map(args, fn(arg, index) {
-        case arg {
-          ir.Var(n) ->
-            case
-              list.any(post, fn(op) {
-                case op {
-                  ir.OpDrop(m, _) -> m == n
-                  _ -> False
-                }
-              })
-            {
-              True -> mask_value(index + 1) - mask_value(index)
-              False -> 0
-            }
-          ir.Lit(_) -> 0
-        }
-      }),
-      0,
-      fn(acc, bit) { acc + bit },
-    )
   let b = case ctx.own {
     "" -> b
     own ->
