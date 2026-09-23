@@ -21,7 +21,7 @@ import gleamc/ast.{
   CustomType, DCustomType, DFunction, DImport, EBinop, EBitArray, EBlock, EBool,
   ECall, ECase, EClosure, ECtor, EEnvGet, EField, EFloat, EInt, ELabelled,
   ELambda, ENil, EPanic, EString, ETuple, EUnop, EUpdate, EVar, Function, Import,
-  Let, Module, PBitArray, PCtor, PLabelled, PTuple, Stmt, Variant,
+  Let, Module, PAs, PBitArray, PCtor, PLabelled, PTuple, PVar, Stmt, Variant,
 }
 
 type Ctx {
@@ -339,7 +339,15 @@ fn rewrite_definition(definition, module, ctx) -> Definition {
         qualify(module, function.name),
         function.params,
         function.ret,
-        rewrite_expr(function.body, module, ctx),
+        rewrite_expr(
+          function.body,
+          module,
+          ctx,
+          list_map(function.params, fn(param) {
+            let #(name, _) = param
+            name
+          }),
+        ),
         function.line,
       ))
     DCustomType(custom) -> {
@@ -373,58 +381,70 @@ fn qualify(module, name) -> String {
   }
 }
 
-fn rewrite_expr(expr, module, ctx) -> Expr {
+fn rewrite_expr(expr, module, ctx, bound) -> Expr {
   case expr {
-    EInt(_) | EFloat(_) | EString(_) | EBool(_) | ENil | EVar(_) -> expr
+    EInt(_) | EFloat(_) | EString(_) | EBool(_) | ENil -> expr
+    EVar(name) ->
+      case list_contains(bound, name) {
+        True -> expr
+        False ->
+          case list_contains(module_local_fns(ctx, module), name) {
+            True -> EVar(qualify(module, name))
+            False ->
+              case lookups(ctx.fn_scope, module, name) {
+                Ok(source) -> EVar(qualify(source, name))
+                Error(_) -> expr
+              }
+          }
+      }
     ETuple(elements) ->
       ETuple(
-        list_map(elements, fn(element) { rewrite_expr(element, module, ctx) }),
+        list_map(elements, fn(element) {
+          rewrite_expr(element, module, ctx, bound)
+        }),
       )
     ECtor(name, args) ->
       ECtor(
         resolve_ctor(ctx, module, name),
-        list_map(args, fn(arg) { rewrite_expr(arg, module, ctx) }),
+        list_map(args, fn(arg) { rewrite_expr(arg, module, ctx, bound) }),
       )
     ECall(EField(EVar(alias), name), args) ->
       case module_has_ctor(ctx, alias, name) {
         True ->
           ECtor(
             canonical(alias, name),
-            list_map(args, fn(arg) { rewrite_expr(arg, module, ctx) }),
+            list_map(args, fn(arg) { rewrite_expr(arg, module, ctx, bound) }),
           )
         False ->
           ECall(
-            rewrite_target(EField(EVar(alias), name), module, ctx),
-            list_map(args, fn(arg) { rewrite_expr(arg, module, ctx) }),
+            rewrite_target(EField(EVar(alias), name), module, ctx, bound),
+            list_map(args, fn(arg) { rewrite_expr(arg, module, ctx, bound) }),
           )
       }
     ECall(fun, args) ->
       ECall(
-        rewrite_target(fun, module, ctx),
-        list_map(args, fn(arg) { rewrite_expr(arg, module, ctx) }),
+        rewrite_target(fun, module, ctx, bound),
+        list_map(args, fn(arg) { rewrite_expr(arg, module, ctx, bound) }),
       )
     EBinop(op, left, right) ->
       EBinop(
         op,
-        rewrite_expr(left, module, ctx),
-        rewrite_expr(right, module, ctx),
+        rewrite_expr(left, module, ctx, bound),
+        rewrite_expr(right, module, ctx, bound),
       )
-    EUnop(op, operand) -> EUnop(op, rewrite_expr(operand, module, ctx))
+    EUnop(op, operand) -> EUnop(op, rewrite_expr(operand, module, ctx, bound))
     EBlock(statements) ->
-      EBlock(
-        list_map(statements, fn(statement) {
-          rewrite_statement(statement, module, ctx)
-        }),
-      )
+      EBlock(rewrite_statements(statements, module, ctx, bound))
     ECase(subject, arms) ->
       ECase(
-        rewrite_expr(subject, module, ctx),
+        rewrite_expr(subject, module, ctx, bound),
         list_map(arms, fn(arm) {
           let Arm(pattern, guard, body) = arm
+          let inner = list.append(pattern_bindings(pattern), bound)
           Arm(
             rewrite_pattern(pattern, module, ctx),
-            rewrite_guard(guard, module, ctx),
-            rewrite_expr(body, module, ctx),
+            rewrite_guard(guard, module, ctx, inner),
+            rewrite_expr(body, module, ctx, inner),
           )
         }),
       )
@@ -437,14 +457,18 @@ fn rewrite_expr(expr, module, ctx) -> Expr {
             False -> EField(EVar(alias), name)
           }
       }
-    EField(obj, name) -> EField(rewrite_expr(obj, module, ctx), name)
+    EField(obj, name) -> EField(rewrite_expr(obj, module, ctx, bound), name)
     ELabelled(label, value) ->
-      ELabelled(label, rewrite_expr(value, module, ctx))
-    ELambda(params, body) -> ELambda(params, rewrite_expr(body, module, ctx))
+      ELabelled(label, rewrite_expr(value, module, ctx, bound))
+    ELambda(params, body) ->
+      ELambda(
+        params,
+        rewrite_expr(body, module, ctx, list.append(params, bound)),
+      )
     EClosure(code, captures, env_ty, fn_ty) ->
       EClosure(
         code,
-        list_map(captures, fn(cap) { rewrite_expr(cap, module, ctx) }),
+        list_map(captures, fn(cap) { rewrite_expr(cap, module, ctx, bound) }),
         env_ty,
         fn_ty,
       )
@@ -452,17 +476,52 @@ fn rewrite_expr(expr, module, ctx) -> Expr {
     EPanic(_, _) -> expr
     EBitArray(elements) ->
       EBitArray(
-        list_map(elements, fn(element) { rewrite_expr(element, module, ctx) }),
+        list_map(elements, fn(element) {
+          rewrite_expr(element, module, ctx, bound)
+        }),
       )
     EUpdate(name, base, fields) ->
       EUpdate(
         resolve_ctor(ctx, module, name),
-        rewrite_expr(base, module, ctx),
+        rewrite_expr(base, module, ctx, bound),
         list_map(fields, fn(field) {
           let #(label, value) = field
-          #(label, rewrite_expr(value, module, ctx))
+          #(label, rewrite_expr(value, module, ctx, bound))
         }),
       )
+  }
+}
+
+fn rewrite_statements(statements, module, ctx, bound) -> List(Statement) {
+  case statements {
+    [] -> []
+    [statement, ..rest] ->
+      case statement {
+        Let(pattern, value) -> {
+          let value2 = rewrite_expr(value, module, ctx, bound)
+          let inner = list.append(pattern_bindings(pattern), bound)
+          [
+            Let(rewrite_pattern(pattern, module, ctx), value2),
+            ..rewrite_statements(rest, module, ctx, inner)
+          ]
+        }
+        Stmt(expr) -> [
+          Stmt(rewrite_expr(expr, module, ctx, bound)),
+          ..rewrite_statements(rest, module, ctx, bound)
+        ]
+      }
+  }
+}
+
+fn pattern_bindings(pattern) -> List(String) {
+  case pattern {
+    PVar(name) -> [name]
+    PAs(inner, name) -> [name, ..pattern_bindings(inner)]
+    PLabelled(_, inner) -> pattern_bindings(inner)
+    PCtor(_, args) -> list_flat_map(args, pattern_bindings)
+    PTuple(patterns) -> list_flat_map(patterns, pattern_bindings)
+    PBitArray(patterns) -> list_flat_map(patterns, pattern_bindings)
+    _ -> []
   }
 }
 
@@ -487,33 +546,26 @@ fn rewrite_pattern(pattern, module, ctx) -> Pattern {
   }
 }
 
-fn rewrite_guard(guard, module, ctx) {
+fn rewrite_guard(guard, module, ctx, bound) {
   case guard {
-    Some(expr) -> Some(rewrite_expr(expr, module, ctx))
+    Some(expr) -> Some(rewrite_expr(expr, module, ctx, bound))
     None -> None
   }
 }
 
-fn rewrite_statement(statement, module, ctx) -> Statement {
-  case statement {
-    Let(pattern, value) ->
-      Let(
-        rewrite_pattern(pattern, module, ctx),
-        rewrite_expr(value, module, ctx),
-      )
-    Stmt(expr) -> Stmt(rewrite_expr(expr, module, ctx))
-  }
-}
-
-fn rewrite_target(fun, module, ctx) -> Expr {
+fn rewrite_target(fun, module, ctx, bound) -> Expr {
   case fun {
     EVar(name) ->
-      case list_contains(module_local_fns(ctx, module), name) {
-        True -> EVar(qualify(module, name))
+      case list_contains(bound, name) {
+        True -> fun
         False ->
-          case lookups(ctx.fn_scope, module, name) {
-            Ok(source) -> EVar(qualify(source, name))
-            Error(_) -> fun
+          case list_contains(module_local_fns(ctx, module), name) {
+            True -> EVar(qualify(module, name))
+            False ->
+              case lookups(ctx.fn_scope, module, name) {
+                Ok(source) -> EVar(qualify(source, name))
+                Error(_) -> fun
+              }
           }
       }
     EField(EVar(alias), name) ->
@@ -521,7 +573,7 @@ fn rewrite_target(fun, module, ctx) -> Expr {
         True -> EVar(qualify(alias, name))
         False -> fun
       }
-    _ -> rewrite_expr(fun, module, ctx)
+    _ -> rewrite_expr(fun, module, ctx, bound)
   }
 }
 
