@@ -62,8 +62,9 @@ adding list support, and are now covered by `diffs/lists.gleam`:
 - No `Eq`/`Ord` typeclasses. `==` and `!=` are structural for all data
   (ADTs, tuples, lists, `String`) via generated per-type equality glue; `<`,
   `<=`, `>`, `>=` are `Int` only and the `*.`/`<.` family is `Float` only.
-- No module-qualified types beyond a plain named type or `TApp`
-  (`Type` / `Type(a)`); there is no `module.Type` in annotations.
+- User-defined type names are module-scoped (`module.Type` in annotations and
+  references); primitives, builtins and the prelude types (`List`, `Result`,
+  `Option`, `Order`, `BitArray`) stay global.
 - No `const` values.
 - Constructors are module-scoped, like the official compiler: a name may be
   reused across modules (canonicalised internally to `module.Ctor`) but must be
