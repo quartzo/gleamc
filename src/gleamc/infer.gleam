@@ -87,6 +87,10 @@ pub fn check_resolved(
         _ -> acc
       }
     })
+  let globals =
+    builtins()
+    |> merge_globals(functions)
+    |> merge_globals(ctor_schemes(ctors))
   use #(functions, st) <- result_try(infer_in_order(
     order_functions(definitions),
     functions_by_name,
@@ -94,6 +98,7 @@ pub fn check_resolved(
     types_map,
     var_ids,
     functions,
+    globals,
     st,
   ))
   let #(resolved, functions) =
@@ -183,18 +188,20 @@ fn infer_in_order(
   types_map,
   var_ids,
   functions,
+  globals,
   st,
 ) {
   case order {
     [] -> Ok(#(functions, st))
     [name, ..rest] -> {
-      use #(functions, st) <- result_try(infer_one(
+      use #(functions, globals, st) <- result_try(infer_one(
         name,
         functions_by_name,
         ctors,
         types_map,
         var_ids,
         functions,
+        globals,
         st,
       ))
       infer_in_order(
@@ -204,6 +211,7 @@ fn infer_in_order(
         types_map,
         var_ids,
         functions,
+        globals,
         st,
       )
     }
@@ -217,15 +225,12 @@ fn infer_one(
   types_map,
   var_ids,
   functions,
+  globals,
   st: St,
 ) {
   case dict.get(functions_by_name, name) {
-    Error(_) -> Ok(#(functions, st))
+    Error(_) -> Ok(#(functions, globals, st))
     Ok(function) -> {
-      let globals =
-        builtins()
-        |> merge_globals(functions)
-        |> merge_globals(ctor_schemes(ctors))
       let scheme = case dict.get(functions, name) {
         Ok(found) -> found
         Error(_) -> Scheme([], Fun([], Con("Nil", [])))
@@ -253,9 +258,14 @@ fn infer_one(
         Ok(found) -> found
         Error(_) -> dict.new()
       }
-      let frozen = types.env_free_vars(dict.values(dict.delete(globals, name)))
+      let frozen = env_free_except(globals, name)
       let _ = id_map
-      Ok(#(dict.insert(functions, name, types.generalize(frozen, zonked)), st))
+      let scheme = types.generalize(frozen, zonked)
+      Ok(#(
+        dict.insert(functions, name, scheme),
+        dict.insert(globals, name, scheme),
+        st,
+      ))
     }
   }
 }
@@ -269,9 +279,11 @@ fn order_functions(definitions) {
       }
     })
   let names = list.map(functions, fn(function) { function.name })
+  let name_set =
+    list.fold(names, dict.new(), fn(acc, name) { dict.insert(acc, name, True) })
   let refs =
     list.fold(functions, dict.new(), fn(acc, function) {
-      dict.insert(acc, function.name, referenced_names(function.body, names))
+      dict.insert(acc, function.name, referenced_names(function.body, name_set))
     })
   let #(order, _visited) =
     list.fold(functions, #([], dict.new()), fn(acc, function) {
@@ -300,8 +312,24 @@ fn visit_function(name, refs, visited, order) {
   }
 }
 
-fn referenced_names(expr: Expr, names: List(String)) -> List(String) {
-  list.filter(expr_var_names(expr, []), fn(name) { list.contains(names, name) })
+fn referenced_names(expr: Expr, names: Dict(String, Bool)) -> List(String) {
+  list.filter(expr_var_names(expr, []), fn(name) {
+    case dict.get(names, name) {
+      Ok(_) -> True
+      Error(_) -> False
+    }
+  })
+}
+
+/// Free type variables of the whole environment except the scheme for `name`,
+/// without copying the environment dict.
+fn env_free_except(globals, name) {
+  dict.fold(globals, [], fn(acc, key, scheme) {
+    case key == name {
+      True -> acc
+      False -> list.append(types.env_free_vars([scheme]), acc)
+    }
+  })
 }
 
 fn expr_var_names(expr: Expr, acc: List(String)) -> List(String) {
