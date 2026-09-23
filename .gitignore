@@ -66,3 +66,8 @@ erl_crash.dump
 /diffs/unicode
 /diffs/guards2
 /diffs/alias
+
+# compiler output next to the compiler sources
+/src/gleamc/*.c
+/src/gleamc/*.so
+/src/*.c
