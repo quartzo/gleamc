@@ -29,6 +29,7 @@ pub fn is_keyword(word: String) -> Bool {
   case word {
     "as"
     | "case"
+    | "const"
     | "fn"
     | "if"
     | "import"

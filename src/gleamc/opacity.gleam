@@ -10,9 +10,9 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleamc/ast.{
-  type Module, Arm, CustomType, DCustomType, DFunction, DImport, DTypeAlias,
-  EBinop, EBitArray, EBlock, ECall, ECase, EClosure, ECtor, EEnvGet, EField,
-  ELabelled, ELambda, EPanic, ETuple, EUnop, EUpdate, EVar, Let, Module,
+  type Module, Arm, CustomType, DConst, DCustomType, DFunction, DImport,
+  DTypeAlias, EBinop, EBitArray, EBlock, ECall, ECase, EClosure, ECtor, EEnvGet,
+  EField, ELabelled, ELambda, EPanic, ETuple, EUnop, EUpdate, EVar, Let, Module,
   PBitArray, PCtor, PLabelled, PTuple, Stmt, Variant,
 }
 
@@ -58,6 +58,7 @@ fn check_module(module, alias, opaque_ctors) -> Result(Nil, String) {
       DFunction(function) -> check_expr(function.body, alias, opaque_ctors)
       DCustomType(_) -> Ok(Nil)
       DTypeAlias(_, _, _, _) -> Ok(Nil)
+      DConst(_, _) -> Ok(Nil)
       DImport(_) -> Ok(Nil)
     }
   })

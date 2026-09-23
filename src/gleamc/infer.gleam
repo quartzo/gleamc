@@ -10,13 +10,14 @@ import gleam/int
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import gleamc/ast.{
   type CustomType, type Expr, type Function, type Module, type Pattern,
   type Type, type Variant, Arm, CustomType, DCustomType, DFunction, EBinop,
   EBitArray, EBlock, EBool, ECall, ECase, EClosure, ECtor, EEnvGet, EField,
   EFloat, EInt, ELabelled, ELambda, ENil, EPanic, EString, ETuple, EUnop,
-  EUpdate, EVar, Function, Let, Module, PBitArray, PBool, PCtor, PFloat, PInt,
-  PLabelled, PNil, PString, PTuple, PVar, PWildcard, Stmt, Variant,
+  EUpdate, EVar, Function, Let, Module, PAs, PBitArray, PBool, PCtor, PFloat,
+  PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard, Stmt, Variant,
 }
 import gleamc/types.{
   type Scheme, type Subst, type Ty, Con, Fun, Rig, Scheme, Tup, Var,
@@ -64,6 +65,16 @@ pub type Env {
 // ---------------------------------------------------------------------------
 
 pub fn check(module: Module) -> Result(Program, InferError) {
+  use #(_resolved, program) <- result_try(check_resolved(module))
+  Ok(program)
+}
+
+/// Like `check`, but also returns the module with inferred parameter and
+/// return types substituted in, so the monomorphiser sees concrete types
+/// instead of the `__infer_*` markers.
+pub fn check_resolved(
+  module: Module,
+) -> Result(#(Module, Program), InferError) {
   let Module(definitions) = module
   let st = St(types.empty(), 0)
   let #(types_map, ctors, functions, st) = collect(definitions, st)
@@ -73,8 +84,62 @@ pub fn check(module: Module) -> Result(Program, InferError) {
     |> merge_globals(ctor_schemes(ctors))
   let env = Env(globals, dict.new(), ctors, types_map)
   use st <- result_try(check_definitions(definitions, env, st))
-  let _ = st
-  Ok(Program(functions, ctors, types_map))
+  let resolved =
+    list.map(definitions, fn(def) {
+      case def {
+        DFunction(function) ->
+          DFunction(resolve_function(function, functions, st.subst))
+        _ -> def
+      }
+    })
+  Ok(#(Module(resolved), Program(functions, ctors, types_map)))
+}
+
+fn is_infer_var(surface: Type) -> Bool {
+  case surface {
+    ast.TVar(name) -> string.starts_with(name, "__infer_")
+    _ -> False
+  }
+}
+
+fn resolve_function(function: Function, functions, subst) -> Function {
+  let Function(is_pub, name, params, ret, body, line) = function
+  case dict.get(functions, name) {
+    Error(_) -> function
+    Ok(scheme) -> {
+      let Scheme(_, fun_ty) = scheme
+      let #(param_tys, ret_ty) = fun_parts(types.zonk(fun_ty, subst))
+      let params2 =
+        list.map2(params, param_tys, fn(param, ty) {
+          let #(param_name, surface) = param
+          case is_infer_var(surface) {
+            True -> #(param_name, surface_of(ty))
+            False -> param
+          }
+        })
+      let ret2 = case is_infer_var(ret) {
+        True -> surface_of(ret_ty)
+        False -> ret
+      }
+      Function(is_pub, name, params2, ret2, body, line)
+    }
+  }
+}
+
+fn surface_of(ty: Ty) -> Type {
+  case ty {
+    Con("Int", []) -> ast.TInt
+    Con("Float", []) -> ast.TFloat
+    Con("Bool", []) -> ast.TBool
+    Con("String", []) -> ast.TString
+    Con("Nil", []) -> ast.TNil
+    Con(name, []) -> ast.TNamed(name)
+    Con(name, args) -> ast.TApp(name, list.map(args, surface_of))
+    Var(_) -> ast.TNil
+    types.Rig(_) -> ast.TNil
+    Fun(params, ret) -> ast.TFun(list.map(params, surface_of), surface_of(ret))
+    Tup(items) -> ast.TTuple(list.map(items, surface_of))
+  }
 }
 
 /// The merged global scheme environment (builtins + functions + constructors).
@@ -175,7 +240,19 @@ fn function_scheme(function: Function, st: St) {
       let #(map, ids, st) = acc
       let id = st.counter
       let st = St(..st, counter: id + 1)
-      #(dict.insert(map, name, Rig(id)), list.append(ids, [id]), st)
+      // Inferred markers (`__infer_*`, from unannotated parameters and return
+      // types) are kept monomorphic for now, so the body constrains a single
+      // shared type instead of an over-generalised one.
+      let inferred = string.starts_with(name, "__infer_")
+      let ids = case inferred {
+        True -> ids
+        False -> list.append(ids, [id])
+      }
+      let ty = case inferred {
+        True -> Var(id)
+        False -> Rig(id)
+      }
+      #(dict.insert(map, name, ty), ids, st)
     })
   let param_types =
     list.map(params, fn(param) {
@@ -840,6 +917,10 @@ fn bind_pattern(
         }
       }
     PLabelled(_, inner) -> bind_pattern(env, inner, ty, st)
+    PAs(inner, name) -> {
+      use #(bindings, st) <- result_try(bind_pattern(env, inner, ty, st))
+      Ok(#(dict.insert(bindings, name, Scheme([], ty)), st))
+    }
     PBitArray(patterns) -> {
       use st <- result_try(unify_st(Con("BitArray", []), ty, st))
       bind_patterns(

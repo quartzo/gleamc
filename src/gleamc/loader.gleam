@@ -48,7 +48,10 @@ fn load_prelude(root, names, acc) -> Result(List(#(String, Module)), String) {
             Error(_) -> load_prelude(root, rest, acc)
             Ok(source) ->
               case parser.parse(source) {
-                Error(err) -> Error(parser.describe_error(err))
+                Error(err) ->
+                  Error(
+                    "in module `" <> name <> "`: " <> parser.describe_error(err),
+                  )
                 Ok(module) ->
                   case
                     load_deps(
@@ -95,7 +98,10 @@ fn load_deps(
             Error(_) -> load_deps(root, rest, visited, acc)
             Ok(source) ->
               case parser.parse(source) {
-                Error(err) -> Error(parser.describe_error(err))
+                Error(err) ->
+                  Error(
+                    "in module `" <> key <> "`: " <> parser.describe_error(err),
+                  )
                 Ok(module) -> {
                   let alias = last_segment(path)
                   load_deps(
@@ -132,7 +138,10 @@ fn load_imports(
             Error(_) -> load_imports(root, rest, visited, acc)
             Ok(source) ->
               case parser.parse(source) {
-                Error(err) -> Error(parser.describe_error(err))
+                Error(err) ->
+                  Error(
+                    "in module `" <> key <> "`: " <> parser.describe_error(err),
+                  )
                 Ok(module) -> {
                   let alias = last_segment(path)
                   load_imports(

@@ -16,15 +16,17 @@ import gleamc/ast.{
   type Type, Arm, CustomType, DCustomType, DFunction, EBinop, EBitArray, EBlock,
   EBool, ECall, ECase, EClosure, ECtor, EEnvGet, EField, EFloat, EInt, ELabelled,
   ELambda, ENil, EPanic, EString, ETuple, EUnop, EUpdate, EVar, Function, Let,
-  Module, PBitArray, PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString,
+  Module, PAs, PBitArray, PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString,
   PTuple, PVar, PWildcard, Stmt, TApp, TFun, TNamed, TTuple, TVar, Variant,
 }
 import gleamc/infer
 import gleamc/types.{type Scheme, Con, Fun, Scheme, Tup, Var}
 
 pub fn monomorphize(module: Module) -> Result(Module, String) {
-  use program <- result_try(map_check(infer.check(module)))
-  let state = initial_state(module, program)
+  use #(resolved, program) <- result_try(
+    map_check(infer.check_resolved(module)),
+  )
+  let state = initial_state(resolved, program)
   use state <- result_try(seed(state))
   use state <- result_try(run(state))
   let sorted_types =
@@ -1444,6 +1446,19 @@ fn mono_pattern(
       Ok(#(pattern, dict.new(), state))
     PVar(name) ->
       Ok(#(pattern, dict.insert(dict.new(), name, Scheme([], ty)), state))
+    PAs(inner, name) -> {
+      use #(inner2, bindings, state) <- result_try(mono_pattern(
+        state,
+        locals,
+        inner,
+        ty,
+      ))
+      Ok(#(
+        PAs(inner2, name),
+        dict.insert(bindings, name, Scheme([], ty)),
+        state,
+      ))
+    }
     PTuple(patterns) -> {
       let item_tys = case types.resolve(ty, state.subst) {
         Tup(items) -> items

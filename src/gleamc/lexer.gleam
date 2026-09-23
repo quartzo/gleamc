@@ -90,7 +90,7 @@ fn skip_comment(src, line, col, depth, acc) -> Result(List(Token), LexError) {
     _ -> {
       let c = first(src)
       case c {
-        "\n" -> newline(src, line, col, depth, acc)
+        "\n" -> newline(rest(src), line, col, depth, acc)
         _ -> skip_comment(rest(src), line, col + 1, depth, acc)
       }
     }

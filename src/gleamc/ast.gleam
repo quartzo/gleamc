@@ -31,6 +31,8 @@ pub type Pattern {
   PTuple(List(Pattern))
   /// `field: pat` — a labelled constructor pattern argument.
   PLabelled(name: String, pattern: Pattern)
+  /// `pat as name` — binds `name` to the value matched by `pat`.
+  PAs(pattern: Pattern, name: String)
   /// `<<a, b>>` — matches 8-bit segments of a bit array.
   PBitArray(List(Pattern))
 }
@@ -108,6 +110,7 @@ pub type Import {
 
 pub type Definition {
   DFunction(Function)
+  DConst(name: String, value: Expr)
   DCustomType(CustomType)
   DTypeAlias(is_pub: Bool, name: String, generics: List(String), ty: Type)
   DImport(Import)

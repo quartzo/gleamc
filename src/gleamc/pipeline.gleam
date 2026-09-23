@@ -10,6 +10,7 @@ import gleamc/aliases
 import gleamc/ast.{type CustomType, type Module, DCustomType, Module}
 import gleamc/checker
 import gleamc/codegen
+import gleamc/consts
 import gleamc/dce
 import gleamc/ir
 import gleamc/lower
@@ -47,6 +48,7 @@ pub fn compile_ir_modules(
 
 fn cascade(modules: List(#(String, Module))) {
   use _ <- result.try(opacity.check(modules))
+  let modules = consts.expand_modules(modules)
   use merged <- result.try(merge.merge(modules))
   let merged = qualify.qualify_ctors(merged)
   // 0. expand type aliases before specialisation

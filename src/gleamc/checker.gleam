@@ -11,13 +11,13 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleamc/ast.{
-  type Expr, type Module, type Pattern, type Type, Arm, CustomType, DCustomType,
-  DFunction, DImport, DTypeAlias, EBinop, EBitArray, EBlock, EBool, ECall, ECase,
-  EClosure, ECtor, EEnvGet, EField, EFloat, EInt, ELabelled, ELambda, ENil,
-  EPanic, EString, ETuple, EUnop, EUpdate, EVar, Function, Let, Module,
-  PBitArray, PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar,
-  PWildcard, Stmt, TApp, TBool, TFloat, TFun, TInt, TNamed, TNil, TString,
-  TTuple, TVar, Variant,
+  type Expr, type Module, type Pattern, type Type, Arm, CustomType, DConst,
+  DCustomType, DFunction, DImport, DTypeAlias, EBinop, EBitArray, EBlock, EBool,
+  ECall, ECase, EClosure, ECtor, EEnvGet, EField, EFloat, EInt, ELabelled,
+  ELambda, ENil, EPanic, EString, ETuple, EUnop, EUpdate, EVar, Function, Let,
+  Module, PAs, PBitArray, PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString,
+  PTuple, PVar, PWildcard, Stmt, TApp, TBool, TFloat, TFun, TInt, TNamed, TNil,
+  TString, TTuple, TVar, Variant,
 }
 
 pub type Signature {
@@ -72,6 +72,7 @@ fn collect(defs, signatures, ctors) {
     }
     [DImport(_), ..rest] -> collect(rest, signatures, ctors)
     [DTypeAlias(_, _, _, _), ..rest] -> collect(rest, signatures, ctors)
+    [DConst(_, _), ..rest] -> collect(rest, signatures, ctors)
   }
 }
 
@@ -376,7 +377,15 @@ fn check_exhaustive(subject_ty, arms, ctors) {
   }
 }
 
+fn strip_as(pattern) {
+  case pattern {
+    PAs(inner, _) -> strip_as(inner)
+    _ -> pattern
+  }
+}
+
 fn patterns_exhaustive(ty, patterns, ctors) -> Bool {
+  let patterns = list.map(patterns, strip_as)
   case list.any(patterns, pattern_irrefutable) {
     True -> True
     False ->
@@ -403,6 +412,7 @@ fn tuple_exhaustive(types, patterns, ctors) -> Bool {
 
 fn column_pattern(pattern, index) -> Pattern {
   case pattern {
+    PAs(inner, _) -> column_pattern(inner, index)
     PTuple(items) ->
       case list_at(items, index) {
         Ok(inner) -> inner
@@ -426,7 +436,7 @@ fn type_exhaustive(name, patterns, ctors) -> Bool {
     let #(variant_name, field_types) = variant
     let args_of =
       list.filter_map(patterns, fn(pattern) {
-        case pattern {
+        case strip_as(pattern) {
           PCtor(ctor, args) ->
             case ctor == variant_name {
               True -> Ok(args)
@@ -495,7 +505,7 @@ fn has_bool(patterns, value) -> Bool {
 }
 
 fn is_bool_pattern(pattern, value) {
-  case pattern {
+  case strip_as(pattern) {
     PBool(v) -> v == value
     _ -> False
   }
@@ -515,6 +525,7 @@ fn pattern_irrefutable(pattern) -> Bool {
     PNil -> True
     PTuple(patterns) -> list.all(patterns, pattern_irrefutable)
     PLabelled(_, inner) -> pattern_irrefutable(inner)
+    PAs(inner, _) -> pattern_irrefutable(inner)
     _ -> False
   }
 }
@@ -1594,6 +1605,10 @@ fn bind_pattern(pattern, subject_ty, ctors) -> Result(Env, CheckError) {
         }
       }
     PLabelled(_, inner) -> bind_pattern(inner, subject_ty, ctors)
+    PAs(inner, name) -> {
+      use bindings <- result.try(bind_pattern(inner, subject_ty, ctors))
+      Ok([#(name, subject_ty), ..bindings])
+    }
     PBitArray(patterns) -> {
       use _ <- result.try(expect_ty(subject_ty, TNamed("BitArray"), "pattern"))
       bind_patterns(patterns, list.repeat(TInt, list.length(patterns)), ctors)

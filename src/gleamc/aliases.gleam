@@ -6,9 +6,9 @@ import gleam/int
 import gleam/list
 import gleam/result
 import gleamc/ast.{
-  type Definition, type Module, type Type, CustomType, DCustomType, DFunction,
-  DImport, DTypeAlias, Function, Module, TApp, TBool, TFloat, TFun, TInt, TNamed,
-  TNil, TString, TTuple, TVar, Variant,
+  type Definition, type Module, type Type, CustomType, DConst, DCustomType,
+  DFunction, DImport, DTypeAlias, Function, Module, TApp, TBool, TFloat, TFun,
+  TInt, TNamed, TNil, TString, TTuple, TVar, Variant,
 }
 
 pub fn expand(module: Module) -> Result(Module, String) {
@@ -40,6 +40,7 @@ fn collect_aliases(definitions) -> Dict(String, #(List(String), Type)) {
 fn expand_definition(definition, aliases) -> Result(Definition, String) {
   case definition {
     DTypeAlias(_, _, _, _) -> Ok(definition)
+    DConst(_, _) -> Ok(definition)
     DFunction(function) -> {
       let Function(is_pub, name, params, ret, body, line) = function
       use params <- result.try(

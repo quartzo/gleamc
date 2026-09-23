@@ -6,12 +6,12 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleamc/ast.{
-  type Module, Arm, CustomType, DCustomType, DFunction, DImport, DTypeAlias,
-  EBinop, EBitArray, EBlock, EBool, ECall, ECase, ECtor, EField, EFloat, EInt,
-  ELabelled, ELambda, ENil, EPanic, EString, ETuple, EUnop, EUpdate, EVar,
-  Function, Import, Let, Module, PBitArray, PBool, PCtor, PFloat, PInt,
-  PLabelled, PNil, PString, PTuple, PVar, PWildcard, Stmt, TApp, TBool, TFloat,
-  TFun, TInt, TNamed, TNil, TString, TTuple, TVar, Variant,
+  type Module, Arm, CustomType, DConst, DCustomType, DFunction, DImport,
+  DTypeAlias, EBinop, EBitArray, EBlock, EBool, ECall, ECase, ECtor, EField,
+  EFloat, EInt, ELabelled, ELambda, ENil, EPanic, EString, ETuple, EUnop,
+  EUpdate, EVar, Function, Import, Let, Module, PAs, PBitArray, PBool, PCtor,
+  PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard, Stmt, TApp,
+  TBool, TFloat, TFun, TInt, TNamed, TNil, TString, TTuple, TVar, Variant,
 }
 import gleamc/lexer
 import gleamc/token.{
@@ -146,16 +146,25 @@ fn definitions(tokens, acc) {
         Keyword("type") -> definition_type(rest, True, False, acc)
         Keyword("opaque") ->
           definition_type(skip_newlines(drop_token(rest)), True, True, acc)
-        _ -> fail(rest, "expected `fn` or `type` after `pub`")
+        Keyword("const") -> definition_const(drop_token(rest), acc)
+        _ -> fail(rest, "expected `fn`, `type` or `const` after `pub`")
       }
     }
     Keyword("fn") -> definition_fn(tokens, False, acc)
+    Keyword("const") -> definition_const(drop_token(tokens), acc)
     Keyword("type") -> definition_type(tokens, False, False, acc)
     Keyword("opaque") ->
       definition_type(skip_newlines(drop_token(tokens)), False, True, acc)
     _ ->
       fail(tokens, "expected a declaration (`import`, `pub fn`, `fn`, `type`)")
   }
+}
+
+fn definition_const(tokens, acc) {
+  use #(name, rest) <- and_then(expect_name(skip_newlines(tokens)))
+  use rest1 <- and_then(expect_symbol(skip_newlines(rest), "="))
+  use #(value, rest2) <- and_then(parse_expr(skip_newlines(rest1)))
+  definitions(skip_newlines(rest2), [DConst(name, value), ..acc])
 }
 
 fn definition_fn(tokens, is_pub, acc) {
@@ -183,7 +192,7 @@ fn parse_optional_return(tokens) {
       let assert Ok(#(ty, rest)) = parse_type(skip_newlines(drop_token(tokens)))
       #(ty, rest)
     }
-    _ -> #(TNil, tokens)
+    _ -> #(TVar("__infer_return"), tokens)
   }
 }
 
@@ -192,13 +201,19 @@ fn params(tokens, acc) {
     Symbol(")") -> Ok(#(list.reverse(acc), drop_token(tokens)))
     _ -> {
       use #(name, rest) <- and_then(expect_name(tokens))
-      use rest1 <- and_then(expect_symbol(rest, ":"))
-      use #(ty, rest2) <- and_then(parse_type(rest1))
+      let #(ty, rest1) = case peek(rest) {
+        Symbol(":") -> {
+          let assert Ok(#(parsed, after)) =
+            parse_type(skip_newlines(drop_token(rest)))
+          #(parsed, after)
+        }
+        _ -> #(TVar("__infer_" <> name), rest)
+      }
       let acc2 = [#(name, ty), ..acc]
-      case peek(rest2) {
-        Symbol(",") -> params(drop_token(rest2), acc2)
-        Symbol(")") -> Ok(#(list.reverse(acc2), drop_token(rest2)))
-        _ -> fail(rest2, "expected `,` or `)` in parameter list")
+      case peek(rest1) {
+        Symbol(",") -> params(drop_token(rest1), acc2)
+        Symbol(")") -> Ok(#(list.reverse(acc2), drop_token(rest1)))
+        _ -> fail(rest1, "expected `,` or `)` in parameter list")
       }
     }
   }
@@ -969,8 +984,8 @@ fn tuple_elems(tokens, acc) {
 }
 
 fn parse_case(tokens) {
-  use #(subjects, rest) <- and_then(case_subjects(tokens, []))
-  use rest1 <- and_then(expect_symbol(rest, "{"))
+  use #(subjects, rest) <- and_then(case_subjects(skip_newlines(tokens), []))
+  use rest1 <- and_then(expect_symbol(skip_newlines(rest), "{"))
   arms(desugar_subjects(subjects), skip_newlines(rest1), [])
 }
 
@@ -993,46 +1008,64 @@ fn desugar_subjects(subjects) {
 
 fn arms(subject, tokens, acc) {
   case peek(tokens) {
-    Symbol("}") -> {
-      let arm_list = list.reverse(acc)
-      case arm_list {
+    Symbol("}") ->
+      case acc {
         [] -> fail(tokens, "`case` with no arms")
-        _ -> Ok(#(ECase(subject, arm_list), drop_token(tokens)))
+        _ -> Ok(#(ECase(subject, acc), drop_token(tokens)))
       }
-    }
     EofKind -> fail(tokens, "`case` not closed")
     _ -> {
       use #(parsed, rest) <- and_then(parse_arm(tokens))
-      let nxt = skip_newlines(rest)
-      case peek(nxt) {
-        Symbol("}") ->
-          Ok(#(ECase(subject, list.reverse([parsed, ..acc])), drop_token(nxt)))
-        EofKind -> fail(nxt, "`case` not closed")
-        _ -> arms(subject, nxt, [parsed, ..acc])
-      }
+      arms(subject, skip_newlines(rest), list.append(acc, parsed))
     }
   }
 }
 
 fn parse_arm(tokens) {
-  use #(patterns, rest) <- and_then(arm_patterns(tokens, []))
-  let pat = case patterns {
-    [single] -> single
-    _ -> PTuple(patterns)
-  }
+  use #(alternatives, rest) <- and_then(arm_patterns(tokens, []))
   let #(guard, rest1) = parse_guard(skip_newlines(rest))
   use rest2 <- and_then(expect_symbol(rest1, "->"))
   use #(body, rest3) <- and_then(parse_expr(skip_newlines(rest2)))
-  Ok(#(Arm(pat, guard, body), rest3))
+  Ok(#(
+    list.map(arm_combinations(alternatives), fn(pat) { Arm(pat, guard, body) }),
+    rest3,
+  ))
 }
 
-/// Collects the comma-separated patterns of an arm (multiple subjects).
+/// Collects the comma-separated pattern alternatives of an arm (multiple
+/// subjects, each with `|` alternatives).
 fn arm_patterns(tokens, acc) {
-  use #(pattern, rest) <- and_then(parse_pattern(tokens))
+  use #(alternatives, rest) <- and_then(arm_alternatives(tokens, []))
   case peek(rest) {
-    Symbol(",") -> arm_patterns(drop_token(rest), [pattern, ..acc])
+    Symbol(",") ->
+      arm_patterns(skip_newlines(drop_token(rest)), [alternatives, ..acc])
+    _ -> Ok(#(list.reverse([alternatives, ..acc]), rest))
+  }
+}
+
+fn arm_alternatives(tokens, acc) {
+  use #(pattern, rest) <- and_then(parse_pattern(tokens))
+  let rest = skip_newlines(rest)
+  case peek(rest) {
+    Symbol("|") ->
+      arm_alternatives(skip_newlines(drop_token(rest)), [pattern, ..acc])
     _ -> Ok(#(list.reverse([pattern, ..acc]), rest))
   }
+}
+
+/// Cartesian product of the per-subject alternatives, as case arm patterns.
+fn arm_combinations(alternatives) {
+  list.fold(alternatives, [[]], fn(combos, alts) {
+    list.flat_map(combos, fn(combo) {
+      list.map(alts, fn(pattern) { list.append(combo, [pattern]) })
+    })
+  })
+  |> list.map(fn(combo) {
+    case combo {
+      [single] -> single
+      _ -> PTuple(combo)
+    }
+  })
 }
 
 fn parse_guard(tokens) {
@@ -1051,6 +1084,17 @@ fn parse_guard(tokens) {
 // ---------------------------------------------------------------------------
 
 fn parse_pattern(tokens) {
+  use #(pattern, rest) <- and_then(parse_pattern_base(tokens))
+  case peek(rest) {
+    Keyword("as") -> {
+      use #(name, rest2) <- and_then(expect_name(drop_token(rest)))
+      Ok(#(PAs(pattern, name), rest2))
+    }
+    _ -> Ok(#(pattern, rest))
+  }
+}
+
+fn parse_pattern_base(tokens) {
   case tokens {
     [
       Token(NameKind(module), _, _),

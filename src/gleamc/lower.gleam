@@ -14,9 +14,9 @@ import gleamc/ast.{
   type Expr, type Function, type Module, type Pattern, type Statement, type Type,
   Arm, DFunction, EBinop, EBitArray, EBlock, EBool, ECall, ECase, EClosure,
   ECtor, EEnvGet, EField, EFloat, EInt, ELabelled, ELambda, ENil, EPanic,
-  EString, ETuple, EUnop, EUpdate, EVar, Let, Module, PBitArray, PBool, PCtor,
-  PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard, Stmt, TBool,
-  TFun, TInt, TNamed, TNil, TString, TTuple,
+  EString, ETuple, EUnop, EUpdate, EVar, Let, Module, PAs, PBitArray, PBool,
+  PCtor, PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard, Stmt,
+  TBool, TFun, TInt, TNamed, TNil, TString, TTuple,
 }
 import gleamc/checker
 import gleamc/infer
@@ -866,6 +866,15 @@ fn match_pattern(
     PWildcard -> Ok(end_block(b, ir.Jmp(success)))
     PNil -> Ok(end_block(b, ir.Jmp(success)))
     PVar(name) -> Ok(end_block(bind_var(b, name, operand, ty), ir.Jmp(success)))
+    PAs(inner, name) ->
+      match_pattern(
+        bind_var(b, name, operand, ty),
+        operand,
+        ty,
+        inner,
+        success,
+        fail,
+      )
     PInt(value) ->
       match_literal(b, operand, ir.Lit(ir.LInt(value)), success, fail)
     PFloat(value) ->
