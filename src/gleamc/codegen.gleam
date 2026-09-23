@@ -160,7 +160,8 @@ pub fn emit(
 
   let has_main = list.any(functions, fn(function) { function.name == "main" })
   let main_code = case has_main {
-    True -> "int main(void) {\n    Gleamc_main();\n    return 0;\n}\n"
+    True ->
+      "int main(int argc, char** argv) {\n    Gleamc_set_args(argc, argv);\n    Gleamc_main();\n    return 0;\n}\n"
     False -> ""
   }
 

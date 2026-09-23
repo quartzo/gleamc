@@ -9,6 +9,7 @@ static size_t codepoint_offset(GleamcString s, int64_t index);
 #include <uv.h>
 #include <fcntl.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <unicode/ustring.h>
 #include <utf8proc.h>
@@ -1388,4 +1389,161 @@ int64_t Gleamc_int_bitwise_shift_left(int64_t a, int64_t b) {
 
 int64_t Gleamc_int_bitwise_shift_right(int64_t a, int64_t b) {
     return a >> b;
+}
+
+/* ------------------------------------------------------------------ */
+/* Host: process/env/argv. `run` returns a blob: an 8-byte little-     */
+/* endian exit status followed by the combined stdout/stderr.          */
+/* ------------------------------------------------------------------ */
+
+#include <sys/wait.h>
+
+static int gleamc_argc = 0;
+static char** gleamc_argv = NULL;
+
+void Gleamc_set_args(int argc, char** argv) {
+    gleamc_argc = argc;
+    gleamc_argv = argv;
+}
+
+GleamcString Gleamc_host_get_env(GleamcString name) {
+    char* cname = gleamc_to_cstr(name);
+    if (cname == NULL) return gleamc_string_lit("", 0);
+    const char* value = getenv(cname);
+    free(cname);
+    if (value == NULL) return gleamc_string_lit("", 0);
+    return gleamc_string_lit(value, strlen(value));
+}
+
+GleamcString Gleamc_host_which(GleamcString name) {
+    char* cname = gleamc_to_cstr(name);
+    if (cname == NULL) return gleamc_string_lit("", 0);
+    GleamcString result = gleamc_string_lit("", 0);
+    if (strchr(cname, '/') != NULL) {
+        if (access(cname, X_OK) == 0) {
+            result = gleamc_string_lit(cname, strlen(cname));
+        }
+    } else {
+        const char* path = getenv("PATH");
+        if (path != NULL) {
+            size_t len = strlen(path);
+            char* copy = (char*)malloc(len + 1);
+            if (copy != NULL) {
+                memcpy(copy, path, len + 1);
+                char* save = NULL;
+                for (char* dir = strtok_r(copy, ":", &save);
+                     dir != NULL;
+                     dir = strtok_r(NULL, ":", &save)) {
+                    size_t need = strlen(dir) + strlen(cname) + 2;
+                    char* full = (char*)malloc(need);
+                    if (full == NULL) break;
+                    snprintf(full, need, "%s/%s", dir, cname);
+                    if (access(full, X_OK) == 0) {
+                        result = gleamc_string_lit(full, strlen(full));
+                        free(full);
+                        break;
+                    }
+                    free(full);
+                }
+                free(copy);
+            }
+        }
+    }
+    free(cname);
+    return result;
+}
+
+GleamcBitArray Gleamc_host_run(GleamcString command) {
+    char* ccmd = gleamc_to_cstr(command);
+    if (ccmd == NULL) {
+        uint8_t* out = (uint8_t*)gleamc_alloc(8);
+        memset(out, 0, 8);
+        return (GleamcBitArray){out, 8};
+    }
+    size_t clen = strlen(ccmd);
+    char* full = (char*)malloc(clen + 7);
+    if (full == NULL) {
+        free(ccmd);
+        uint8_t* out = (uint8_t*)gleamc_alloc(8);
+        memset(out, 0, 8);
+        return (GleamcBitArray){out, 8};
+    }
+    memcpy(full, ccmd, clen);
+    memcpy(full + clen, " 2>&1", 6); /* include stderr, like Vesper */
+    free(ccmd);
+
+    FILE* fp = popen(full, "r");
+    free(full);
+    if (fp == NULL) {
+        uint8_t* out = (uint8_t*)gleamc_alloc(8);
+        memset(out, 0, 8);
+        return (GleamcBitArray){out, 8};
+    }
+    size_t cap = 256, len = 0;
+    char* buf = (char*)malloc(cap);
+    if (buf == NULL) {
+        pclose(fp);
+        uint8_t* out = (uint8_t*)gleamc_alloc(8);
+        memset(out, 0, 8);
+        return (GleamcBitArray){out, 8};
+    }
+    for (;;) {
+        if (len + 4096 > cap) {
+            cap *= 2;
+            char* nbuf = (char*)realloc(buf, cap);
+            if (nbuf == NULL) break;
+            buf = nbuf;
+        }
+        size_t got = fread(buf + len, 1, 4096, fp);
+        len += got;
+        if (got == 0) break;
+    }
+    int status = pclose(fp);
+    int code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+
+    uint8_t* out = (uint8_t*)gleamc_alloc(8 + (len > 0 ? len : 1));
+    uint64_t ucode = (uint64_t)(int64_t)code;
+    for (int i = 0; i < 8; i++) out[i] = (uint8_t)(ucode >> (8 * i));
+    if (len > 0) memcpy(out + 8, buf, len);
+    free(buf);
+    return (GleamcBitArray){out, 8 + len};
+}
+
+GleamcBitArray Gleamc_host_argv(void) {
+    size_t cap = 64, len = 0;
+    char* buf = (char*)malloc(cap);
+    if (buf == NULL) return (GleamcBitArray){NULL, 0};
+    int first = 1;
+    for (int i = 1; i < gleamc_argc; i++) {
+        const char* arg = gleamc_argv[i];
+        if (arg == NULL) continue;
+        size_t alen = strlen(arg);
+        size_t need = len + alen + 1;
+        if (need > cap) {
+            while (cap < need) cap *= 2;
+            char* nbuf = (char*)realloc(buf, cap);
+            if (nbuf == NULL) { free(buf); return (GleamcBitArray){NULL, 0}; }
+            buf = nbuf;
+        }
+        if (!first) buf[len++] = (char)31; /* unit separator */
+        first = 0;
+        memcpy(buf + len, arg, alen);
+        len += alen;
+    }
+    uint8_t* out = (uint8_t*)gleamc_alloc(len > 0 ? len : 1);
+    if (len > 0) memcpy(out, buf, len);
+    free(buf);
+    return (GleamcBitArray){out, len};
+}
+
+int64_t Gleamc_host_int64_at(GleamcBitArray blob, int64_t index) {
+    return Gleamc_fs_int64_at(blob, index);
+}
+
+GleamcBitArray Gleamc_host_blob_slice(GleamcBitArray blob, int64_t offset) {
+    if (offset < 0 || (size_t)offset > blob.len) return (GleamcBitArray){NULL, 0};
+    size_t len = blob.len - (size_t)offset;
+    uint8_t* out = (uint8_t*)gleamc_alloc(len > 0 ? len : 1);
+    if (len > 0) memcpy(out, blob.data + offset, len);
+    return (GleamcBitArray){out, len};
 }

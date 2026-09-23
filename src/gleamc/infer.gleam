@@ -723,6 +723,18 @@ fn builtins() -> Dict(String, Scheme) {
   |> dict.insert("fs.touch", Scheme(none, Fun([s], Con("FileResult", []))))
   |> dict.insert("fs.realpath", Scheme(none, Fun([s], Con("FileResult", []))))
   |> dict.insert("fs.chmod", Scheme(none, Fun([s, i], Con("FileResult", []))))
+  |> dict.insert("host.run", Scheme(none, Fun([s], Con("BitArray", []))))
+  |> dict.insert("host.argv", Scheme(none, Fun([], Con("BitArray", []))))
+  |> dict.insert("host.get_env", Scheme(none, Fun([s], s)))
+  |> dict.insert("host.which", Scheme(none, Fun([s], s)))
+  |> dict.insert(
+    "host.blob_slice",
+    Scheme(none, Fun([Con("BitArray", []), i], Con("BitArray", []))),
+  )
+  |> dict.insert(
+    "host.int64_at",
+    Scheme(none, Fun([Con("BitArray", []), i], i)),
+  )
   |> dict.insert(
     "fs.result_code",
     Scheme(none, Fun([Con("FileResult", [])], i)),

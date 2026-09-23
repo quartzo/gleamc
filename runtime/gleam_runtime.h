@@ -157,6 +157,15 @@ GleamcFileResult Gleamc_fs_link_info(GleamcString path);
 /* Reads a little-endian int64 field from a packed info blob. */
 int64_t Gleamc_fs_int64_at(GleamcBitArray blob, int64_t index);
 
+/* Host: process/env/argv (compiler ffi). */
+void Gleamc_set_args(int argc, char** argv);
+GleamcString Gleamc_host_get_env(GleamcString name);
+GleamcString Gleamc_host_which(GleamcString name);
+GleamcBitArray Gleamc_host_run(GleamcString command);
+GleamcBitArray Gleamc_host_argv(void);
+GleamcBitArray Gleamc_host_blob_slice(GleamcBitArray blob, int64_t offset);
+int64_t Gleamc_host_int64_at(GleamcBitArray blob, int64_t index);
+
 /* Accessors for the fixed result struct. */
 int64_t Gleamc_fs_result_code(GleamcFileResult result);
 GleamcBitArray Gleamc_fs_result_data(GleamcFileResult result);

@@ -1,18 +1,28 @@
-//// Bindings for the Erlang shim (`gleamc_ffi.erl`) and portable library
+//// Bindings for the host OS through the `host` module and portable library
 //// calls.
 ////
 //// Isolates all contact with the OS. The rest of the compiler only uses
-//// these functions — switching target (Erlang/JS) stays confined to this
-//// module. File I/O goes through `simplifile` so the same source can be
-//// compiled by the official toolchain (the published package) and by
-//// `gleamc` (its own `std/simplifile.gleam`).
+//// these functions — switching host (Erlang bootstrap or the gleamc C
+//// runtime) stays confined to this module and `host`. File I/O goes through
+//// `simplifile` so the same source compiles under the official toolchain (the
+//// published package) and under `gleamc` (its own `std/simplifile.gleam`).
 
+import gleam/bit_array
+import gleam/string
+import host
 import simplifile
 
 /// Runs a command in the shell and returns `#(exit_status, output)`.
 /// Output includes stderr (stderr_to_stdout).
-@external(erlang, "gleamc_ffi", "run")
-pub fn run(command: String) -> #(Int, String)
+pub fn run(command: String) -> #(Int, String) {
+  let blob = host.run(command)
+  let status = host.int64_at(blob, 0)
+  let output = case bit_array.to_string(host.blob_slice(blob, 8)) {
+    Ok(text) -> text
+    Error(_) -> ""
+  }
+  #(status, output)
+}
 
 /// Reads a file as UTF-8 text.
 pub fn read_file(path: String) -> Result(String, String) {
@@ -31,13 +41,33 @@ pub fn write_file(path: String, contents: String) -> Result(Nil, String) {
 }
 
 /// Resolves an executable on the PATH.
-@external(erlang, "gleamc_ffi", "which")
-pub fn which(name: String) -> Result(String, Nil)
+pub fn which(name: String) -> Result(String, Nil) {
+  case host.which(name) {
+    "" -> Error(Nil)
+    path -> Ok(path)
+  }
+}
 
 /// Reads an environment variable.
-@external(erlang, "gleamc_ffi", "get_env")
-pub fn get_env(name: String) -> Result(String, Nil)
+pub fn get_env(name: String) -> Result(String, Nil) {
+  case host.get_env(name) {
+    "" -> Error(Nil)
+    value -> Ok(value)
+  }
+}
 
 /// Command-line arguments.
-@external(erlang, "gleamc_ffi", "argv")
-pub fn argv() -> List(String)
+pub fn argv() -> List(String) {
+  case bit_array.to_string(host.argv()) {
+    Ok("") -> []
+    Ok(text) -> string.split(text, separator())
+    Error(_) -> []
+  }
+}
+
+fn separator() -> String {
+  case string.utf_codepoint(31) {
+    Ok(codepoint) -> string.from_utf_codepoints([codepoint])
+    Error(_) -> "\n"
+  }
+}

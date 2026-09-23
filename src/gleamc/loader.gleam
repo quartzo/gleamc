@@ -172,6 +172,13 @@ fn imports_of(module) {
 /// Looks for `<root>/<path>.gleam`, then `<cwd>/std/<path>.gleam`, mapping
 /// `gleam/<name>` to `std/<name>.gleam`.
 fn read_module(root, key) -> Result(String, Nil) {
+  case key == "host" {
+    True -> Error(Nil)
+    False -> read_file_module(root, key)
+  }
+}
+
+fn read_file_module(root, key) -> Result(String, Nil) {
   case ffi.read_file(root <> "/" <> key <> ".gleam") {
     Ok(source) -> Ok(source)
     Error(_) -> read_std(key)

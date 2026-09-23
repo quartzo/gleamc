@@ -1,22 +1,30 @@
-%% Minimal Erlang shim for the gleamc compiler.
+%% Minimal Erlang shim for the gleamc compiler (bootstrap host only).
 %%
-%% The compiler runs on the BEAM: the remaining OS contact (processes,
-%% environment, arguments) goes through here. File I/O uses `simplifile`.
-%% These functions are called from Gleam via
-%% `@external(erlang, "gleamc_ffi", "...")` (see src/gleamc/ffi.gleam).
+%% The compiler runs on the BEAM while it is bootstrapped by the official
+%% toolchain; these functions provide its host process/environment access,
+%% mirroring the C runtime's `Gleamc_host_*` builtins used when gleamc
+%% compiles itself. File I/O uses `simplifile`.
 -module(gleamc_ffi).
 
--export([run/1, which/1, get_env/1, argv/0]).
+-export([
+    run_blob/1,
+    argv_blob/0,
+    get_env_bin/1,
+    which_bin/1,
+    blob_slice/2,
+    int64_at/2
+]).
 
-%% Runs a command through the shell and returns {ExitStatus, Output}.
-%% (a Unix shell gives redirection/pipes for free)
--spec run(binary()) -> {integer(), binary()}.
-run(Command) ->
+%% Runs a command through the shell and returns a blob: 8-byte little-endian
+%% exit status followed by the combined stdout/stderr.
+-spec run_blob(binary()) -> binary().
+run_blob(Command) ->
     Port = open_port(
-        {spawn, binary_to_list(Command)},
+        {spawn, binary_to_list(Command) ++ " 2>&1"},
         [binary, exit_status, use_stdio, stderr_to_stdout, hide]
     ),
-    collect(Port, []).
+    {Status, Output} = collect(Port, []),
+    <<Status:64/little, Output/binary>>.
 
 collect(Port, Acc) ->
     receive
@@ -26,29 +34,47 @@ collect(Port, Acc) ->
             {Status, iolist_to_binary(Acc)}
     end.
 
--spec which(binary()) -> {ok, binary()} | {error, nil}.
-which(Name) ->
-    case os:find_executable(binary_to_list(Name)) of
-        false -> {error, nil};
-        Path -> {ok, list_to_binary(Path)}
-    end.
-
--spec get_env(binary()) -> {ok, binary()} | {error, nil}.
-get_env(Name) ->
-    case os:getenv(binary_to_list(Name)) of
-        false -> {error, nil};
-        Value -> {ok, list_to_binary(Value)}
-    end.
-
--spec argv() -> [binary()].
-argv() ->
-    case init:get_plain_arguments() of
+%% Command-line arguments joined by the unit separator (0x1f).
+-spec argv_blob() -> binary().
+argv_blob() ->
+    Args = case init:get_plain_arguments() of
         [] ->
-            %% `gleam run` with no `--`: use what the runner forwarded.
             case os:getenv("GLEAMC_ARGV") of
                 false -> [];
                 Value -> string:split(Value, " ", all)
             end;
-        Args ->
-            [list_to_binary(A) || A <- Args]
+        Found ->
+            Found
+    end,
+    iolist_to_binary(lists:join(<<31>>, [list_to_binary(A) || A <- Args])).
+
+-spec get_env_bin(binary()) -> binary().
+get_env_bin(Name) ->
+    case os:getenv(binary_to_list(Name)) of
+        false -> <<>>;
+        Value -> list_to_binary(Value)
+    end.
+
+-spec which_bin(binary()) -> binary().
+which_bin(Name) ->
+    case os:find_executable(binary_to_list(Name)) of
+        false -> <<>>;
+        Path -> list_to_binary(Path)
+    end.
+
+-spec blob_slice(binary(), integer()) -> binary().
+blob_slice(Blob, Offset) ->
+    try binary:part(Blob, Offset, byte_size(Blob) - Offset)
+    catch
+        _:_ -> <<>>
+    end.
+
+-spec int64_at(binary(), integer()) -> integer().
+int64_at(Blob, Index) ->
+    Offset = Index * 8,
+    try
+        <<_:Offset/binary, Value:64/little-signed, _/binary>> = Blob,
+        Value
+    catch
+        _:_ -> 0
     end.
