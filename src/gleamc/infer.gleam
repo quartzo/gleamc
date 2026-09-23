@@ -94,15 +94,93 @@ pub fn check_resolved(
     functions,
     st,
   ))
-  let resolved =
-    list.map(definitions, fn(def) {
-      case def {
-        DFunction(function) ->
-          DFunction(resolve_function(function, var_ids, st.subst))
-        _ -> def
+  let #(resolved, functions) =
+    resolve_definitions(definitions, functions, var_ids, st.subst)
+  Ok(#(Module(resolved), Program(functions, ctors, types_map)))
+}
+
+/// Rewrites inferred parameter/return types into the module and rebuilds each
+/// function's scheme so its quantified variables line up, in order, with the
+/// type variables of the rewritten surface (the monomorphiser relies on that).
+fn resolve_definitions(definitions, functions, var_ids, subst) {
+  list.fold(definitions, #([], functions), fn(acc, def) {
+    let #(out, functions) = acc
+    case def {
+      DFunction(function) -> {
+        let resolved = resolve_function(function, var_ids, subst)
+        let functions = align_scheme(functions, resolved, var_ids)
+        #(list.append(out, [DFunction(resolved)]), functions)
+      }
+      _ -> #(list.append(out, [def]), functions)
+    }
+  })
+}
+
+fn align_scheme(functions, function: Function, var_ids) {
+  let name = function.name
+  let scheme = case dict.get(functions, name) {
+    Ok(found) -> found
+    Error(_) -> Scheme([], Fun([], Con("Nil", [])))
+  }
+  let Scheme(_, zonked) = scheme
+  let free = types.free_vars(zonked)
+  let id_map = case dict.get(var_ids, name) {
+    Ok(found) -> found
+    Error(_) -> dict.new()
+  }
+  let ids =
+    list.filter_map(function_type_vars(function), fn(var_name) {
+      case surface_var_id(var_name, id_map) {
+        Error(_) -> Error(Nil)
+        Ok(id) ->
+          case list.contains(free, id) {
+            True -> Ok(id)
+            False -> Error(Nil)
+          }
       }
     })
-  Ok(#(Module(resolved), Program(functions, ctors, types_map)))
+  dict.insert(functions, name, Scheme(dedupe_ints(ids), zonked))
+}
+
+fn surface_var_id(var_name, id_map) -> Result(Int, Nil) {
+  case string.starts_with(var_name, "__gen_") {
+    True ->
+      case int.parse(string.drop_start(var_name, 6)) {
+        Ok(id) -> Ok(id)
+        Error(_) -> Error(Nil)
+      }
+    False -> dict.get(id_map, var_name)
+  }
+}
+
+fn general_var_name(id: Int) -> String {
+  "__gen_" <> int.to_string(id)
+}
+
+fn dedupe_ints(ids) -> List(Int) {
+  list.fold(ids, [], fn(acc, id) {
+    case list.contains(acc, id) {
+      True -> acc
+      False -> list.append(acc, [id])
+    }
+  })
+}
+
+fn surface_of_general(ty: Ty) -> Type {
+  case ty {
+    Con("Int", []) -> ast.TInt
+    Con("Float", []) -> ast.TFloat
+    Con("Bool", []) -> ast.TBool
+    Con("String", []) -> ast.TString
+    Con("Nil", []) -> ast.TNil
+    Con(name, []) -> ast.TNamed(name)
+    Con(name, args) -> ast.TApp(name, list.map(args, surface_of_general))
+    Var(id) -> ast.TVar(general_var_name(id))
+    types.Rig(id) -> ast.TVar(general_var_name(id))
+    Fun(params, ret) ->
+      ast.TFun(list.map(params, surface_of_general), surface_of_general(ret))
+    Tup(items) -> ast.TTuple(list.map(items, surface_of_general))
+  }
 }
 
 fn infer_in_order(
@@ -183,21 +261,8 @@ fn infer_one(
         Error(_) -> dict.new()
       }
       let frozen = types.env_free_vars(dict.values(dict.delete(globals, name)))
-      let vars =
-        list.filter_map(function_type_vars(function), fn(var_name) {
-          case dict.get(id_map, var_name) {
-            Error(_) -> Error(Nil)
-            Ok(id) ->
-              case
-                list.contains(types.free_vars(zonked), id)
-                && !list.contains(frozen, id)
-              {
-                True -> Ok(id)
-                False -> Error(Nil)
-              }
-          }
-        })
-      Ok(#(dict.insert(functions, name, Scheme(vars, zonked)), st))
+      let _ = id_map
+      Ok(#(dict.insert(functions, name, types.generalize(frozen, zonked)), st))
     }
   }
 }
@@ -335,31 +400,10 @@ fn resolve_infer_surface(surface, id_map, subst) {
         ast.TVar(var_name) ->
           case dict.get(id_map, var_name) {
             Error(_) -> surface
-            Ok(id) ->
-              case types.zonk(Var(id), subst) {
-                Var(_) -> surface
-                Rig(_) -> surface
-                concrete -> surface_of(concrete)
-              }
+            Ok(id) -> surface_of_general(types.zonk(Var(id), subst))
           }
         _ -> surface
       }
-  }
-}
-
-fn surface_of(ty: Ty) -> Type {
-  case ty {
-    Con("Int", []) -> ast.TInt
-    Con("Float", []) -> ast.TFloat
-    Con("Bool", []) -> ast.TBool
-    Con("String", []) -> ast.TString
-    Con("Nil", []) -> ast.TNil
-    Con(name, []) -> ast.TNamed(name)
-    Con(name, args) -> ast.TApp(name, list.map(args, surface_of))
-    Var(_) -> ast.TNil
-    types.Rig(_) -> ast.TNil
-    Fun(params, ret) -> ast.TFun(list.map(params, surface_of), surface_of(ret))
-    Tup(items) -> ast.TTuple(list.map(items, surface_of))
   }
 }
 
