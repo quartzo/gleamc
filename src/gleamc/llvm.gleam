@@ -1882,7 +1882,12 @@ fn collect_env_structs(
           case env_ty {
             "" -> acc
             _ ->
-              case list.any(acc, fn(entry) { entry.0 == env_ty }) {
+              case
+                list.any(acc, fn(entry) {
+                  let #(entry_name, _) = entry
+                  entry_name == env_ty
+                })
+              {
                 True -> acc
                 False ->
                   list.append(acc, [
@@ -2082,7 +2087,10 @@ fn variant_fields_of(
         let ast.Variant(vn, fields) = variant
         #(
           base_ctor_name(vn, type_name),
-          list.map(fields, fn(field) { field.1 }),
+          list.map(fields, fn(field) {
+            let #(_, field_ty) = field
+            field_ty
+          }),
         )
       })
     }
@@ -3575,9 +3583,10 @@ fn wrapper_for_group(
 // ---------------------------------------------------------------------------
 
 fn cstring_arg(lits: Dict(String, Int), content: String) -> String {
-  case literal_index(lits, content) {
-    -1 -> "i8* null"
-    index -> {
+  let index = literal_index(lits, content)
+  case index < 0 {
+    True -> "i8* null"
+    False -> {
       let size = string.byte_size(content) + 1
       "i8* getelementptr inbounds ({ i64, ["
       <> int.to_string(size)
