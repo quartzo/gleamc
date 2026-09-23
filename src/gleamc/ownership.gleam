@@ -407,9 +407,6 @@ fn insert_blocks(
       live_out,
       defs_map,
       moved_map,
-      dict.new(),
-      dict.new(),
-      0,
     )
 
   list.map(blocks, fn(block) {
@@ -522,44 +519,64 @@ fn compute_liveness(
   succ_map: Dict(String, List(String)),
   use_def: Dict(String, #(Dict(String, Bool), Dict(String, Bool))),
 ) -> Dict(String, Dict(String, Bool)) {
-  iterate_liveness(blocks, succ_map, use_def, dict.new(), 0)
+  let preds_map = build_preds(succ_map)
+  let queue = list.map(blocks, fn(block) { block.label })
+  live_loop(queue, succ_map, preds_map, use_def, dict.new())
 }
 
-fn iterate_liveness(
-  blocks: List(ir.Block),
-  succ_map: Dict(String, List(String)),
-  use_def: Dict(String, #(Dict(String, Bool), Dict(String, Bool))),
-  current: Dict(String, Dict(String, Bool)),
-  iteration: Int,
-) -> Dict(String, Dict(String, Bool)) {
-  case iteration > 200 {
-    True -> current
-    False -> {
-      let #(next, changed) =
-        list.fold(blocks, #(current, False), fn(acc, block) {
-          let #(state, changed_so_far) = acc
-          let out = successors_live(block.term, succ_map, state)
-          let #(used, defs) = case dict.get(use_def, block.label) {
+fn build_preds(succ_map: Dict(String, List(String))) -> Dict(String, List(String)) {
+  dict.fold(succ_map, dict.new(), fn(acc, label, succs) {
+    list.fold(succs, acc, fn(acc, succ) {
+      let existing = case dict.get(acc, succ) {
+        Ok(found) -> found
+        Error(_) -> []
+      }
+      dict.insert(acc, succ, [label, ..existing])
+    })
+  })
+}
+
+/// Backward liveness worklist: a block is revisited only when one of its
+/// successors changed, so the whole pass is O(edges * handles), not O(blocks)
+/// per sweep with a fixed iteration cap.
+fn live_loop(queue, succ_map, preds_map, use_def, live_in) {
+  case queue {
+    [] -> live_in
+    [label, ..rest] -> {
+      let out = case dict.get(succ_map, label) {
+        Ok(succs) ->
+          list.fold(succs, dict.new(), fn(acc, succ) {
+            set_union(acc, case dict.get(live_in, succ) {
+              Ok(found) -> found
+              Error(_) -> dict.new()
+            })
+          })
+        Error(_) -> dict.new()
+      }
+      let #(used, defs) = case dict.get(use_def, label) {
+        Ok(found) -> found
+        Error(_) -> #(dict.new(), dict.new())
+      }
+      let in_set = set_union(used, set_diff(out, defs))
+      let previous = case dict.get(live_in, label) {
+        Ok(found) -> found
+        Error(_) -> dict.new()
+      }
+      case sets_equal(previous, in_set) {
+        True -> live_loop(rest, succ_map, preds_map, use_def, live_in)
+        False -> {
+          let live_in = dict.insert(live_in, label, in_set)
+          let preds = case dict.get(preds_map, label) {
             Ok(found) -> found
-            Error(_) -> #(dict.new(), dict.new())
+            Error(_) -> []
           }
-          let in_set = set_union(used, set_diff(out, defs))
-          let previous = case dict.get(state, block.label) {
-            Ok(found) -> found
-            Error(_) -> dict.new()
-          }
-          #(
-            dict.insert(state, block.label, in_set),
-            changed_so_far || !sets_equal(previous, in_set),
-          )
-        })
-      case changed {
-        True -> iterate_liveness(blocks, succ_map, use_def, next, iteration + 1)
-        False -> next
+          live_loop(list.append(preds, rest), succ_map, preds_map, use_def, live_in)
+        }
       }
     }
   }
 }
+
 
 fn successors_live(
   term: ir.Terminator,
@@ -692,6 +709,40 @@ fn insert_retains(ops, index, pre, acc) {
 
 fn forward_owned(
   blocks: List(ir.Block),
+  entry: String,
+  entry_owned: Dict(String, Bool),
+  all: Dict(String, Bool),
+  preds_map: Dict(String, List(String)),
+  live_out: Dict(String, Dict(String, Bool)),
+  defs_map: Dict(String, Dict(String, Bool)),
+  moved_map: Dict(String, Dict(String, Bool)),
+) -> Dict(String, Dict(String, Bool)) {
+  let succ_map =
+    list.fold(blocks, dict.new(), fn(acc, block) {
+      dict.insert(acc, block.label, successors(block.term))
+    })
+  let out_map =
+    list.fold(blocks, dict.new(), fn(acc, block) {
+      dict.insert(acc, block.label, all)
+    })
+  let queue = list.map(blocks, fn(block) { block.label })
+  forward_loop(
+    queue,
+    succ_map,
+    entry,
+    entry_owned,
+    all,
+    preds_map,
+    live_out,
+    defs_map,
+    moved_map,
+    out_map,
+  )
+}
+
+fn forward_loop(
+  queue,
+  succ_map,
   entry,
   entry_owned,
   all,
@@ -699,57 +750,49 @@ fn forward_owned(
   live_out,
   defs_map,
   moved_map,
-  owned_in,
-  owned_out,
-  iteration,
+  out_map,
 ) {
-  case iteration > 200 {
-    True -> owned_out
-    False -> {
-      let #(next_in, next_out) =
-        list.fold(blocks, #(dict.new(), dict.new()), fn(acc, block) {
-          let #(in_map, out_map) = acc
-          let in_set = case block.label == entry {
-            True -> entry_owned
-            False -> {
-              let preds = case dict.get(preds_map, block.label) {
-                Ok(found) -> found
-                Error(_) -> []
-              }
-              list.fold(preds, all, fn(acc2, pred) {
-                let pred_out = case dict.get(owned_out, pred) {
-                  Ok(found) -> found
-                  Error(_) -> all
-                }
-                let pred_live = case dict.get(live_out, pred) {
-                  Ok(found) -> found
-                  Error(_) -> dict.new()
-                }
-                set_intersect(acc2, set_intersect(pred_out, pred_live))
-              })
+  case queue {
+    [] -> out_map
+    [label, ..rest] -> {
+      let in_set = case label == entry {
+        True -> entry_owned
+        False -> {
+          let preds = case dict.get(preds_map, label) {
+            Ok(found) -> found
+            Error(_) -> []
+          }
+          list.fold(preds, all, fn(acc, pred) {
+            let pred_out = case dict.get(out_map, pred) {
+              Ok(found) -> found
+              Error(_) -> all
             }
-          }
-          let defs = case dict.get(defs_map, block.label) {
-            Ok(found) -> found
-            Error(_) -> dict.new()
-          }
-          let moved = case dict.get(moved_map, block.label) {
-            Ok(found) -> found
-            Error(_) -> dict.new()
-          }
-          let out_set = set_diff(set_union(in_set, defs), moved)
-          #(
-            dict.insert(in_map, block.label, in_set),
-            dict.insert(out_map, block.label, out_set),
-          )
-        })
-      case
-        !sets_equal_maps(next_in, owned_in)
-        || !sets_equal_maps(next_out, owned_out)
-      {
+            let pred_live = case dict.get(live_out, pred) {
+              Ok(found) -> found
+              Error(_) -> dict.new()
+            }
+            set_intersect(acc, set_intersect(pred_out, pred_live))
+          })
+        }
+      }
+      let defs = case dict.get(defs_map, label) {
+        Ok(found) -> found
+        Error(_) -> dict.new()
+      }
+      let moved = case dict.get(moved_map, label) {
+        Ok(found) -> found
+        Error(_) -> dict.new()
+      }
+      let out = set_diff(set_union(in_set, defs), moved)
+      let previous = case dict.get(out_map, label) {
+        Ok(found) -> found
+        Error(_) -> all
+      }
+      case sets_equal(previous, out) {
         True ->
-          forward_owned(
-            blocks,
+          forward_loop(
+            rest,
+            succ_map,
             entry,
             entry_owned,
             all,
@@ -757,16 +800,31 @@ fn forward_owned(
             live_out,
             defs_map,
             moved_map,
-            next_in,
-            next_out,
-            iteration + 1,
+            out_map,
           )
-        False -> next_out
+        False -> {
+          let out_map = dict.insert(out_map, label, out)
+          let succs = case dict.get(succ_map, label) {
+            Ok(found) -> found
+            Error(_) -> []
+          }
+          forward_loop(
+            list.append(succs, rest),
+            succ_map,
+            entry,
+            entry_owned,
+            all,
+            preds_map,
+            live_out,
+            defs_map,
+            moved_map,
+            out_map,
+          )
+        }
       }
     }
   }
 }
-
 fn term_retains(fun, args, index, handles, base_live, pre, moved, modes, ffi) {
   let owning = ir.tailcall_owning_modes(fun, args, modes, ffi)
   list.fold(dict.to_list(owning_counts(owning)), #(pre, moved), fn(acc, entry) {
@@ -864,24 +922,6 @@ fn sets_equal(a: Dict(String, Bool), b: Dict(String, Bool)) -> Bool {
       Ok(_) -> True
       Error(_) -> False
     }
-  })
-}
-
-fn sets_equal_maps(
-  a: Dict(String, Dict(String, Bool)),
-  b: Dict(String, Dict(String, Bool)),
-) -> Bool {
-  dict.size(a) == dict.size(b)
-  && list.all(dict.keys(a), fn(label) {
-    let set_a = case dict.get(a, label) {
-      Ok(found) -> found
-      Error(_) -> dict.new()
-    }
-    let set_b = case dict.get(b, label) {
-      Ok(found) -> found
-      Error(_) -> dict.new()
-    }
-    sets_equal(set_a, set_b)
   })
 }
 
