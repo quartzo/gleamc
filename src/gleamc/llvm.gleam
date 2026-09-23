@@ -129,6 +129,7 @@ pub fn emit(
           emit_cmp_glue(recursive, custom_types, ast.TFloat),
           emit_cmp_glue(recursive, custom_types, ast.TBool),
           emit_cmp_glue(recursive, custom_types, TString),
+          emit_cmp_glue(recursive, custom_types, TNamed("BitArray")),
           emit_cmp_glue(recursive, custom_types, ast.TNil),
         ],
         list.map(seeds, fn(ty) { emit_cmp_glue(recursive, custom_types, ty) }),
@@ -143,6 +144,7 @@ pub fn emit(
           emit_show_glue(recursive, custom_types, lits, ast.TFloat),
           emit_show_glue(recursive, custom_types, lits, ast.TBool),
           emit_show_glue(recursive, custom_types, lits, TString),
+          emit_show_glue(recursive, custom_types, lits, TNamed("BitArray")),
           emit_show_glue(recursive, custom_types, lits, ast.TNil),
         ],
         list.map(seeds, fn(ty) {
@@ -196,9 +198,13 @@ fn header() -> String {
   <> "declare %GleamcString @Gleamc_string_show(%GleamcString)\n"
   <> "declare void @Gleamc_panic(%GleamcString)\n"
   <> "declare i32 @Gleamc_io_debug(%GleamcString)\n"
+  <> "declare i32 @memcmp(i8*, i8*, i64)\n"
   <> "declare i32 @Gleamc_string_compare_bytes(%GleamcString, %GleamcString)\n"
   <> "declare %GleamcString @gleamc_string_concat(%GleamcString, %GleamcString)\n"
   <> "declare i1 @gleamc_string_eq(%GleamcString, %GleamcString)\n"
+  <> "declare i1 @Gleamc_bit_array_eq(%GleamcBitArray, %GleamcBitArray)\n"
+  <> "declare %GleamcBitArray @Gleamc_bit_array_new(i64)\n"
+  <> "declare %GleamcBitArray @Gleamc_bit_array_from_bytes(i64*, i64)\n"
 }
 
 // ---------------------------------------------------------------------------
@@ -844,12 +850,12 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
             _ -> ir.Lit(ir.LUnit)
           }
           let #(_, rv, b) = read_val(ctx, second, b)
-          let #(r, b) = fresh(b)
+          let #(c32, b) = fresh(b)
           let b =
             emit_line(
               b,
               "  "
-                <> r
+                <> c32
                 <> " = call i32 @Gleamc_Cmp_"
                 <> mangle_glue(oty)
                 <> "("
@@ -862,8 +868,23 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
                 <> rv
                 <> ")",
             )
-          let b = store_local(ctx, dest, "i32", r, b)
-          #(b, Nil)
+          let ret_s = llvm_ty(ret_ty, ctx.recursive)
+          case ret_s {
+            "i32" -> {
+              let b = store_local(ctx, dest, "i32", c32, b)
+              #(b, Nil)
+            }
+            _ -> {
+              let #(r, b) = fresh(b)
+              let b =
+                emit_line(
+                  b,
+                  "  " <> r <> " = sext i32 " <> c32 <> " to " <> ret_s,
+                )
+              let b = store_local(ctx, dest, ret_s, r, b)
+              #(b, Nil)
+            }
+          }
         }
         "panic" -> {
           let first = first_arg(args)
@@ -1135,6 +1156,75 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
       let b = store_local(ctx, dest, ret_s, tmp, b)
       #(b, Nil)
     }
+    ir.OpBitArray(dest, elems, _ty) -> {
+      let n = list.length(elems)
+      let b = case elems {
+        [] -> {
+          let #(r, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> r
+                <> " = call %GleamcBitArray @Gleamc_bit_array_new(i64 0)",
+            )
+          store_local(ctx, dest, "%GleamcBitArray", r, b)
+        }
+        _ -> {
+          let arr_ty = "[" <> int.to_string(n) <> " x i64]"
+          let #(arr, b) = fresh(b)
+          let b = emit_line(b, "  " <> arr <> " = alloca " <> arr_ty)
+          let b =
+            list.index_fold(elems, b, fn(b, elem, index) {
+              let #(_, v, b) = read_val(ctx, elem, b)
+              let #(p, b) = fresh(b)
+              let b =
+                emit_line(
+                  b,
+                  "  "
+                    <> p
+                    <> " = getelementptr "
+                    <> arr_ty
+                    <> ", "
+                    <> arr_ty
+                    <> "* "
+                    <> arr
+                    <> ", i32 0, i32 "
+                    <> int.to_string(index),
+                )
+              emit_line(b, "  store i64 " <> v <> ", i64* " <> p)
+            })
+          let #(ptr, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> ptr
+                <> " = getelementptr "
+                <> arr_ty
+                <> ", "
+                <> arr_ty
+                <> "* "
+                <> arr
+                <> ", i32 0, i32 0",
+            )
+          let #(r, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> r
+                <> " = call %GleamcBitArray @Gleamc_bit_array_from_bytes(i64* "
+                <> ptr
+                <> ", i64 "
+                <> int.to_string(n)
+                <> ")",
+            )
+          store_local(ctx, dest, "%GleamcBitArray", r, b)
+        }
+      }
+      #(b, Nil)
+    }
     _ -> {
       let b = emit_line(b, "  ; TODO op: " <> op_debug(op))
       #(b, Nil)
@@ -1359,7 +1449,11 @@ fn float_arith(op: String, left: String, right: String) {
 fn unop_rhs(op: String, ty: String, v: String) {
   case op {
     "!" -> #("xor i1 " <> v <> ", true", "i1")
-    "-" -> #("sub i64 0, " <> v, "i64")
+    "-" ->
+      case ty {
+        "double" -> #("fneg double " <> v, "double")
+        _ -> #("sub i64 0, " <> v, "i64")
+      }
     "-." -> #("fneg double " <> v, "double")
     _ -> #("add i64 0, " <> v, ty)
   }
@@ -1452,7 +1546,10 @@ fn runtime_declared(name: String) -> Bool {
     | "Gleamc_io_debug"
     | "Gleamc_string_compare_bytes"
     | "gleamc_string_concat"
-    | "gleamc_string_eq" -> True
+    | "gleamc_string_eq"
+    | "Gleamc_bit_array_eq"
+    | "Gleamc_bit_array_new"
+    | "Gleamc_bit_array_from_bytes" -> True
     _ -> False
   }
 }
@@ -2224,6 +2321,10 @@ fn show_body(recursive, custom_types, lits, ty, ty_s, b) {
       #(emit_line(b, "  ret %GleamcString " <> r), Nil)
     }
     ast.TTuple(types) -> show_tuple(recursive, lits, ty_s, types, b)
+    TNamed("BitArray") -> {
+      let #(r, b) = literal_struct(lits, "?", b)
+      #(emit_line(b, "  ret %GleamcString " <> r), Nil)
+    }
     TNamed(type_name) ->
       case list_info(custom_types, type_name) {
         Ok(info) -> show_list(recursive, lits, type_name, info, b)
@@ -2579,6 +2680,44 @@ fn cmp_body(recursive, custom_types, ty, ty_s, b) {
           b,
         )
       #(emit_line(b, "  ret i32 " <> r), Nil)
+    }
+    TNamed("BitArray") -> {
+      let #(al, b) = extract_value("%GleamcBitArray", "%a", [1], b)
+      let #(bl, b) = extract_value("%GleamcBitArray", "%b", [1], b)
+      let #(ne, b) = fresh(b)
+      let b = emit_line(b, "  " <> ne <> " = icmp ne i64 " <> al <> ", " <> bl)
+      let b = emit_line(b, "  br i1 " <> ne <> ", label %blen, label %bbytes")
+      let b = emit_line(b, "\nblen:")
+      let #(gt, b) = fresh(b)
+      let b = emit_line(b, "  " <> gt <> " = icmp sgt i64 " <> al <> ", " <> bl)
+      let #(lt, b) = fresh(b)
+      let b = emit_line(b, "  " <> lt <> " = icmp slt i64 " <> al <> ", " <> bl)
+      let #(g, b) = fresh(b)
+      let b = emit_line(b, "  " <> g <> " = zext i1 " <> gt <> " to i32")
+      let #(l, b) = fresh(b)
+      let b = emit_line(b, "  " <> l <> " = zext i1 " <> lt <> " to i32")
+      let #(r, b) = fresh(b)
+      let b = emit_line(b, "  " <> r <> " = sub i32 " <> g <> ", " <> l)
+      let b = emit_line(b, "  ret i32 " <> r)
+      let b = emit_line(b, "\nbbytes:")
+      let #(ad, b) = extract_value("%GleamcBitArray", "%a", [0], b)
+      let #(bd, b) = extract_value("%GleamcBitArray", "%b", [0], b)
+      let #(m, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> m
+            <> " = call i32 @memcmp(i8* "
+            <> ad
+            <> ", i8* "
+            <> bd
+            <> ", i64 "
+            <> al
+            <> ")",
+        )
+      let b = emit_line(b, "  ret i32 " <> m)
+      #(b, Nil)
     }
     TNamed(type_name) -> cmp_named(recursive, custom_types, type_name, ty_s, b)
     _ -> #(emit_line(b, "  ret i32 0"), Nil)
