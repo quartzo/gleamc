@@ -356,6 +356,7 @@ fn builtins() -> Dict(String, Scheme) {
   |> dict.insert("fs.file_info", Scheme(none, Fun([s], Con("FileResult", []))))
   |> dict.insert("fs.link_info", Scheme(none, Fun([s], Con("FileResult", []))))
   |> dict.insert("fs.int64_at", Scheme(none, Fun([Con("BitArray", []), i], i)))
+  |> dict.insert("fs.rename", Scheme(none, Fun([s, s], Con("FileResult", []))))
   |> dict.insert(
     "fs.result_code",
     Scheme(none, Fun([Con("FileResult", [])], i)),

@@ -122,6 +122,7 @@ pub fn table() -> Dict(String, FfiSig) {
   |> dict.insert("fs.read_directory", FfiSig([Borrow], OwnedResult))
   |> dict.insert("fs.file_info", FfiSig([Borrow], OwnedResult))
   |> dict.insert("fs.link_info", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("fs.rename", FfiSig([Borrow, Borrow], OwnedResult))
   |> dict.insert("fs.int64_at", FfiSig([Borrow, Borrow], OwnedResult))
   |> dict.insert("fs.result_code", FfiSig([Borrow], OwnedResult))
   |> dict.insert("fs.result_size", FfiSig([Borrow], OwnedResult))

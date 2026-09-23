@@ -184,7 +184,74 @@ pub fn append_bits(to: String, bits: BitArray) -> Result(Nil, FileError) {
 }
 
 pub fn delete(file_or_dir_at: String) -> Result(Nil, FileError) {
-  write_result(fs.delete(file_or_dir_at))
+  case is_directory(file_or_dir_at) {
+    Error(err) -> Error(err)
+    Ok(True) -> remove_tree(file_or_dir_at)
+    Ok(False) -> write_result(fs.delete(file_or_dir_at))
+  }
+}
+
+fn remove_tree(path: String) -> Result(Nil, FileError) {
+  case read_directory(at: path) {
+    Error(err) -> Error(err)
+    Ok(names) ->
+      case remove_entries(path, names) {
+        Error(err) -> Error(err)
+        Ok(Nil) -> write_result(fs.delete(path))
+      }
+  }
+}
+
+fn remove_entries(
+  directory: String,
+  names: List(String),
+) -> Result(Nil, FileError) {
+  case names {
+    [] -> Ok(Nil)
+    [name, ..rest] ->
+      case delete(join(directory, name)) {
+        Error(err) -> Error(err)
+        Ok(Nil) -> remove_entries(directory, rest)
+      }
+  }
+}
+
+pub fn delete_all(paths: List(String)) -> Result(Nil, FileError) {
+  case paths {
+    [] -> Ok(Nil)
+    [path, ..rest] ->
+      case delete(path) {
+        Ok(_) -> delete_all(rest)
+        Error(Enoent) -> delete_all(rest)
+        Error(err) -> Error(err)
+      }
+  }
+}
+
+pub fn clear_directory(at: String) -> Result(Nil, FileError) {
+  case read_directory(at: at) {
+    Error(err) -> Error(err)
+    Ok(names) -> remove_entries(at, names)
+  }
+}
+
+pub fn rename(at: String, to: String) -> Result(Nil, FileError) {
+  write_result(fs.rename(at, to))
+}
+
+pub fn rename_file(at: String, to: String) -> Result(Nil, FileError) {
+  rename(at: at, to: to)
+}
+
+pub fn rename_directory(at: String, to: String) -> Result(Nil, FileError) {
+  rename(at: at, to: to)
+}
+
+pub fn copy_file(at: String, to: String) -> Result(Nil, FileError) {
+  case read_bits(from: at) {
+    Error(err) -> Error(err)
+    Ok(bits) -> write_bits(to: to, bits: bits)
+  }
 }
 
 pub fn delete_file(at: String) -> Result(Nil, FileError) {
@@ -195,12 +262,57 @@ pub fn create_directory(filepath: String) -> Result(Nil, FileError) {
   write_result(fs.create_directory(filepath))
 }
 
+pub fn create_directory_all(dirpath: String) -> Result(Nil, FileError) {
+  let parts = string.split(dirpath, "/")
+  let prefix = case string.starts_with(dirpath, "/") {
+    True -> "/"
+    False -> ""
+  }
+  mkdir_parts(parts, prefix)
+}
+
+fn mkdir_parts(parts: List(String), prefix: String) -> Result(Nil, FileError) {
+  case parts {
+    [] -> Ok(Nil)
+    [part, ..rest] -> {
+      let next = case part {
+        "" -> prefix
+        _ -> join_sep(prefix, part)
+      }
+      case mkdir_ignore_exists(next) {
+        Error(err) -> Error(err)
+        Ok(Nil) -> mkdir_parts(rest, next)
+      }
+    }
+  }
+}
+
+fn join_sep(prefix: String, part: String) -> String {
+  case prefix {
+    "" -> part
+    "/" -> "/" <> part
+    _ -> prefix <> "/" <> part
+  }
+}
+
+fn mkdir_ignore_exists(path: String) -> Result(Nil, FileError) {
+  case create_directory(path) {
+    Ok(Nil) -> Ok(Nil)
+    Error(Eexist) -> Ok(Nil)
+    Error(err) -> Error(err)
+  }
+}
+
 pub fn create_file(at: String) -> Result(Nil, FileError) {
   write_result(fs.create_file(at))
 }
 
 pub fn exists(filepath: String, follow_links: Bool) -> Result(Bool, FileError) {
-  case fs.result_code(fs.exists(filepath)) {
+  let code = case follow_links {
+    True -> fs.result_code(fs.exists(filepath))
+    False -> fs.result_code(fs.link_info(filepath))
+  }
+  case code {
     0 -> Ok(True)
     2 -> Ok(False)
     code -> Error(from_code(code))
@@ -213,6 +325,14 @@ pub fn is_file(filepath: String) -> Result(Bool, FileError) {
 
 pub fn is_directory(filepath: String) -> Result(Bool, FileError) {
   bool_result(fs.is_directory(filepath))
+}
+
+pub fn is_symlink(filepath: String) -> Result(Bool, FileError) {
+  case link_info(filepath) {
+    Error(Enoent) -> Ok(False)
+    Error(err) -> Error(err)
+    Ok(info) -> Ok(file_info_type(info) == Symlink)
+  }
 }
 
 pub fn file_info(filepath: String) -> Result(FileInfo, FileError) {

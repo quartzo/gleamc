@@ -139,6 +139,7 @@ GleamcFileResult Gleamc_fs_append(GleamcString path, GleamcBitArray data);
 GleamcFileResult Gleamc_fs_delete(GleamcString path);
 GleamcFileResult Gleamc_fs_create_directory(GleamcString path);
 GleamcFileResult Gleamc_fs_create_file(GleamcString path);
+GleamcFileResult Gleamc_fs_rename(GleamcString path, GleamcString new_path);
 GleamcFileResult Gleamc_fs_exists(GleamcString path);
 GleamcFileResult Gleamc_fs_is_file(GleamcString path);
 GleamcFileResult Gleamc_fs_is_directory(GleamcString path);

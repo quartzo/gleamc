@@ -1324,6 +1324,16 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         TNamed("FileResult"),
         "fs.link_info",
       )
+    "fs", "rename" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TString],
+        TNamed("FileResult"),
+        "fs.rename",
+      )
     "fs", "int64_at" ->
       check_builtin(
         env,

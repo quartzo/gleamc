@@ -1105,6 +1105,22 @@ GleamcFileResult Gleamc_fs_create_file(GleamcString path) {
     return fs_ok();
 }
 
+GleamcFileResult Gleamc_fs_rename(GleamcString path, GleamcString new_path) {
+    char* cpath = gleamc_to_cstr(path);
+    char* cnew = gleamc_to_cstr(new_path);
+    if (cpath == NULL || cnew == NULL) {
+        free(cpath);
+        free(cnew);
+        return fs_error(12);
+    }
+    uv_fs_t req;
+    int res = uv_fs_rename(NULL, &req, cpath, cnew, NULL);
+    uv_fs_req_cleanup(&req);
+    free(cpath);
+    free(cnew);
+    return res == 0 ? fs_ok() : fs_error(-res);
+}
+
 static GleamcFileResult fs_stat_mode(GleamcString path, int want) {
     char* cpath = gleamc_to_cstr(path);
     if (cpath == NULL) return fs_error(12);

@@ -119,3 +119,35 @@ pub fn main() {
   assert string.contains(output, "File") as output
   assert string.contains(output, "Directory") as output
 }
+
+pub fn simplifile_directory_ops_test() {
+  let source =
+    "import gleam/io
+import simplifile
+
+pub fn main() {
+  let base = \"/tmp/gleamc-fs/api\"
+  let _ = simplifile.delete_all([base])
+  let assert Ok(Nil) = simplifile.create_directory_all(base <> \"/a/b\")
+  let assert Ok(Nil) =
+    simplifile.write(to: base <> \"/a/b/f.txt\", contents: \"hello\")
+  let assert Ok(Nil) =
+    simplifile.copy_file(at: base <> \"/a/b/f.txt\", to: base <> \"/a/b/g.txt\")
+  let assert Ok(Nil) =
+    simplifile.rename(at: base <> \"/a/b/g.txt\", to: base <> \"/a/b/h.txt\")
+  let assert Ok(True) = simplifile.is_file(base <> \"/a/b/h.txt\")
+  let assert Ok(False) =
+    simplifile.exists(filepath: base <> \"/a/b/g.txt\", follow_links: True)
+  let assert Ok(contents) = simplifile.read(from: base <> \"/a/b/h.txt\")
+  io.println(contents)
+  let assert Ok(Nil) = simplifile.clear_directory(base <> \"/a\")
+  let assert Ok([]) = simplifile.read_directory(at: base <> \"/a\")
+  let assert Ok(Nil) = simplifile.delete(base)
+  let assert Ok(False) =
+    simplifile.exists(filepath: base, follow_links: True)
+  io.println(\"done\")
+}
+"
+  let output = compile_and_run("dir_ops", source)
+  assert string.contains(output, "hello\ndone\n") as output
+}

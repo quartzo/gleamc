@@ -157,21 +157,22 @@ their imports are resolved when the prelude is attached.
   `map_error`, `try`, `then`, `is_ok`, `is_error`, `flatten`, `all`, `or`,
   `replace`, `replace_error`, `values`, `partition`, `lazy_or`, `try_recover`.
 - `simplifile` (file system, the package's public name): `read`, `read_bits`,
-  `write`, `write_bits`, `append`, `append_bits`, `delete`, `delete_file`,
-  `create_directory`, `create_file`, `exists`, `is_file`, `is_directory`,
-  `read_directory`, `get_files`, `current_directory`, `file_info`/`link_info`,
-  `file_info_type`, `file_info_permissions_octal`, `describe_error`, plus the
-  `FileError`, `FileInfo` and `FileType` types. The labels (`to`, `from`, `contents`, `bits`,
-  `filepath`, ...) match the package, and the functions are backed by
-  synchronous libuv wrappers (`fs.*` builtins) returning a fixed
-  `GleamcFileResult` that the Gleam wrapper turns into a concrete
-  `Result`/`FileError`. Directory listings are joined with `/` (which cannot
-  appear in a POSIX filename) and split in Gleam; `get_files` recurses in
-  Gleam using `read_directory`/`is_directory`. Not implemented yet:
-  `file_info_permissions` (needs `gleam/set`), `file_permissions_to_octal`,
-  `set_permissions`, symlinks, `copy`/`rename`, `touch`, recursive
-  `delete`/`clear_directory`, and `create_directory_all`; `exists` ignores
-  `follow_links` (it always follows). Directory deletion is non-recursive.
+  `write`, `write_bits`, `append`, `append_bits`, `delete` (recursive),
+  `delete_file`, `delete_all`, `clear_directory`, `create_directory`,
+  `create_directory_all`, `create_file`, `rename`/`rename_file`/
+  `rename_directory`, `copy_file`, `exists`, `is_file`, `is_directory`,
+  `is_symlink`, `read_directory`, `get_files`, `current_directory`,
+  `file_info`/`link_info`, `file_info_type`, `file_info_permissions_octal`,
+  `describe_error`, plus the `FileError`, `FileInfo` and `FileType` types. The
+  labels (`to`, `from`, `contents`, `bits`, `filepath`, ...) match the package,
+  and the functions are backed by synchronous libuv wrappers (`fs.*` builtins)
+  returning a fixed `GleamcFileResult` that the Gleam wrapper turns into a
+  concrete `Result`/`FileError`. Directory listings are joined with `/` (which
+  cannot appear in a POSIX filename) and split in Gleam; `get_files`,
+  `create_directory_all`, `delete`, `clear_directory` and `delete_all` recurse
+  in Gleam. Not implemented yet: `file_info_permissions` (needs `gleam/set`),
+  `file_permissions_to_octal`, `set_permissions`, `create_symlink`/`create_link`,
+  `copy`/`copy_directory`, `touch`, and `resolve` (needs `filepath`).
 
 ## Self-host
 
