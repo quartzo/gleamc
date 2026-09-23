@@ -179,12 +179,12 @@ The goal is for `gleamc` to compile its own source (`src/gleamc/*.gleam`), so
 that source must stay inside the supported subset and use the same standard
 library under both the official toolchain and gleamc.
 
-- `src/gleamc/ffi.gleam` still binds `run`, `read_file`, `write_file`, `which`,
-  `get_env` and `argv` via `@external(erlang, "gleamc_ffi", ...)`. File
-  reads/writes are to be migrated to `simplifile` (the real package under the
-  official toolchain, `std/simplifile.gleam` under gleamc); the process,
-  environment and argument bindings still need a portable replacement.
-- `std/simplifile.gleam` must keep growing until it covers every file call the
+- `src/gleamc/ffi.gleam` reads and writes files through `simplifile` (the
+  published package under the official toolchain, `std/simplifile.gleam` under
+  gleamc), so the same source compiles under both. `run`, `which`, `get_env`
+  and `argv` still use `@external(erlang, "gleamc_ffi", ...)`, which gleamc
+  cannot parse, and need a portable replacement.
+- `std/simplifile.gleam` must keep growing until it covers every call the
   compiler makes.
 
 ## Toolchain
