@@ -10,6 +10,7 @@ import gleam/int
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import gleamc/ast.{
   type CustomType, type Expr, type Function, type Module, type Pattern,
@@ -457,7 +458,7 @@ fn collect_type(custom: CustomType, types_map, ctors, st: St) {
       #(dict.insert(map, name, Rig(id)), list.append(ids, [id]), st)
     })
   let variant_defs = list.map(variants, fn(v) { variant_def(v, mapping) })
-  let result_ty = Con(type_name, list.map(param_ids, Var))
+  let result_ty = Con(type_name, list.map(param_ids, fn(id) { Var(id) }))
   let ctors =
     list.fold(variant_defs, ctors, fn(acc, variant) {
       let VariantDef(name, fields) = variant
@@ -1135,7 +1136,53 @@ fn infer_field(env: Env, st: St, obj, name) {
       use field_ty <- result_try(field_type(env, type_name, args, name))
       Ok(#(field_ty, st))
     }
+    Var(_) -> field_on_var(env, st, obj_ty, name)
     _ -> Error(InferError("field access on a non-record value"))
+  }
+}
+
+/// When the object type is still unknown, resolve it from the field name: if
+/// exactly one type has a field with that name, unify the object with it.
+fn field_on_var(env: Env, st: St, obj_ty, name) {
+  case unique_field_type_name(env, name) {
+    Error(_) -> {
+      // Ambiguous (or unknown): defer. The object type is usually resolved
+      // later (e.g. by a record update) and the backend checker validates the
+      // access against the concrete type.
+      let #(field_ty, counter) = types.fresh(st.counter)
+      Ok(#(field_ty, St(..st, counter: counter)))
+    }
+    Ok(type_name) -> {
+      let TypeDef(_, params, _) =
+        dict.get(env.types, type_name)
+        |> result.unwrap(TypeDef("", [], []))
+      let #(vars, counter) = types.fresh_many(st.counter, list.length(params))
+      let st = St(..st, counter: counter)
+      use st <- result_try(unify_st(obj_ty, Con(type_name, vars), st))
+      use field_ty <- result_try(field_type(env, type_name, vars, name))
+      Ok(#(field_ty, st))
+    }
+  }
+}
+
+fn unique_field_type_name(env: Env, name) -> Result(String, Nil) {
+  let candidates =
+    list.filter_map(dict.to_list(env.types), fn(entry) {
+      let #(type_name, def) = entry
+      let TypeDef(_, _, variants) = def
+      case
+        list.any(variants, fn(variant) {
+          let VariantDef(_, fields) = variant
+          result.is_ok(list.key_find(fields, name))
+        })
+      {
+        True -> Ok(type_name)
+        False -> Error(Nil)
+      }
+    })
+  case candidates {
+    [only] -> Ok(only)
+    _ -> Error(Nil)
   }
 }
 
