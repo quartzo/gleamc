@@ -33,11 +33,18 @@ typedef struct {
 /* Allocates `size` payload bytes; the header refcount starts at 1. */
 void* gleamc_alloc(size_t size);
 
+/* Like `gleamc_alloc` but records a `site` tag for the refcount audit. */
+void* gleamc_alloc_site(size_t size, const char* site);
+
 /* Drop to zero: frees the block (cold path). */
 void gleamc_release_slow(GleamcHdr* h);
 
 /* Inline retain/release: the +1/-1 at the generated site becomes header
  * arithmetic; only the drop to zero calls into the kernel. NULL-safe. */
+#ifdef GLEAMC_RC_AUDIT
+#define gleamc_retain(p) Gleamc_rc_retain((p), "runtime")
+#define gleamc_release(p) Gleamc_rc_release((p), "runtime")
+#else
 #define gleamc_retain(p)                                                \
     do {                                                                \
         void* _gp = (p);                                                \
@@ -45,6 +52,7 @@ void gleamc_release_slow(GleamcHdr* h);
             ((GleamcHdr*)((uint8_t*)_gp - sizeof(GleamcHdr)))           \
                 ->refcount++;                                           \
     } while (0)
+#endif
 
 #define gleamc_release(p)                                               \
     do {                                                                \
@@ -83,6 +91,10 @@ GleamcString gleamc_string_lit(const char* data, size_t len);
 GleamcString gleamc_string_concat(GleamcString a, GleamcString b);
 bool gleamc_string_eq(GleamcString a, GleamcString b);
 
+#ifdef GLEAMC_RC_AUDIT
+#define gleamc_string_retain(s) Gleamc_rc_retain((s).data, "runtime")
+#define gleamc_string_release(s) Gleamc_rc_release((s).data, "runtime")
+#else
 #define gleamc_string_retain(s)                                         \
     do {                                                                \
         GleamcString _gs = (s);                                         \
@@ -92,6 +104,7 @@ bool gleamc_string_eq(GleamcString a, GleamcString b);
             if (_gh->refcount != GLEAMC_RC_STATIC) _gh->refcount++;     \
         }                                                               \
     } while (0)
+#endif
 
 #define gleamc_string_release(s)                                        \
     do {                                                                \

@@ -39,6 +39,14 @@ static GleamcAudit* _audit_get(void* p) {
     return e;
 }
 
+static void _audit_init(void* p, const char* site) {
+    GleamcAudit* e = _audit_get(p);
+    if (e != NULL) {
+        e->rc = 1; /* allocation starts at refcount 1 */
+        e->site = site;
+    }
+}
+
 static void _audit_touch(void* p, const char* site, long delta) {
     GleamcAudit* e = _audit_get(p);
     if (e == NULL) return;
@@ -118,7 +126,26 @@ void* gleamc_alloc(size_t size) {
     }
     h->refcount = 1;
     _gleamc_live++;
+#ifdef GLEAMC_RC_AUDIT
+    _audit_init((uint8_t*)h + sizeof(GleamcHdr), "(alloc)");
+#endif
     return (uint8_t*)h + sizeof(GleamcHdr);
+}
+
+void* gleamc_alloc_site(size_t size, const char* site) {
+    void* p = gleamc_alloc(size);
+#ifdef GLEAMC_RC_AUDIT
+    {
+        GleamcAudit* e = _audit_get(p);
+        if (e != NULL) {
+            e->rc = 1;
+            e->site = site;
+        }
+    }
+#else
+    (void)site;
+#endif
+    return p;
 }
 
 void gleamc_release_slow(GleamcHdr* h) {
@@ -138,7 +165,7 @@ GleamcString gleamc_string_lit(const char* data, size_t len) {
 
 GleamcString gleamc_string_concat(GleamcString a, GleamcString b) {
     size_t len = a.len + b.len;
-    char* buf = (char*)gleamc_alloc(len + 1);
+    char* buf = (char*)gleamc_alloc_site(len + 1, "runtime:concat");
     memcpy(buf, a.data, a.len);
     memcpy(buf + a.len, b.data, b.len);
     buf[len] = '\0';
@@ -161,7 +188,7 @@ int Gleamc_io_println(GleamcString s) {
 }
 
 GleamcBitArray Gleamc_bit_array_new(size_t len) {
-    uint8_t* data = (uint8_t*)gleamc_alloc(len + 1);
+    uint8_t* data = (uint8_t*)gleamc_alloc_site(len + 1, "runtime:from_cstr");
     memset(data, 0, len + 1);
     return (GleamcBitArray){data, len};
 }

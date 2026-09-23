@@ -169,6 +169,13 @@ pub fn emit(
       ),
       "\n\n",
     )
+  let env_drops =
+    string.join(
+      list.map(env_structs, fn(entry) {
+        emit_env_drop(entry, recursive, ctors, lits)
+      }),
+      "\n\n",
+    )
   let rc_glue =
     string.join(
       list.flat_map(seeds, fn(ty) {
@@ -220,6 +227,8 @@ pub fn emit(
   <> "\n\n"
   <> eq_glue
   <> "\n\n"
+  <> env_drops
+  <> "\n\n"
   <> rc_glue
   <> "\n\n"
   <> show_glue
@@ -235,6 +244,7 @@ fn header() -> String {
   <> "%GleamcBitArray = type { i8*, i64 }\n\n"
   <> "declare void @Gleamc_set_args(i32, i8**)\n"
   <> "declare i8* @gleamc_alloc(i64)\n"
+  <> "declare i8* @gleamc_alloc_site(i64, i8*)\n"
   <> "declare void @Gleamc_rc_retain(i8*, i8*)\n"
   <> "declare void @Gleamc_rc_release(i8*, i8*)\n"
   <> "declare %GleamcString @gleamc_string_lit(i8*, i64)\n"
@@ -1099,7 +1109,13 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
           let b =
             emit_line(
               b,
-              "  " <> p <> " = call i8* @gleamc_alloc(i64 " <> sz <> ")",
+              "  "
+                <> p
+                <> " = call i8* @gleamc_alloc_site(i64 "
+                <> sz
+                <> ", "
+                <> cstring_arg(ctx.lits, "alloc:" <> type_name)
+                <> ")",
             )
           let #(tp, b) = fresh(b)
           let b =
@@ -1170,7 +1186,13 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
           let b =
             emit_line(
               b,
-              "  " <> p <> " = call i8* @gleamc_alloc(i64 " <> sz <> ")",
+              "  "
+                <> p
+                <> " = call i8* @gleamc_alloc_site(i64 "
+                <> sz
+                <> ", "
+                <> cstring_arg(ctx.lits, "alloc:env")
+                <> ")",
             )
           let #(ep, b) = fresh(b)
           let b =
@@ -1220,7 +1242,9 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
             <> fn_s
             <> " "
             <> c1
-            <> ", void (i8*)* null, 2",
+            <> ", void (i8*)* "
+            <> env_drop_ptr(env_ty)
+            <> ", 2",
         )
       let b = store_local(ctx, dest, fn_s, c2, b)
       #(b, Nil)
@@ -1735,7 +1759,8 @@ fn runtime_declared(name: String) -> Bool {
     | "Gleamc_bit_array_new"
     | "Gleamc_bit_array_from_bytes"
     | "Gleamc_rc_retain"
-    | "Gleamc_rc_release" -> True
+    | "Gleamc_rc_release"
+    | "gleamc_alloc_site" -> True
     _ -> False
   }
 }
@@ -3551,7 +3576,7 @@ fn wrapper_for_group(
 
 fn cstring_arg(lits: Dict(String, Int), content: String) -> String {
   case literal_index(lits, content) {
-    -1 -> "null"
+    -1 -> "i8* null"
     index -> {
       let size = string.byte_size(content) + 1
       "i8* getelementptr inbounds ({ i64, ["
@@ -3591,7 +3616,88 @@ fn collect_rc_sites(functions, custom_types, tuples, ctors) -> List(String) {
     )
   let from_glue =
     list.flat_map(seeds, fn(ty) { [rc_name("retain", ty), rc_name("drop", ty)] })
-  list.append(from_ops, from_glue)
+  let alloc_sites =
+    list.append(
+      ["alloc:env"],
+      list.map(custom_types, fn(custom) {
+        let ast.CustomType(_, name, _, _, _) = custom
+        "alloc:" <> name
+      }),
+    )
+  let env_sites = list.map(functions, fn(_) { "env" })
+  list.append(
+    list.append(list.append(from_ops, from_glue), alloc_sites),
+    env_sites,
+  )
+}
+
+fn env_drop_ptr(env_ty: String) -> String {
+  case env_ty {
+    "" -> "null"
+    _ -> "@" <> env_ty <> "_drop"
+  }
+}
+
+fn emit_env_drop(entry, recursive, ctors, lits) -> String {
+  let #(env_ty, field_types) = entry
+  let safe_ty = safe(env_ty)
+  let done = "ed_" <> safe_ty <> "_done"
+  let body = "ed_" <> safe_ty <> "_body"
+  let b = Builder(next: 0, lines: [])
+  let b = emit_line(b, "define void @" <> env_ty <> "_drop(i8* %env) {")
+  let b = emit_line(b, "  %isnull = icmp eq i8* %env, null")
+  let b =
+    emit_line(b, "  br i1 %isnull, label %" <> done <> ", label %" <> body)
+  let b = emit_line(b, "\n" <> body <> ":")
+  let #(e, b) = fresh(b)
+  let b = emit_line(b, "  " <> e <> " = bitcast i8* %env to %" <> env_ty <> "*")
+  let b =
+    list.fold(
+      list.index_map(field_types, fn(fty, index) { #(fty, index) }),
+      b,
+      fn(b, pair) {
+        let #(fty, index) = pair
+        case ownership.needs_drop(fty, ctors) {
+          True -> {
+            let #(gp, b) = fresh(b)
+            let b =
+              emit_line(
+                b,
+                "  "
+                  <> gp
+                  <> " = getelementptr %"
+                  <> env_ty
+                  <> ", %"
+                  <> env_ty
+                  <> "* "
+                  <> e
+                  <> ", i32 0, i32 "
+                  <> int.to_string(index),
+              )
+            let #(fv, b) = fresh(b)
+            let fty_s = llvm_ty(fty, recursive)
+            let b =
+              emit_line(
+                b,
+                "  " <> fv <> " = load " <> fty_s <> ", " <> fty_s <> "* " <> gp,
+              )
+            rc_expr(lits, recursive, ctors, "drop", fty, fty_s, fv, "env", b)
+          }
+          False -> b
+        }
+      },
+    )
+  let b =
+    emit_line(
+      b,
+      "  call void @Gleamc_rc_release(i8* %env, "
+        <> cstring_arg(lits, "env")
+        <> ")",
+    )
+  let b = emit_line(b, "  br label %" <> done)
+  let b = emit_line(b, "\n" <> done <> ":")
+  let b = emit_line(b, "  ret void")
+  string.join(list.reverse(b.lines), "\n") <> "\n}\n"
 }
 
 fn rc_runtime(which: String) -> String {
@@ -3629,6 +3735,75 @@ fn rc_expr(
           <> cstring_arg(lits, site)
           <> ")",
       )
+    }
+    ast.TFun(_, _) -> {
+      // Closure value { code, env, env_drop }.
+      let #(env, b) = extract_value(ty_s, reg, [1], b)
+      case which {
+        "retain" ->
+          emit_line(
+            b,
+            "  call void @Gleamc_rc_retain(i8* "
+              <> env
+              <> ", "
+              <> cstring_arg(lits, site)
+              <> ")",
+          )
+        _ -> {
+          let #(dropf, b) = extract_value(ty_s, reg, [2], b)
+          let #(isnull, b) = fresh(b)
+          let base = string.replace(isnull, "%", "")
+          let rel = "rc_rel_" <> base
+          let usedrop = "rc_ud_" <> base
+          let done = "rc_done_" <> base
+          let b =
+            emit_line(b, "  " <> isnull <> " = icmp eq i8* " <> env <> ", null")
+          let b =
+            emit_line(
+              b,
+              "  br i1 "
+                <> isnull
+                <> ", label %"
+                <> done
+                <> ", label %"
+                <> usedrop
+                <> "_chk",
+            )
+          let b = emit_line(b, "\n" <> usedrop <> "_chk:")
+          let #(dnull, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  " <> dnull <> " = icmp eq void (i8*)* " <> dropf <> ", null",
+            )
+          let b =
+            emit_line(
+              b,
+              "  br i1 "
+                <> dnull
+                <> ", label %"
+                <> rel
+                <> ", label %"
+                <> usedrop,
+            )
+          let b = emit_line(b, "\n" <> usedrop <> ":")
+          let b = emit_line(b, "  call void " <> dropf <> "(i8* " <> env <> ")")
+          let b = emit_line(b, "  br label %" <> done)
+          let b = emit_line(b, "\n" <> rel <> ":")
+          let b =
+            emit_line(
+              b,
+              "  call void @Gleamc_rc_release(i8* "
+                <> env
+                <> ", "
+                <> cstring_arg(lits, site)
+                <> ")",
+            )
+          let b = emit_line(b, "  br label %" <> done)
+          let b = emit_line(b, "\n" <> done <> ":")
+          b
+        }
+      }
     }
     TNamed(_) | ast.TTuple(_) -> {
       let _ = ctors
