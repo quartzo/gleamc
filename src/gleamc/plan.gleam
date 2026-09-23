@@ -64,7 +64,9 @@ pub type Plan {
 
 pub fn plan(module: ir.Module) -> Plan {
   let ir.Module(functions) = module
-  let names = list.map(functions, fn(function) { function.name })
+  let names =
+    list.map(functions, fn(function) { function.name })
+    |> list.sort(fn(a, b) { string.compare(a, b) })
   let edges = list.flat_map(functions, fn(function) { tail_edges(function) })
   let groups = mutual_groups(names, edges)
   let #(states, entries) = number_states(functions)

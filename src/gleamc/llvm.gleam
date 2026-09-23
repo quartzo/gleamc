@@ -47,12 +47,30 @@ pub fn emit(
   custom_types: List(ast.CustomType),
   ctors: Dict(String, checker.CtorInfo),
 ) -> String {
+  // Canonical ordering: emission order must depend only on the input, never
+  // on `dict` iteration order (which differs between hosts).
   let ir.Module(functions) = ir_module
+  let functions =
+    list.sort(functions, fn(a, b) { string.compare(a.name, b.name) })
+  let custom_types =
+    list.sort(custom_types, fn(a, b) {
+      string.compare(type_name_of(a), type_name_of(b))
+    })
   let recursive = ownership.recursive_types(ctors)
-  let tuples = collect_tuple_types(custom_types, functions)
+  let tuples =
+    collect_tuple_types(custom_types, functions)
+    |> list.sort(fn(a, b) { string.compare(tuple_key(a), tuple_key(b)) })
   let all_groups = eligible_groups(ir_module, ctors)
-  let fn_types = collect_fn_types(custom_types, functions)
-  let env_structs = collect_env_structs(functions)
+  let fn_types =
+    collect_fn_types(custom_types, functions)
+    |> list.sort(fn(a, b) { string.compare(mangle_type(a), mangle_type(b)) })
+  let env_structs =
+    collect_env_structs(functions)
+    |> list.sort(fn(a, b) {
+      let #(an, _) = a
+      let #(bn, _) = b
+      string.compare(an, bn)
+    })
   let lit_list =
     dedupe(
       list.append(
@@ -62,6 +80,7 @@ pub fn emit(
       dict.new(),
       [],
     )
+    |> list.sort(fn(a, b) { string.compare(a, b) })
   let lits =
     lit_list
     |> list.index_map(fn(content, index) { #(content, index) })
@@ -138,7 +157,7 @@ pub fn emit(
     )
   let wrappers =
     string.join(
-      list.map(collect_wrappers(functions), fn(entry) { entry }),
+      list.map(collect_wrappers(functions, recursive), fn(entry) { entry }),
       "\n\n",
     )
   let seeds =
@@ -457,6 +476,18 @@ fn tuple_type_decl(ty: Type, recursive: Dict(String, Bool)) -> String {
   }
 }
 
+fn type_name_of(custom: ast.CustomType) -> String {
+  let ast.CustomType(_, name, _, _, _) = custom
+  name
+}
+
+fn tuple_key(ty: Type) -> String {
+  case ty {
+    ast.TTuple(types) -> tuple_suffix(types)
+    _ -> mangle_type(ty)
+  }
+}
+
 fn tuple_suffix(types: List(Type)) -> String {
   string.join(list.map(types, mangle_type), "_")
 }
@@ -617,7 +648,7 @@ fn extract_value(
   b: Builder,
 ) {
   let #(tmp, b) = fresh(b)
-  let idx = string.join(list.map(indices, int.to_string), ", ")
+  let idx = string.join(list.map(indices, fn(i) { int.to_string(i) }), ", ")
   let b =
     emit_line(
       b,
@@ -1826,7 +1857,7 @@ fn insert_fields(ty_s, base, fields, prefix: List(Int), index: Int, b) {
             <> v
             <> ", "
             <> string.join(
-            list.map(list.append(prefix, [index]), int.to_string),
+            list.map(list.append(prefix, [index]), fn(i) { int.to_string(i) }),
             ", ",
           ),
         )
@@ -1962,7 +1993,7 @@ fn op_list(function: ir.Function) -> List(ir.Op) {
   })
 }
 
-fn collect_wrappers(functions: List(ir.Function)) -> List(String) {
+fn collect_wrappers(functions: List(ir.Function), recursive) -> List(String) {
   let by_name =
     list.fold(functions, dict.new(), fn(acc, f) { dict.insert(acc, f.name, f) })
   let codes =
@@ -1984,7 +2015,7 @@ fn collect_wrappers(functions: List(ir.Function)) -> List(String) {
   list.map(codes, fn(code) {
     let name = string.slice(code, 5, string.length(code))
     case dict.get(by_name, name) {
-      Ok(function) -> wrapper_def(function, code)
+      Ok(function) -> wrapper_def(function, code, recursive)
       Error(_) -> ""
     }
   })
@@ -1999,10 +2030,9 @@ fn dedupe_strings(items: List(String)) -> List(String) {
   })
 }
 
-fn wrapper_def(function: ir.Function, code: String) -> String {
+fn wrapper_def(function: ir.Function, code: String, recursive) -> String {
   let ir.Function(name, params, ret, _, locals) = function
   let by_name = locals_map(locals)
-  let recursive = dict.new()
   let decls =
     list.index_map(params, fn(param, index) {
       llvm_ty(local_type(by_name, param), recursive)
