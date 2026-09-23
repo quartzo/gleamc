@@ -560,6 +560,15 @@ fn mono_expr_ex(state, locals, expected, expr) {
             Error(_) -> Ok(#(expr, state))
           }
       }
+    ELabelled(label, value) -> {
+      use #(value2, state) <- result_try(mono_expr_ex(
+        state,
+        locals,
+        expected,
+        value,
+      ))
+      Ok(#(ELabelled(label, value2), state))
+    }
     _ -> mono_expr(state, locals, expr)
   }
 }

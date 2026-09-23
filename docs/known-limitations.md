@@ -71,9 +71,11 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   shadowing a local, is reported as an error.
 - The primitive `Nil` type shares its constructor name with a user constructor
   named `Nil`.
-- A no-argument polymorphic value used where a specific type is expected
-  (e.g. `set.new()` as a record field) is not unified with that expected type
-  and defaults to `Nil`; pin the type by deriving it from another value.
+- A no-argument polymorphic value bound by `let` and only constrained later
+  defaults to `Nil` before the constraint is seen (`let s = set.new()` then
+  using `s` where `Set(Int)` is expected). Passing it directly as a labelled
+  call or constructor argument works, because the expected type is propagated
+  (`Holder(items: set.new())`).
 - A bare top-level function used as a value is eta-expanded into a lambda,
   which needs the expected function type to be resolved. It therefore fails
   when the surrounding call's types are themselves unresolved (for example
