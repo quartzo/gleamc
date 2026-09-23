@@ -569,7 +569,58 @@ fn mono_expr_ex(state, locals, expected, expr) {
       ))
       Ok(#(ELabelled(label, value2), state))
     }
+    ETuple(elements) -> {
+      case expected {
+        Some(Tup(expected_items)) ->
+          case list.length(elements) == list.length(expected_items) {
+            True -> {
+              use #(elements2, state) <- result_try(mono_exprs_ex(
+                state,
+                locals,
+                expected_items,
+                elements,
+              ))
+              Ok(#(ETuple(elements2), state))
+            }
+            False -> mono_expr(state, locals, expr)
+          }
+        _ -> mono_expr(state, locals, expr)
+      }
+    }
     _ -> mono_expr(state, locals, expr)
+  }
+}
+
+/// Monomorphises tuple elements with the expected element types, so literals
+/// like `#([], [])` resolve their element type from the context.
+fn mono_exprs_ex(state, locals, expected_list, exprs) {
+  case exprs, expected_list {
+    [], _ -> Ok(#([], state))
+    [expr, ..rest_exprs], [expected, ..rest_expected] -> {
+      use #(expr2, state) <- result_try(mono_expr_ex(
+        state,
+        locals,
+        Some(expected),
+        expr,
+      ))
+      use #(rest2, state) <- result_try(mono_exprs_ex(
+        state,
+        locals,
+        rest_expected,
+        rest_exprs,
+      ))
+      Ok(#([expr2, ..rest2], state))
+    }
+    [expr, ..rest_exprs], [] -> {
+      use #(expr2, state) <- result_try(mono_expr(state, locals, expr))
+      use #(rest2, state) <- result_try(mono_exprs_ex(
+        state,
+        locals,
+        [],
+        rest_exprs,
+      ))
+      Ok(#([expr2, ..rest2], state))
+    }
   }
 }
 

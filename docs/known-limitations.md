@@ -52,6 +52,9 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   for keyword-like labels such as `get_files(in directory)`.
 - `@external(...)` declarations and bit-array string segments
   (`<<"...":utf8>>`) are not parsed.
+- Constructor fields in a `type` declaration must be named
+  (`Continue(value: a)`); positional fields (`Continue(a)`) are not parsed.
+  Construction and matching can still be positional.
 - `let` bindings take no type annotation (`let x: T = ...`).
 
 ## Type system
@@ -122,14 +125,17 @@ calls fail later during checking. Prelude modules may import other modules;
 their imports are resolved when the prelude is attached.
 
 - `gleam/list`: `length`, `reverse`, `map`, `map2`, `filter`, `fold`,
-  `fold_right`, `any`, `all`, `each`, `append`, `flatten`, `flat_map`, `take`,
-  `drop`, `contains`, `repeat`, `first`, `last`, `find`, `zip`, `unzip`,
-  `index_map`, `index_fold`, `filter_map`, `sort`, `intersperse`, `take_while`,
-  `drop_while`, `window`, `window_by_2`, `chunk`, `sized_chunk`, `split`,
-  `map_fold`, `reduce`, `permutations`, `scan`, `transpose`, `unique`, plus the
-  non-official extras `sum` and `at`. Divergence: `sort` takes an explicit
-  comparator (`List(a)`, `fn(a, a) -> Order`), whereas the official `sort` is
-  single-argument.
+  `fold_right`, `any`, `all`, `each`, `append`, `prepend`, `flatten`,
+  `flat_map`, `take`, `drop`, `contains`, `repeat`, `first`, `last`, `rest`,
+  `new`, `is_empty`, `wrap`, `count`, `find`, `find_map`, `zip`, `strict_zip`,
+  `unzip`, `index_map`, `index_fold`, `filter_map`, `sort`, `intersperse`,
+  `take_while`, `drop_while`, `split_while`, `window`, `window_by_2`, `chunk`,
+  `sized_chunk`, `split`, `map_fold`, `reduce`, `fold_until` (`ContinueOrStop`),
+  `try_fold`, `try_map`, `try_each`, `permutations`, `combinations`,
+  `combination_pairs`, `interleave`, `scan`, `transpose`, `unique`, `max`,
+  `partition`, `group`, `key_find`, `key_filter`, `key_pop`, `key_set`, plus
+  the non-official extras `sum` and `at`. Not implemented: `sample` and
+  `shuffle` (need randomness).
 - `gleam/string`: `length`, `append`, `uppercase`, `lowercase`, `reverse`,
   `contains`, `starts_with`, `ends_with`, `trim`, `replace`, `concat`, `join`,
   `split`, `slice`, `repeat`, `pad_start`, `pad_end`, `trim_start`, `trim_end`,

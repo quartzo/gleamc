@@ -1,3 +1,4 @@
+import gleam/dict
 import gleam/order
 
 pub type List(a) {
@@ -535,4 +536,284 @@ pub fn window_by_2(list: List(a)) -> List(#(a, a)) {
 
 pub fn split(list: List(a), index: Int) -> #(List(a), List(a)) {
   #(list.take(list, index), list.drop(list, index))
+}
+
+pub type ContinueOrStop(a) {
+  Continue(value: a)
+  Stop(value: a)
+}
+
+pub fn new() -> List(a) {
+  ListEmpty
+}
+
+pub fn is_empty(list: List(a)) -> Bool {
+  case list {
+    ListEmpty -> True
+    ListCons(_, _) -> False
+  }
+}
+
+pub fn prepend(to: List(a), this: a) -> List(a) {
+  ListCons(this, to)
+}
+
+pub fn wrap(item: a) -> List(a) {
+  [item]
+}
+
+pub fn rest(list: List(a)) -> Result(List(a), Nil) {
+  case list {
+    ListCons(_, tail) -> Ok(tail)
+    ListEmpty -> Error(Nil)
+  }
+}
+
+pub fn count(list: List(a), where: fn(a) -> Bool) -> Int {
+  case list {
+    ListEmpty -> 0
+    ListCons(head, tail) ->
+      case where(head) {
+        True -> 1 + count(tail, where)
+        False -> count(tail, where)
+      }
+  }
+}
+
+pub fn find_map(over: List(a), with: fn(a) -> Result(b, c)) -> Result(b, Nil) {
+  case over {
+    ListEmpty -> Error(Nil)
+    ListCons(head, tail) ->
+      case with(head) {
+        Ok(value) -> Ok(value)
+        Error(_) -> find_map(tail, with)
+      }
+  }
+}
+
+pub fn fold_until(
+  over: List(a),
+  from: acc,
+  with: fn(acc, a) -> ContinueOrStop(acc),
+) -> acc {
+  case over {
+    ListEmpty -> from
+    ListCons(head, tail) ->
+      case with(from, head) {
+        Continue(acc) -> fold_until(tail, acc, with)
+        Stop(acc) -> acc
+      }
+  }
+}
+
+pub fn try_fold(
+  over: List(a),
+  from: acc,
+  with: fn(acc, a) -> Result(acc, e),
+) -> Result(acc, e) {
+  case over {
+    ListEmpty -> Ok(from)
+    ListCons(head, tail) ->
+      case with(from, head) {
+        Ok(acc) -> try_fold(tail, acc, with)
+        Error(err) -> Error(err)
+      }
+  }
+}
+
+pub fn try_map(
+  over: List(a),
+  with: fn(a) -> Result(b, e),
+) -> Result(List(b), e) {
+  case over {
+    ListEmpty -> Ok([])
+    ListCons(head, tail) ->
+      case with(head) {
+        Error(err) -> Error(err)
+        Ok(value) ->
+          case try_map(tail, with) {
+            Error(err) -> Error(err)
+            Ok(rest) -> Ok([value, ..rest])
+          }
+      }
+  }
+}
+
+pub fn try_each(over: List(a), with: fn(a) -> Result(b, e)) -> Result(Nil, e) {
+  case over {
+    ListEmpty -> Ok(Nil)
+    ListCons(head, tail) ->
+      case with(head) {
+        Ok(_) -> try_each(tail, with)
+        Error(err) -> Error(err)
+      }
+  }
+}
+
+pub fn key_find(in: List(#(k, v)), find: k) -> Result(v, Nil) {
+  case in {
+    ListEmpty -> Error(Nil)
+    ListCons(#(key, value), tail) ->
+      case key == find {
+        True -> Ok(value)
+        False -> key_find(tail, find)
+      }
+  }
+}
+
+pub fn key_filter(in: List(#(k, v)), find: k) -> List(v) {
+  case in {
+    ListEmpty -> []
+    ListCons(#(key, value), tail) ->
+      case key == find {
+        True -> [value, ..key_filter(tail, find)]
+        False -> key_filter(tail, find)
+      }
+  }
+}
+
+pub fn key_pop(
+  list: List(#(k, v)),
+  key: k,
+) -> Result(#(v, List(#(k, v))), Nil) {
+  case list {
+    ListEmpty -> Error(Nil)
+    ListCons(#(entry_key, entry_value), tail) ->
+      case entry_key == key {
+        True -> Ok(#(entry_value, tail))
+        False ->
+          case key_pop(tail, key) {
+            Ok(#(value, rest)) ->
+              Ok(#(value, ListCons(#(entry_key, entry_value), rest)))
+            Error(_) -> Error(Nil)
+          }
+      }
+  }
+}
+
+pub fn key_set(list: List(#(k, v)), key: k, value: v) -> List(#(k, v)) {
+  case key_find(list, key) {
+    Ok(_) ->
+      map(list, fn(pair) {
+        let #(entry_key, _) = pair
+        case entry_key == key {
+          True -> #(key, value)
+          False -> pair
+        }
+      })
+    Error(_) -> append(list, [#(key, value)])
+  }
+}
+
+pub fn strict_zip(list: List(a), with: List(b)) -> Result(List(#(a, b)), Nil) {
+  case list, with {
+    [], [] -> Ok([])
+    [first, ..firsts], [second, ..seconds] ->
+      case strict_zip(firsts, seconds) {
+        Ok(rest) -> Ok([#(first, second), ..rest])
+        Error(_) -> Error(Nil)
+      }
+    _, _ -> Error(Nil)
+  }
+}
+
+pub fn split_while(
+  list: List(a),
+  satisfying: fn(a) -> Bool,
+) -> #(List(a), List(a)) {
+  case list {
+    [] -> #([], [])
+    [head, ..tail] ->
+      case satisfying(head) {
+        True -> {
+          let #(yes, no) = split_while(tail, satisfying)
+          #([head, ..yes], no)
+        }
+        False -> #([], list)
+      }
+  }
+}
+
+pub fn interleave(list: List(List(a))) -> List(a) {
+  case list {
+    [] -> []
+    _ -> {
+      let heads =
+        flat_map(list, fn(row) {
+          case row {
+            [] -> []
+            [head, ..] -> [head]
+          }
+        })
+      let tails =
+        filter_map(list, fn(row) {
+          case row {
+            [] -> Error(Nil)
+            [_, ..tail] -> Ok(tail)
+          }
+        })
+      append(heads, interleave(tails))
+    }
+  }
+}
+
+pub fn combinations(items: List(a), by: Int) -> List(List(a)) {
+  case by <= 0 {
+    True -> [[]]
+    False ->
+      case items {
+        [] -> []
+        [head, ..tail] ->
+          append(
+            map(combinations(tail, by - 1), fn(rest) { [head, ..rest] }),
+            combinations(tail, by),
+          )
+      }
+  }
+}
+
+pub fn combination_pairs(items: List(a)) -> List(#(a, a)) {
+  case items {
+    [] -> []
+    [head, ..tail] ->
+      append(map(tail, fn(other) { #(head, other) }), combination_pairs(tail))
+  }
+}
+
+pub fn max(over: List(a), with: fn(a, a) -> Order) -> Result(a, Nil) {
+  case over {
+    [] -> Error(Nil)
+    [head, ..tail] ->
+      Ok(
+        fold(tail, head, fn(best, item) {
+          case with(item, best) {
+            Gt -> item
+            _ -> best
+          }
+        }),
+      )
+  }
+}
+
+pub fn partition(list: List(a), with: fn(a) -> Bool) -> #(List(a), List(a)) {
+  case list {
+    [] -> #([], [])
+    [head, ..tail] -> {
+      let #(yes, no) = partition(tail, with)
+      case with(head) {
+        True -> #([head, ..yes], no)
+        False -> #(yes, [head, ..no])
+      }
+    }
+  }
+}
+
+pub fn group(list: List(v), by: fn(v) -> k) -> dict.Dict(k, List(v)) {
+  fold(list, dict.new(), fn(acc, item) {
+    let key = by(item)
+    case dict.get(acc, key) {
+      Ok(items) -> dict.insert(acc, key, [item, ..items])
+      Error(_) -> dict.insert(acc, key, [item])
+    }
+  })
 }
