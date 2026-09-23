@@ -1164,6 +1164,86 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         TString,
         "string.lowercase",
       )
+    "float", "raw_exponential" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TFloat],
+        TFloat,
+        "float.raw_exponential",
+      )
+    "float", "raw_logarithm" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TFloat],
+        TFloat,
+        "float.raw_logarithm",
+      )
+    "int", "bitwise_and" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TInt, TInt],
+        TInt,
+        "int.bitwise_and",
+      )
+    "int", "bitwise_or" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TInt, TInt],
+        TInt,
+        "int.bitwise_or",
+      )
+    "int", "bitwise_exclusive_or" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TInt, TInt],
+        TInt,
+        "int.bitwise_exclusive_or",
+      )
+    "int", "bitwise_not" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TInt],
+        TInt,
+        "int.bitwise_not",
+      )
+    "int", "bitwise_shift_left" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TInt, TInt],
+        TInt,
+        "int.bitwise_shift_left",
+      )
+    "int", "bitwise_shift_right" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TInt, TInt],
+        TInt,
+        "int.bitwise_shift_right",
+      )
     "string", "reverse" ->
       check_builtin(
         env,

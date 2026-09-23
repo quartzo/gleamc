@@ -144,12 +144,20 @@ their imports are resolved when the prelude is attached.
   `remove_prefix`, `remove_suffix`, `capitalise`, `pop_grapheme`, `to_option`,
   `byte_size`, `compare`, `inspect`, `to_utf_codepoints`, `from_utf_codepoints`,
   `utf_codepoint`, `utf_codepoint_to_int` (`UtfCodepoint` opaque type).
-- `gleam/int`: `to_string`, `parse`, `base_parse`, `to_base_string`,
-  `to_float`, `compare`, `min`, `max`, `absolute_value` (arithmetic is built
-  in).
+- `gleam/int`: `to_string`, `to_float`, `parse`, `base_parse`,
+  `to_base_string`, `to_base2`/`to_base8`/`to_base16`/`to_base36`, `compare`,
+  `min`, `max`, `absolute_value`, `add`, `subtract`, `multiply`, `negate`,
+  `is_even`, `is_odd`, `sum`, `product`, `clamp`, `divide`, `remainder`,
+  `modulo`, `floor_divide`, `power`, `square_root`, `range`, and `bitwise_and`,
+  `bitwise_or`, `bitwise_exclusive_or`, `bitwise_not`, `bitwise_shift_left`,
+  `bitwise_shift_right` (arithmetic operators are built in). Not implemented:
+  `random`.
 - `gleam/float`: `to_string`, `parse`, `min`, `max`, `absolute_value`, `floor`,
-  `ceiling`, `round`, `truncate`, `compare`, `power`, `square_root` (`parse`,
-  `power` and `square_root` return `Result`).
+  `ceiling`, `round`, `truncate`, `compare`, `power`, `square_root`, `add`,
+  `subtract`, `multiply`, `negate`, `sum`, `product`, `divide`, `modulo`,
+  `clamp`, `exponential`, `logarithm`, `loosely_compare`, `loosely_equals`,
+  `to_precision` (`parse`, `power`, `square_root`, `divide`, `modulo` and
+  `logarithm` return `Result`). Not implemented: `random`.
 - `gleam/bool`: `to_string` (runtime) plus `and`, `or`, `negate`, `nor`,
   `nand`, `exclusive_or`, `exclusive_nor`, `guard`, `lazy_guard`.
 - `gleam/io`: `println`, `print`, `debug`.

@@ -64,6 +64,23 @@ pub fn table() -> Dict(String, FfiSig) {
   |> dict.insert("float.truncate", FfiSig([Borrow], OwnedResult))
   |> dict.insert("float.raw_power", FfiSig([Borrow, Borrow], OwnedResult))
   |> dict.insert("float.raw_square_root", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("float.raw_exponential", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("float.raw_logarithm", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("int.bitwise_and", FfiSig([Borrow, Borrow], OwnedResult))
+  |> dict.insert("int.bitwise_or", FfiSig([Borrow, Borrow], OwnedResult))
+  |> dict.insert(
+    "int.bitwise_exclusive_or",
+    FfiSig([Borrow, Borrow], OwnedResult),
+  )
+  |> dict.insert("int.bitwise_not", FfiSig([Borrow], OwnedResult))
+  |> dict.insert(
+    "int.bitwise_shift_left",
+    FfiSig([Borrow, Borrow], OwnedResult),
+  )
+  |> dict.insert(
+    "int.bitwise_shift_right",
+    FfiSig([Borrow, Borrow], OwnedResult),
+  )
   |> dict.insert(
     "int.raw_to_base_string",
     FfiSig([Borrow, Borrow], OwnedResult),

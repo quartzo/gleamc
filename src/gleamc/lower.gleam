@@ -334,7 +334,8 @@ fn single_variant(b: Builder, name: String) -> Bool {
             Error(_) -> False
           }
         }),
-      ) == 1
+      )
+      == 1
   }
 }
 

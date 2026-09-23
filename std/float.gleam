@@ -121,3 +121,99 @@ pub fn compare(a: Float, b: Float) -> Order {
       }
   }
 }
+
+pub fn add(a: Float, b: Float) -> Float {
+  a +. b
+}
+
+pub fn subtract(a: Float, b: Float) -> Float {
+  a -. b
+}
+
+pub fn multiply(a: Float, b: Float) -> Float {
+  a *. b
+}
+
+pub fn negate(x: Float) -> Float {
+  -x
+}
+
+pub fn sum(numbers: List(Float)) -> Float {
+  list.fold(numbers, 0.0, fn(acc, x) { acc +. x })
+}
+
+pub fn product(numbers: List(Float)) -> Float {
+  list.fold(numbers, 1.0, fn(acc, x) { acc *. x })
+}
+
+pub fn divide(a: Float, by: Float) -> Result(Float, Nil) {
+  case by == 0.0 {
+    True -> Error(Nil)
+    False -> Ok(a /. by)
+  }
+}
+
+pub fn modulo(dividend: Float, by: Float) -> Result(Float, Nil) {
+  case by == 0.0 {
+    True -> Error(Nil)
+    False -> {
+      let quotient = int.to_float(float.truncate(dividend /. by))
+      let r = dividend -. quotient *. by
+      let negative_r = r <. 0.0
+      let negative_by = by <. 0.0
+      case r == 0.0 {
+        True -> Ok(0.0)
+        False ->
+          case negative_r == negative_by {
+            True -> Ok(r)
+            False -> Ok(r +. by)
+          }
+      }
+    }
+  }
+}
+
+pub fn clamp(x: Float, min: Float, max: Float) -> Float {
+  let #(lo, hi) = case min <=. max {
+    True -> #(min, max)
+    False -> #(max, min)
+  }
+  case x <. lo {
+    True -> lo
+    False ->
+      case x >. hi {
+        True -> hi
+        False -> x
+      }
+  }
+}
+
+pub fn exponential(x: Float) -> Float {
+  float.raw_exponential(x)
+}
+
+pub fn logarithm(x: Float) -> Result(Float, Nil) {
+  case x <=. 0.0 {
+    True -> Error(Nil)
+    False -> Ok(float.raw_logarithm(x))
+  }
+}
+
+pub fn loosely_compare(a: Float, with: Float, tolerating: Float) -> Order {
+  case float.absolute_value(a -. with) <=. tolerating {
+    True -> order.Eq
+    False -> compare(a, with)
+  }
+}
+
+pub fn loosely_equals(a: Float, with: Float, tolerating: Float) -> Bool {
+  case loosely_compare(a, with: with, tolerating: tolerating) {
+    order.Eq -> True
+    _ -> False
+  }
+}
+
+pub fn to_precision(x: Float, precision: Int) -> Float {
+  let scale = pow10(precision)
+  int.to_float(float.round(x *. scale)) /. scale
+}

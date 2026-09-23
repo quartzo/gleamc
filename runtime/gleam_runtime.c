@@ -1356,3 +1356,36 @@ GleamcFileResult Gleamc_fs_link_info(GleamcString path) {
     return fs_info_from_ints(v);
 }
 
+
+
+double Gleamc_float_raw_exponential(double value) {
+    return exp(value);
+}
+
+double Gleamc_float_raw_logarithm(double value) {
+    return log(value);
+}
+
+int64_t Gleamc_int_bitwise_and(int64_t a, int64_t b) {
+    return a & b;
+}
+
+int64_t Gleamc_int_bitwise_or(int64_t a, int64_t b) {
+    return a | b;
+}
+
+int64_t Gleamc_int_bitwise_exclusive_or(int64_t a, int64_t b) {
+    return a ^ b;
+}
+
+int64_t Gleamc_int_bitwise_not(int64_t a) {
+    return ~a;
+}
+
+int64_t Gleamc_int_bitwise_shift_left(int64_t a, int64_t b) {
+    return a << b;
+}
+
+int64_t Gleamc_int_bitwise_shift_right(int64_t a, int64_t b) {
+    return a >> b;
+}

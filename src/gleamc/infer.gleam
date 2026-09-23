@@ -257,6 +257,14 @@ fn builtins() -> Dict(String, Scheme) {
   |> dict.insert("int.absolute_value", Scheme(none, Fun([i], i)))
   |> dict.insert("float.raw_power", Scheme(none, Fun([f, f], f)))
   |> dict.insert("float.raw_square_root", Scheme(none, Fun([f], f)))
+  |> dict.insert("float.raw_exponential", Scheme(none, Fun([f], f)))
+  |> dict.insert("float.raw_logarithm", Scheme(none, Fun([f], f)))
+  |> dict.insert("int.bitwise_and", Scheme(none, Fun([i, i], i)))
+  |> dict.insert("int.bitwise_or", Scheme(none, Fun([i, i], i)))
+  |> dict.insert("int.bitwise_exclusive_or", Scheme(none, Fun([i, i], i)))
+  |> dict.insert("int.bitwise_not", Scheme(none, Fun([i], i)))
+  |> dict.insert("int.bitwise_shift_left", Scheme(none, Fun([i, i], i)))
+  |> dict.insert("int.bitwise_shift_right", Scheme(none, Fun([i, i], i)))
   |> dict.insert("int.raw_to_base_string", Scheme(none, Fun([i, i], s)))
   |> dict.insert(
     "gleamc.key_compare",

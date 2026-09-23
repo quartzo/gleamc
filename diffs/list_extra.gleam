@@ -17,12 +17,14 @@ pub fn main() {
   io.println(string.inspect(list.count([1, 2, 3], where: fn(x) { x > 1 })))
   io.println(string.inspect(list.find_map([[], [2], [3]], list.first)))
   io.println(
-    string.inspect(list.fold_until([1, 2, 3, 4], 0, fn(acc, i) {
-      case i < 3 {
-        True -> list.Continue(acc + i)
-        False -> list.Stop(acc)
-      }
-    })),
+    string.inspect(
+      list.fold_until([1, 2, 3, 4], 0, fn(acc, i) {
+        case i < 3 {
+          True -> list.Continue(acc + i)
+          False -> list.Stop(acc)
+        }
+      }),
+    ),
   )
   io.println(
     string.inspect(list.try_fold([1, 2, 3], 0, fn(acc, i) { Ok(acc + i) })),
@@ -39,9 +41,7 @@ pub fn main() {
   io.println(
     string.inspect(list.split_while([1, 2, 3, 4, 5], fn(x) { x <= 3 })),
   )
-  io.println(
-    string.inspect(list.interleave([[1, 2], [101, 102], [201, 202]])),
-  )
+  io.println(string.inspect(list.interleave([[1, 2], [101, 102], [201, 202]])))
   io.println(string.inspect(list.combinations([1, 2, 3], 2)))
   io.println(string.inspect(list.combination_pairs([1, 2, 3])))
   io.println(string.inspect(list.max([1, 2, 3, 4, 5], int.compare)))

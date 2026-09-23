@@ -226,6 +226,15 @@ int64_t Gleamc_float_round(double a);
 int64_t Gleamc_float_truncate(double a);
 double Gleamc_float_raw_power(double base, double exponent);
 double Gleamc_float_raw_square_root(double value);
+double Gleamc_float_raw_exponential(double value);
+double Gleamc_float_raw_logarithm(double value);
+
+int64_t Gleamc_int_bitwise_and(int64_t a, int64_t b);
+int64_t Gleamc_int_bitwise_or(int64_t a, int64_t b);
+int64_t Gleamc_int_bitwise_exclusive_or(int64_t a, int64_t b);
+int64_t Gleamc_int_bitwise_not(int64_t a);
+int64_t Gleamc_int_bitwise_shift_left(int64_t a, int64_t b);
+int64_t Gleamc_int_bitwise_shift_right(int64_t a, int64_t b);
 
 /* std::int / std::float / std::bool to_string */
 GleamcString Gleamc_int_to_string(int64_t v);

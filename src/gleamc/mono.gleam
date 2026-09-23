@@ -645,7 +645,12 @@ fn eta_expand(
               "__fnarg_" <> int.to_string(index)
             })
           let args = list.map(names, fn(param) { EVar(param) })
-          mono_expr_ex(state, locals, expected, ELambda(names, ECall(EVar(name), args)))
+          mono_expr_ex(
+            state,
+            locals,
+            expected,
+            ELambda(names, ECall(EVar(name), args)),
+          )
         }
         False -> Error("cannot eta-expand `" <> name <> "`")
       }
