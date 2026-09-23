@@ -450,34 +450,41 @@ fn emit_fn_type(ty, recursive) -> String {
 }
 
 fn collect_env_structs(functions) -> List(#(String, List(Type))) {
-  list.fold(functions, [], fn(acc, function) {
-    let by_name = locals_map(local_list(function))
-    list.fold(op_list(function), acc, fn(acc, op) {
-      case op {
-        ir.OpClosure(_, _, captures, env_ty, _) ->
-          case env_ty {
-            "" -> acc
-            _ ->
-              case
-                list.any(acc, fn(entry) {
-                  let #(name, _) = entry
-                  name == env_ty
-                })
-              {
-                True -> acc
-                False ->
-                  list.append(acc, [
-                    #(
-                      env_ty,
-                      list.map(captures, fn(cap) { operand_type(by_name, cap) }),
-                    ),
-                  ])
+  let #(acc, _seen) =
+    list.fold(functions, #([], dict.new()), fn(acc, function) {
+      let #(acc, seen) = acc
+      let by_name = locals_map(local_list(function))
+      let #(acc, seen) =
+        list.fold(op_list(function), #(acc, seen), fn(acc, op) {
+          let #(acc, seen) = acc
+          case op {
+            ir.OpClosure(_, _, captures, env_ty, _) ->
+              case env_ty {
+                "" -> #(acc, seen)
+                _ ->
+                  case dict.get(seen, env_ty) {
+                    Ok(_) -> #(acc, seen)
+                    Error(_) ->
+                      #(
+                        [
+                          #(
+                            env_ty,
+                            list.map(captures, fn(cap) {
+                              operand_type(by_name, cap)
+                            }),
+                          ),
+                          ..acc
+                        ],
+                        dict.insert(seen, env_ty, True),
+                      )
+                  }
               }
+            _ -> #(acc, seen)
           }
-        _ -> acc
-      }
+        })
+      #(acc, seen)
     })
-  })
+  list.reverse(acc)
 }
 
 fn local_list(function) {
