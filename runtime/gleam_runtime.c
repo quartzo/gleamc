@@ -1197,6 +1197,16 @@ GleamcFileResult Gleamc_fs_realpath(GleamcString path) {
     return r;
 }
 
+GleamcFileResult Gleamc_fs_chmod(GleamcString path, int64_t mode) {
+    char* cpath = gleamc_to_cstr(path);
+    if (cpath == NULL) return fs_error(12);
+    uv_fs_t req;
+    int res = uv_fs_chmod(NULL, &req, cpath, (int)mode, NULL);
+    uv_fs_req_cleanup(&req);
+    free(cpath);
+    return res == 0 ? fs_ok() : fs_error(-res);
+}
+
 static GleamcFileResult fs_stat_mode(GleamcString path, int want) {
     char* cpath = gleamc_to_cstr(path);
     if (cpath == NULL) return fs_error(12);

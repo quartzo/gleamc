@@ -1374,6 +1374,16 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         TNamed("FileResult"),
         "fs.realpath",
       )
+    "fs", "chmod" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TInt],
+        TNamed("FileResult"),
+        "fs.chmod",
+      )
     "fs", "int64_at" ->
       check_builtin(
         env,

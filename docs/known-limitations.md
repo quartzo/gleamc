@@ -53,6 +53,10 @@ adding list support, and are now covered by `diffs/lists.gleam`:
 - `@external(...)` declarations and bit-array string segments
   (`<<"...":utf8>>`) are not parsed.
 - `let` bindings take no type annotation (`let x: T = ...`).
+- A top-level function cannot be used as a value (e.g. passing `insert` to
+  `list.fold`); wrap it in a lambda.
+- `let` binds only variables, tuples and wildcards; a constructor pattern must
+  go through `case`.
 
 ## Type system
 
@@ -71,6 +75,9 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   shadowing a local, is reported as an error.
 - The primitive `Nil` type shares its constructor name with a user constructor
   named `Nil`.
+- A no-argument polymorphic value used where a specific type is expected
+  (e.g. `set.new()` as a record field) is not unified with that expected type
+  and defaults to `Nil`; pin the type by deriving it from another value.
 
 ## Backend and runtime
 
@@ -156,25 +163,27 @@ their imports are resolved when the prelude is attached.
 - `gleam/result`: `unwrap`, `unwrap_or`, `lazy_unwrap`, `unwrap_error`, `map`,
   `map_error`, `try`, `then`, `is_ok`, `is_error`, `flatten`, `all`, `or`,
   `replace`, `replace_error`, `values`, `partition`, `lazy_or`, `try_recover`.
-- `simplifile` (file system, the package's public name): `read`, `read_bits`,
-  `write`, `write_bits`, `append`, `append_bits`, `delete` (recursive),
+- `gleam/set`: `new`, `is_empty`, `size`, `to_list`, `from_list`, `contains`,
+  `insert`, `delete`, `union`, `intersect`, `difference`, `filter`, `map`,
+  `fold`, `each` (sorted-list representation, not a balanced tree).
+- `simplifile` (file system, the package's public name): the full package API
+  — `read`/`read_bits`, `write`/`write_bits`, `append`/`append_bits`, `delete`,
   `delete_file`, `delete_all`, `clear_directory`, `create_directory`,
   `create_directory_all`, `create_file`, `rename`/`rename_file`/
   `rename_directory`, `copy`/`copy_file`/`copy_directory`, `create_symlink`/
   `create_link`, `touch`, `resolve`, `exists`, `is_file`, `is_directory`,
   `is_symlink`, `read_directory`, `get_files`, `current_directory`,
-  `file_info`/`link_info`, `file_info_type`, `file_info_permissions_octal`,
-  `describe_error`, plus the `FileError`, `FileInfo` and `FileType` types. The
-  labels (`to`, `from`, `contents`, `bits`, `filepath`, `src`, `dest`, ...)
-  match the package, and the functions are backed by synchronous libuv
-  wrappers (`fs.*` builtins) returning a fixed `GleamcFileResult` that the
-  Gleam wrapper turns into a concrete `Result`/`FileError`. Directory listings
-  are joined with `/` (which cannot appear in a POSIX filename) and split in
-  Gleam; `get_files`, `create_directory_all`, `delete`, `clear_directory`,
-  `delete_all`, `copy`/`copy_directory` recurse in Gleam. Not implemented yet:
-  the permission helpers `file_info_permissions`, `file_permissions_to_octal`,
-  `set_permissions` and `set_permissions_octal` (they need `FilePermissions`
-  and `gleam/set`).
+  `file_info`/`link_info`, `file_info_type`, `file_info_permissions`,
+  `file_info_permissions_octal`, `file_permissions_to_octal`,
+  `set_permissions`, `set_permissions_octal`, `describe_error`, plus the
+  `FileError`, `FileInfo`, `FileType`, `Permission` and `FilePermissions`
+  types. The labels (`to`, `from`, `contents`, `bits`, `filepath`, `src`,
+  `dest`, ...) match the package. Backing: synchronous libuv wrappers (`fs.*`
+  builtins) returning a fixed `GleamcFileResult`, which the Gleam wrapper turns
+  into a concrete `Result`/`FileError`; directory listings are joined with `/`
+  (which cannot appear in a POSIX filename) and split in Gleam; `get_files`,
+  `create_directory_all`, `delete`, `clear_directory`, `delete_all` and
+  `copy`/`copy_directory` recurse in Gleam.
 
 ## Self-host
 

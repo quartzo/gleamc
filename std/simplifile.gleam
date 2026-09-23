@@ -2,6 +2,7 @@ import gleam/bit_array
 import gleam/int
 import gleam/list
 import gleam/result
+import gleam/set
 import gleam/string
 
 /// Mirrors the `simplifile` package FileError type. The compiler maps the
@@ -79,6 +80,22 @@ pub type FileInfo {
     atime_seconds: Int,
     mtime_seconds: Int,
     ctime_seconds: Int,
+  )
+}
+
+/// Represents a file permission.
+pub type Permission {
+  Read
+  Write
+  Execute
+}
+
+/// A set of file permissions, matching the `simplifile` FilePermissions record.
+pub type FilePermissions {
+  FilePermissions(
+    user: set.Set(Permission),
+    group: set.Set(Permission),
+    other: set.Set(Permission),
   )
 }
 
@@ -442,6 +459,74 @@ pub fn file_info_type(from: FileInfo) -> FileType {
 /// Extracts the permission bits (octal representation) from a `FileInfo`.
 pub fn file_info_permissions_octal(from: FileInfo) -> Int {
   from.mode % 4096
+}
+
+/// Extracts the `FilePermissions` from a `FileInfo` value.
+pub fn file_info_permissions(from: FileInfo) -> FilePermissions {
+  let mode = from.mode
+  FilePermissions(
+    user: bits_to_permissions(mode / 64 % 8),
+    group: bits_to_permissions(mode / 8 % 8),
+    other: bits_to_permissions(mode % 8),
+  )
+}
+
+fn bits_to_permissions(bits: Int) -> set.Set(Permission) {
+  let read = case bits >= 4 {
+    True -> [Read]
+    False -> []
+  }
+  let rest = bits % 4
+  let write = case rest >= 2 {
+    True -> [Write]
+    False -> []
+  }
+  let execute = case rest % 2 {
+    1 -> [Execute]
+    _ -> []
+  }
+  set.from_list(list.append(read, list.append(write, execute)))
+}
+
+pub fn file_permissions_to_octal(permissions: FilePermissions) -> Int {
+  permissions_octal(permissions.user)
+  * 64
+  + permissions_octal(permissions.group)
+  * 8
+  + permissions_octal(permissions.other)
+}
+
+fn permissions_octal(perms: set.Set(Permission)) -> Int {
+  let read = case set.contains(perms, Read) {
+    True -> 4
+    False -> 0
+  }
+  let write = case set.contains(perms, Write) {
+    True -> 2
+    False -> 0
+  }
+  let execute = case set.contains(perms, Execute) {
+    True -> 1
+    False -> 0
+  }
+  read + write + execute
+}
+
+pub fn set_permissions(
+  for_file_at: String,
+  to: FilePermissions,
+) -> Result(Nil, FileError) {
+  set_permissions_octal(
+    for_file_at: for_file_at,
+    to: file_permissions_to_octal(to),
+  )
+}
+
+pub fn set_permissions_octal(
+  for_file_at: String,
+  to: Int,
+) -> Result(Nil, FileError) {
+  write_result(fs.chmod(for_file_at, to))
 }
 
 pub fn read_directory(at: String) -> Result(List(String), FileError) {

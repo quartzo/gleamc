@@ -361,6 +361,7 @@ fn builtins() -> Dict(String, Scheme) {
   |> dict.insert("fs.link", Scheme(none, Fun([s, s], Con("FileResult", []))))
   |> dict.insert("fs.touch", Scheme(none, Fun([s], Con("FileResult", []))))
   |> dict.insert("fs.realpath", Scheme(none, Fun([s], Con("FileResult", []))))
+  |> dict.insert("fs.chmod", Scheme(none, Fun([s, i], Con("FileResult", []))))
   |> dict.insert(
     "fs.result_code",
     Scheme(none, Fun([Con("FileResult", [])], i)),

@@ -127,6 +127,7 @@ pub fn table() -> Dict(String, FfiSig) {
   |> dict.insert("fs.link", FfiSig([Borrow, Borrow], OwnedResult))
   |> dict.insert("fs.touch", FfiSig([Borrow], OwnedResult))
   |> dict.insert("fs.realpath", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("fs.chmod", FfiSig([Borrow, Borrow], OwnedResult))
   |> dict.insert("fs.int64_at", FfiSig([Borrow, Borrow], OwnedResult))
   |> dict.insert("fs.result_code", FfiSig([Borrow], OwnedResult))
   |> dict.insert("fs.result_size", FfiSig([Borrow], OwnedResult))

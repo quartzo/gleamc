@@ -182,3 +182,33 @@ pub fn main() {
   let output = compile_and_run("copy_links", source)
   assert string.contains(output, "/tmp/gleamc-fs/cp/dst/a.txt") as output
 }
+
+pub fn simplifile_permissions_test() {
+  let source =
+    "import gleam/io
+import gleam/set
+import simplifile
+
+pub fn main() {
+  let path = \"/tmp/gleamc-fs/perm.txt\"
+  let assert Ok(Nil) = simplifile.write(to: path, contents: \"x\")
+  let assert Ok(Nil) =
+    simplifile.set_permissions_octal(for_file_at: path, to: 384)
+  let assert Ok(info) = simplifile.file_info(path)
+  let assert 384 = simplifile.file_info_permissions_octal(from: info)
+  let perms = simplifile.file_info_permissions(from: info)
+  let assert 384 = simplifile.file_permissions_to_octal(permissions: perms)
+  let rw = set.from_list([simplifile.Read, simplifile.Write])
+  let built = simplifile.FilePermissions(
+    user: rw,
+    group: rw,
+    other: set.difference(rw, rw),
+  )
+  let assert 432 = simplifile.file_permissions_to_octal(permissions: built)
+  let assert Ok(Nil) = simplifile.set_permissions(for_file_at: path, to: built)
+  io.println(\"ok\")
+}
+"
+  let output = compile_and_run("perm", source)
+  assert string.contains(output, "ok") as output
+}

@@ -144,6 +144,7 @@ GleamcFileResult Gleamc_fs_symlink(GleamcString target, GleamcString path);
 GleamcFileResult Gleamc_fs_link(GleamcString target, GleamcString path);
 GleamcFileResult Gleamc_fs_touch(GleamcString path);
 GleamcFileResult Gleamc_fs_realpath(GleamcString path);
+GleamcFileResult Gleamc_fs_chmod(GleamcString path, int64_t mode);
 GleamcFileResult Gleamc_fs_exists(GleamcString path);
 GleamcFileResult Gleamc_fs_is_file(GleamcString path);
 GleamcFileResult Gleamc_fs_is_directory(GleamcString path);
