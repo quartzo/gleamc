@@ -130,13 +130,24 @@ fn compile_modules(modules, base: String, options: Options) -> Nil {
   case result {
     Error(err) -> io.println(base <> ".gleam: " <> err)
     Ok(c_code) -> {
-      let c_path = case options.llvm {
-        True -> base <> ".ll"
-        False -> base <> ".c"
+      let audit = case ffi.get_env("GLEAMC_RC_AUDIT") {
+        Ok(_) -> True
+        Error(_) -> False
+      }
+      // Audit builds carry extra refcount site strings, so they get their own
+      // files (`_debug`) and never clobber the normal artifacts.
+      let c_path = case options.llvm, audit {
+        True, True -> base <> "_debug.ll"
+        True, False -> base <> ".ll"
+        False, _ -> base <> ".c"
+      }
+      let bin_path = case audit {
+        True -> base <> "_debug"
+        False -> base
       }
       case ffi.write_file(c_path, c_code) {
         Error(err) -> io.println("error writing " <> c_path <> ": " <> err)
-        Ok(_) -> build(c_path, base, options)
+        Ok(_) -> build(c_path, bin_path, options)
       }
     }
   }

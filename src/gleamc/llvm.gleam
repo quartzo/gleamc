@@ -16,6 +16,7 @@ import gleam/list
 import gleam/string
 import gleamc/ast.{type Type, TNamed, TString}
 import gleamc/checker
+import gleamc/ffi
 import gleamc/ir
 import gleamc/ownership
 import gleamc/plan
@@ -78,11 +79,23 @@ pub fn emit(
       let #(bn, _) = b
       string.compare(an, bn)
     })
+  // Refcount audit site tags ("fn:local", "alloc:T", glue names) are only
+  // meaningful when the runtime is built with -DGLEAMC_RC_AUDIT. Otherwise the
+  // site argument degrades to `null` (see `cstring_arg`), so it is not worth
+  // emitting tens of thousands of string globals for them.
+  let audit = case ffi.get_env("GLEAMC_RC_AUDIT") {
+    Ok(_) -> True
+    Error(_) -> False
+  }
+  let site_literals = case audit {
+    True -> collect_rc_sites(functions, custom_types, tuples, ctors)
+    False -> []
+  }
   let lit_list =
     dedupe(
       list.append(
         list.append(collect_literals(functions), glue_literals(custom_types)),
-        collect_rc_sites(functions, custom_types, tuples, ctors),
+        site_literals,
       ),
       dict.new(),
       [],
