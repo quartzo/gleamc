@@ -527,7 +527,7 @@ fn mono_expr(
     }
     EPanic(_, _) -> Ok(#(expr, state))
     EUpdate(name, base, fields) ->
-      mono_update(state, locals, None, name, base, fields)
+      mono_update(state, locals, no_expected_ty(), name, base, fields)
     EBitArray(elements) -> {
       use #(elements2, state) <- result_try(mono_exprs(state, locals, elements))
       Ok(#(EBitArray(elements2), state))
@@ -792,7 +792,18 @@ fn lift_lambda(
 
 /// `Ctor(..base, field: value)` desugars to a block that evaluates `base` once
 /// and reconstructs the constructor with the updated fields.
-fn mono_update(state: State, locals, expected, name, base, fields) {
+fn no_expected_ty() -> Option(types.Ty) {
+  None
+}
+
+fn mono_update(
+  state: State,
+  locals,
+  expected: Option(types.Ty),
+  name,
+  base,
+  fields,
+) {
   case dict.get(state.ctors, name) {
     Error(_) -> Error("unknown record `" <> name <> "`")
     Ok(def) -> {

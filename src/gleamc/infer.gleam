@@ -588,8 +588,12 @@ fn ctor_schemes(ctors) -> Dict(String, Scheme) {
   })
 }
 
+fn no_vars() -> List(Int) {
+  []
+}
+
 fn builtins() -> Dict(String, Scheme) {
-  let none = []
+  let none = no_vars()
   let s = Con("String", [])
   let n = Con("Nil", [])
   let i = Con("Int", [])
@@ -1295,8 +1299,12 @@ fn bind_pattern(
 }
 
 /// Resolves labelled/positional pattern arguments to the formal field order.
+fn empty_pattern_slots(names: List(String)) -> List(Option(Pattern)) {
+  list.map(names, fn(_) { None })
+}
+
 pub fn order_pattern(field_names, ctx, args) -> Result(List(Pattern), String) {
-  let slots = list.map(field_names, fn(_) { None })
+  let slots = empty_pattern_slots(field_names)
   case fill_patterns(field_names, args, slots, 0) {
     Error(_) -> Error("too many arguments in " <> ctx)
     Ok(filled) -> collect_slots(filled, ctx, [])

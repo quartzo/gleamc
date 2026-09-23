@@ -666,12 +666,20 @@ fn infer_named_call(env, signatures, ctors, name, args) {
 // match by name. Returns the arguments in formal order.
 // ---------------------------------------------------------------------------
 
+fn empty_expr_slots(names: List(String)) -> List(Option(Expr)) {
+  list.map(names, fn(_) { None })
+}
+
+fn empty_pattern_slots(names: List(String)) -> List(Option(Pattern)) {
+  list.map(names, fn(_) { None })
+}
+
 fn order_args(
   names: List(String),
   ctx: String,
   args: List(Expr),
 ) -> Result(List(Expr), CheckError) {
-  let slots = list.map(names, fn(_) { None })
+  let slots = empty_expr_slots(names)
   use filled <- result.try(fill_args(names, ctx, args, slots, 0))
   collect_slots(filled, ctx, [])
 }
@@ -1630,7 +1638,7 @@ fn bind_pattern(pattern, subject_ty, ctors) -> Result(Env, CheckError) {
 // ---------------------------------------------------------------------------
 
 fn order_patterns(names, ctx, args) -> Result(List(Pattern), CheckError) {
-  let slots = list.map(names, fn(_) { None })
+  let slots = empty_pattern_slots(names)
   use filled <- result.try(fill_patterns(names, ctx, args, slots, 0))
   collect_patterns(filled, ctx, [])
 }

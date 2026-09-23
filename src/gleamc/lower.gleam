@@ -520,8 +520,12 @@ fn ctor_field_names(b: Builder, name: String) -> List(String) {
   }
 }
 
+fn empty_expr_slots(names: List(String)) -> List(Option(Expr)) {
+  list.map(names, fn(_) { None })
+}
+
 fn order_exprs(names, args) -> Result(List(Expr), LowerError) {
-  let slots = list.map(names, fn(_) { None })
+  let slots = empty_expr_slots(names)
   use filled <- result.try(fill_exprs(names, args, slots, 0))
   case collect_exprs(filled, []) {
     Ok(ordered) -> Ok(ordered)
