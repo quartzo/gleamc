@@ -1909,34 +1909,28 @@ fn env_type_decl(entry, recursive: Dict(String, Bool)) -> String {
 fn collect_env_structs(
   functions: List(ir.Function),
 ) -> List(#(String, List(Type))) {
-  list.fold(functions, [], fn(acc: List(#(String, List(Type))), function) {
-    let by_name = locals_map(local_list(function))
-    list.fold(op_list(function), acc, fn(acc, op) {
-      case op {
-        ir.OpClosure(_, _, captures, env_ty, _) ->
-          case env_ty {
-            "" -> acc
-            _ ->
-              case
-                list.any(acc, fn(entry) {
-                  let #(entry_name, _) = entry
-                  entry_name == env_ty
-                })
-              {
-                True -> acc
-                False ->
-                  list.append(acc, [
-                    #(
-                      env_ty,
-                      list.map(captures, fn(cap) { operand_type(by_name, cap) }),
-                    ),
-                  ])
-              }
-          }
-        _ -> acc
-      }
+  let entries =
+    list.fold(functions, dict.new(), fn(acc: Dict(String, List(Type)), function) {
+      let by_name = locals_map(local_list(function))
+      list.fold(op_list(function), acc, fn(acc, op) {
+        case op {
+          ir.OpClosure(_, _, captures, env_ty, _) ->
+            case env_ty {
+              "" -> acc
+              _ ->
+                case dict.get(acc, env_ty) {
+                  Ok(_) -> acc
+                  Error(_) ->
+                    dict.insert(acc, env_ty, list.map(captures, fn(cap) {
+                      operand_type(by_name, cap)
+                    }))
+                }
+            }
+          _ -> acc
+        }
+      })
     })
-  })
+  dict.to_list(entries)
 }
 
 fn collect_fn_types(
@@ -2026,12 +2020,7 @@ fn collect_wrappers(functions: List(ir.Function), recursive) -> List(String) {
 }
 
 fn dedupe_strings(items: List(String)) -> List(String) {
-  list.fold(items, [], fn(acc, item) {
-    case list.contains(acc, item) {
-      True -> acc
-      False -> list.append(acc, [item])
-    }
-  })
+  dedupe(items, dict.new(), [])
 }
 
 fn wrapper_def(function: ir.Function, code: String, recursive) -> String {
@@ -3281,13 +3270,18 @@ fn eligible_groups(
   ctors: Dict(String, checker.CtorInfo),
 ) -> List(List(ir.Function)) {
   let ir.Module(functions) = module
+  let by_name =
+    dict.from_list(list.map(functions, fn(function) {
+      let ir.Function(name, _, _, _, _) = function
+      #(name, function)
+    }))
   let planned = plan.plan(module)
   let groups = case planned {
     plan.Plan(_, _, groups, _, _, _) -> groups
   }
   list.filter_map(groups, fn(group) {
     let plan.Group(members, _) = group
-    case lookup_all(functions, members) {
+    case lookup_all(by_name, members) {
       Ok(fns) ->
         case
           list.any(fns, fn(f) { f.name == "main" }) || !group_ok(fns, ctors)
@@ -3301,20 +3295,15 @@ fn eligible_groups(
 }
 
 fn lookup_all(
-  functions: List(ir.Function),
+  by_name: Dict(String, ir.Function),
   names: List(String),
 ) -> Result(List(ir.Function), Nil) {
   case names {
     [] -> Ok([])
     [name, ..rest] ->
-      case
-        list.find(functions, fn(function) {
-          let ir.Function(other, _, _, _, _) = function
-          other == name
-        })
-      {
+      case dict.get(by_name, name) {
         Ok(function) ->
-          case lookup_all(functions, rest) {
+          case lookup_all(by_name, rest) {
             Ok(fns) -> Ok([function, ..fns])
             Error(_) -> Error(Nil)
           }
