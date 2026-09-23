@@ -334,6 +334,7 @@ fn successors(term: ir.Terminator) -> List(String) {
     ir.Jmp(label) -> [label]
     ir.Branch(_, then, otherwise) -> [then, otherwise]
     ir.Ret(_) -> []
+    ir.Tailcall(_, _) -> []
     ir.Unreachable -> []
   }
 }
@@ -618,6 +619,7 @@ fn forward_owned(
 fn transferred_set(term: ir.Terminator, handles) {
   case term {
     ir.Ret(operand) -> sets_from(handle_names([operand], handles))
+    ir.Tailcall(_, args) -> sets_from(handle_names(args, handles))
     _ -> dict.new()
   }
 }

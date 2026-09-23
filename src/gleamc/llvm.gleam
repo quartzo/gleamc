@@ -1225,10 +1225,6 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
       }
       #(b, Nil)
     }
-    _ -> {
-      let b = emit_line(b, "  ; TODO op: " <> op_debug(op))
-      #(b, Nil)
-    }
   }
 }
 
@@ -1251,6 +1247,25 @@ fn emit_term(ctx: Ctx, term: ir.Terminator, b: Builder) {
       let ret_ty = llvm_ty(ctx.ret, ctx.recursive)
       let #(_, v, b) = read_val(ctx, value, b)
       emit_line(b, "  ret " <> ret_ty <> " " <> v)
+    }
+    ir.Tailcall(fun, args) -> {
+      let ret_s = llvm_ty(ctx.ret, ctx.recursive)
+      let #(b, arg_list) = read_args(ctx, args, b)
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> r
+            <> " = musttail call "
+            <> ret_s
+            <> " @Gleamc_"
+            <> fun
+            <> "("
+            <> arg_list
+            <> ")",
+        )
+      emit_line(b, "  ret " <> ret_s <> " " <> r)
     }
     ir.Unreachable -> emit_line(b, "  unreachable")
   }
@@ -3020,22 +3035,4 @@ fn fresh(b: Builder) -> #(String, Builder) {
 fn emit_line(b: Builder, text: String) -> Builder {
   let Builder(next, lines) = b
   Builder(next: next, lines: [text, ..lines])
-}
-
-fn op_debug(op: ir.Op) -> String {
-  case op {
-    ir.OpTuple(_, _, _) -> "tuple"
-    ir.OpTupleGet(_, _, _, _) -> "tuple_get"
-    ir.OpCtor(_, _, _, _, _) -> "ctor"
-    ir.OpTagIs(_, _, _, _) -> "tag_is"
-    ir.OpField(_, _, _, _, _) -> "field"
-    ir.OpCopy(_, _, _) -> "copy"
-    ir.OpClosure(_, _, _, _, _) -> "closure"
-    ir.OpEnvGet(_, _, _, _) -> "env_get"
-    ir.OpCallIndirect(_, _, _, _) -> "call_indirect"
-    ir.OpRetain(_, _) -> "retain"
-    ir.OpDrop(_, _) -> "drop"
-    ir.OpBitArray(_, _, _) -> "bit_array"
-    _ -> "?"
-  }
 }

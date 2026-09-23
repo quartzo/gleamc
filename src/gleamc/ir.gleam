@@ -67,6 +67,8 @@ pub type Terminator {
   Jmp(label: String)
   Branch(cond: Operand, then: String, otherwise: String)
   Ret(value: Operand)
+  /// Tail call: control leaves the function directly into `fun` (no return).
+  Tailcall(fun: String, args: List(Operand))
   Unreachable
 }
 
@@ -206,6 +208,7 @@ pub fn term_reads(term: Terminator) -> List(Operand) {
     Jmp(_) -> []
     Branch(cond, _, _) -> [cond]
     Ret(value) -> [value]
+    Tailcall(_, args) -> args
     Unreachable -> []
   }
 }
@@ -412,6 +415,12 @@ fn term_text(term: Terminator) -> String {
     Branch(cond, then, otherwise) ->
       "branch " <> operand_text(cond) <> " ? " <> then <> " : " <> otherwise
     Ret(value) -> "ret " <> operand_text(value)
+    Tailcall(fun, args) ->
+      "tailcall "
+      <> fun
+      <> "("
+      <> string.join(list.map(args, operand_text), ", ")
+      <> ")"
     Unreachable -> "unreachable"
   }
 }
