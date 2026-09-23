@@ -35,6 +35,7 @@ type Ctx {
     params: List(String),
     prefix: String,
     group: Dict(String, #(String, List(String), String)),
+    own: String,
   )
 }
 
@@ -690,7 +691,9 @@ fn emit_function(
       params: params,
       prefix: "",
       group: dict.new(),
+      own: "",
     )
+  let ctx = Ctx(..ctx, own: own_enabled(claim_indices(ctx), blocks, name))
   let b = Builder(next: 0, lines: [])
   let b = emit_allocas(ctx, params, locals, b)
   let b = case blocks {
@@ -730,6 +733,13 @@ fn emit_allocas(
   locals: List(ir.Local),
   b: Builder,
 ) -> Builder {
+  let b = case ctx.own {
+    "" -> b
+    own -> {
+      let b = emit_line(b, "  " <> own <> " = alloca i64")
+      emit_line(b, "  store i64 0, i64* " <> own)
+    }
+  }
   let b =
     list.fold(locals, b, fn(b, local) {
       let ir.Local(name, ty) = local
@@ -928,6 +938,36 @@ fn emit_tail(ctx: Ctx, callee: String, pre, args, post, b) -> Builder {
         Error(_) -> b
       }
     })
+  // Ownership of the target slots after the rebind: a slot is owned only when
+  // the corresponding argument was owned by the caller (its drop was present
+  // in `post` and is being suppressed). Borrowed args stay borrowed.
+  let mask =
+    list.fold(
+      list.index_map(args, fn(arg, index) {
+        case arg {
+          ir.Var(n) ->
+            case
+              list.any(post, fn(op) {
+                case op {
+                  ir.OpDrop(m, _) -> m == n
+                  _ -> False
+                }
+              })
+            {
+              True -> mask_value(index + 1) - mask_value(index)
+              False -> 0
+            }
+          ir.Lit(_) -> 0
+        }
+      }),
+      0,
+      fn(acc, bit) { acc + bit },
+    )
+  let b = case ctx.own {
+    "" -> b
+    own ->
+      emit_line(b, "  store i64 " <> int.to_string(mask) <> ", i64* " <> own)
+  }
   emit_line(b, "  br label %" <> entry)
 }
 
@@ -1495,6 +1535,7 @@ fn emit_term(ctx: Ctx, term: ir.Terminator, b: Builder) {
     ir.Ret(value) -> {
       let ret_ty = llvm_ty(ctx.ret, ctx.recursive)
       let #(_, v, b) = read_val(ctx, value, b)
+      let b = emit_teardown(ctx, value, b)
       emit_line(b, "  ret " <> ret_ty <> " " <> v)
     }
     ir.Tailcall(fun, args) -> {
@@ -1837,6 +1878,124 @@ fn list_at(items: List(String), index: Int) -> Result(String, Nil) {
 
 fn records_ctors(ctx: Ctx) -> Dict(String, checker.CtorInfo) {
   ctx.ctors
+}
+
+fn mask_value(n: Int) -> Int {
+  case n <= 0 {
+    True -> 0
+    False -> mask_value(n - 1) * 2 + 1
+  }
+}
+
+fn claim_indices(ctx: Ctx) -> List(Int) {
+  list.filter_map(
+    list.index_map(ctx.params, fn(param, index) { #(param, index) }),
+    fn(pair) {
+      let #(param, index) = pair
+      case ownership.needs_drop(local_type(ctx.by_name, param), ctx.ctors) {
+        True -> Ok(index)
+        False -> Error(Nil)
+      }
+    },
+  )
+}
+
+/// Releases, at a return, the handle params that were *claimed* (transferred)
+/// on the way in, except the value being returned (which is handed to the
+/// caller). Params received from the outside wrapper stay borrowed (mask bit
+/// clear) and are not released here.
+fn emit_teardown(ctx: Ctx, value: ir.Operand, b: Builder) -> Builder {
+  case ctx.own {
+    "" -> b
+    own -> {
+      let ret_name = case value {
+        ir.Var(name) -> name
+        ir.Lit(_) -> ""
+      }
+      list.fold(claim_indices(ctx), b, fn(b, index) {
+        case list_at(ctx.params, index) {
+          Error(_) -> b
+          Ok(param) ->
+            case param == ret_name {
+              True -> b
+              False -> {
+                let ty = local_type(ctx.by_name, param)
+                let #(rel, b) = fresh(b)
+                let rel_lbl = "ownr_" <> string.replace(rel, "%", "")
+                let cont_lbl = "ownc_" <> string.replace(rel, "%", "")
+                let #(o, b) = fresh(b)
+                let b = emit_line(b, "  " <> o <> " = load i64, i64* " <> own)
+                let #(bit, b) = fresh(b)
+                let b =
+                  emit_line(
+                    b,
+                    "  "
+                      <> bit
+                      <> " = and i64 "
+                      <> o
+                      <> ", "
+                      <> int.to_string(
+                      mask_value(index + 1) - mask_value(index),
+                    ),
+                  )
+                let #(nz, b) = fresh(b)
+                let b =
+                  emit_line(b, "  " <> nz <> " = icmp ne i64 " <> bit <> ", 0")
+                let b =
+                  emit_line(
+                    b,
+                    "  br i1 "
+                      <> nz
+                      <> ", label %"
+                      <> rel_lbl
+                      <> ", label %"
+                      <> cont_lbl,
+                  )
+                let b = emit_line(b, "\n" <> rel_lbl <> ":")
+                let #(_, tv, b) = read_val(ctx, ir.Var(param), b)
+                let b =
+                  rc_expr(
+                    ctx.recursive,
+                    ctx.ctors,
+                    "drop",
+                    ty,
+                    llvm_ty(ty, ctx.recursive),
+                    tv,
+                    b,
+                  )
+                let b = emit_line(b, "  br label %" <> cont_lbl)
+                emit_line(b, "\n" <> cont_lbl <> ":")
+              }
+            }
+        }
+      })
+    }
+  }
+}
+
+fn own_enabled(
+  claim: List(Int),
+  blocks: List(ir.Block),
+  fn_name: String,
+) -> String {
+  case list.is_empty(claim) {
+    True -> ""
+    False ->
+      case
+        list.any(blocks, fn(block) {
+          let ir.Block(_, ops, _) = block
+          list.any(ops, fn(op) {
+            case op {
+              ir.OpCall(_, fun, _, _) -> fun == fn_name
+              _ -> False
+            }
+          })
+        })
+      {
+        True -> "%__own"
+        False -> ""
+      }
+  }
 }
 
 fn first_arg(args: List(ir.Operand)) -> ir.Operand {
@@ -3494,6 +3653,8 @@ fn emit_group(
         )
       })
     })
+  let b = emit_line(b, "  %__own = alloca i64")
+  let b = emit_line(b, "  store i64 0, i64* %__own")
   let switch_arms =
     list.index_map(group, fn(_, index) {
       " i32 "
@@ -3588,7 +3749,9 @@ fn emit_group(
           params: params,
           prefix: prefix,
           group: group_map,
+          own: "",
         )
+      let ctx = Ctx(..ctx, own: own_enabled(claim_indices(ctx), blocks, name))
       let #(b, _) = emit_block_list(ctx, blocks, blocks, b)
       b
     })
