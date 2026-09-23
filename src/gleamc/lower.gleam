@@ -11,12 +11,12 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleamc/ast.{
-  type Expr, type Function, type Module, type Pattern, type Statement, type Type,
-  Arm, DFunction, EBinop, EBitArray, EBlock, EBool, ECall, ECase, EClosure,
-  ECtor, EEnvGet, EField, EFloat, EInt, ELabelled, ELambda, ENil, EPanic,
-  EString, ETuple, EUnop, EUpdate, EVar, Let, Module, PAs, PBitArray, PBool,
-  PCtor, PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard, Stmt,
-  TBool, TFun, TInt, TNamed, TNil, TString, TTuple,
+  type Arm, type Expr, type Function, type Module, type Pattern, type Statement,
+  type Type, Arm, DFunction, EBinop, EBitArray, EBlock, EBool, ECall, ECase,
+  EClosure, ECtor, EEnvGet, EField, EFloat, EInt, ELabelled, ELambda, ENil,
+  EPanic, EString, ETuple, EUnop, EUpdate, EVar, Let, Module, PAs, PBitArray,
+  PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard,
+  Stmt, TBool, TFun, TInt, TNamed, TNil, TString, TTuple,
 }
 import gleamc/checker
 import gleamc/infer
@@ -180,8 +180,7 @@ fn lower_function(
       signatures: signatures,
       ctors: ctors,
     )
-  use #(value, b1) <- result.try(lower_block(b, body_statements(function.body)))
-  let b2 = end_block(b1, ir.Ret(value))
+  use b2 <- result.try(lower_tail_block(b, body_statements(function.body)))
   Ok(ir.Function(
     function.name,
     param_names,
@@ -219,6 +218,142 @@ fn lower_block(
       use #(_, b1) <- result.try(lower_expr(b, expr))
       lower_block(b1, rest)
     }
+  }
+}
+
+fn lower_tail_block(
+  b: Builder,
+  statements: List(Statement),
+) -> Result(Builder, LowerError) {
+  case statements {
+    [] -> Ok(end_block(b, ir.Ret(ir.Lit(ir.LUnit))))
+    [Let(pattern, value), ..rest] -> {
+      use #(operand, b1) <- result.try(lower_expr(b, value))
+      let ty = infer(b, value)
+      use b2 <- result.try(bind_let(b1, pattern, operand, ty))
+      lower_tail_block(b2, rest)
+    }
+    [Stmt(expr)] -> lower_tail(b, expr)
+    [Stmt(expr), ..rest] -> {
+      use #(_, b1) <- result.try(lower_expr(b, expr))
+      lower_tail_block(b1, rest)
+    }
+  }
+}
+
+/// Lowers an expression in tail position: a direct call becomes a `Tailcall`
+/// (self or mutual); `case`/blocks recurse in tail position; anything else is
+/// a normal expression + `Ret`.
+fn lower_tail(b: Builder, expr: Expr) -> Result(Builder, LowerError) {
+  case expr {
+    ECall(EVar(name), args) ->
+      case env_lookup(b.env, name) {
+        Error(_) -> {
+          use #(operands, b1) <- result.try(lower_args(
+            b,
+            order_by_params(b, name, args),
+          ))
+          Ok(end_block(b1, ir.Tailcall(name, operands)))
+        }
+        Ok(_) -> lower_tail_ret(b, expr)
+      }
+    EBlock(statements) -> lower_tail_block(b, statements)
+    ECase(subject, arms) -> lower_tail_case(b, subject, arms)
+    _ -> lower_tail_ret(b, expr)
+  }
+}
+
+fn lower_tail_ret(b: Builder, expr: Expr) -> Result(Builder, LowerError) {
+  use #(value, b1) <- result.try(lower_expr(b, expr))
+  Ok(end_block(b1, ir.Ret(value)))
+}
+
+fn lower_tail_case(
+  b: Builder,
+  subject: Expr,
+  arms: List(Arm),
+) -> Result(Builder, LowerError) {
+  let subject_ty = infer(b, subject)
+  let case_env = b.env
+  let case_tenv = b.tenv
+  use #(subject_op, b0) <- result.try(lower_expr(b, subject))
+  let #(fail_label, b1) = new_label(b0, "case_fail")
+  use #(arm_labels, b2) <- result.try(make_arm_labels(b1, arms, []))
+  case arm_labels {
+    [] -> Error(LowerError("`case` with no arms"))
+    [#(first_label, _), ..] -> {
+      let b3 = end_block(b2, ir.Jmp(first_label))
+      use b4 <- result.try(lower_tail_arms(
+        b3,
+        subject_op,
+        subject_ty,
+        fail_label,
+        arm_labels,
+        arms,
+        case_env,
+        case_tenv,
+      ))
+      let b5 = start_block(b4, fail_label)
+      Ok(end_block(b5, ir.Unreachable))
+    }
+  }
+}
+
+fn lower_tail_arms(
+  b,
+  subject_op,
+  subject_ty,
+  fail_label,
+  labels,
+  arms,
+  case_env,
+  case_tenv,
+) -> Result(Builder, LowerError) {
+  case arms, labels {
+    [], _ -> Ok(b)
+    [Arm(pattern, guard, body), ..rest_arms],
+      [#(test_label, body_label), ..rest_labels]
+    -> {
+      let next = case rest_labels {
+        [#(next_label, _), ..] -> next_label
+        [] -> fail_label
+      }
+      let b_reset = Builder(..b, env: case_env, tenv: case_tenv)
+      let b1 = start_block(b_reset, test_label)
+      let #(match_success, b1) = case guard {
+        Some(_) -> {
+          let #(guard_label, bb) = new_label(b1, "arm_guard")
+          #(guard_label, bb)
+        }
+        None -> #(body_label, b1)
+      }
+      use b2 <- result.try(match_pattern(
+        b1,
+        subject_op,
+        subject_ty,
+        pattern,
+        match_success,
+        next,
+      ))
+      let b_guard = case guard {
+        Some(_) -> start_block(b2, match_success)
+        None -> b2
+      }
+      use b4 <- result.try(emit_guard(b_guard, guard, body_label, next))
+      let b3 = start_block(b4, body_label)
+      use b5 <- result.try(lower_tail(b3, body))
+      lower_tail_arms(
+        b5,
+        subject_op,
+        subject_ty,
+        fail_label,
+        rest_labels,
+        rest_arms,
+        case_env,
+        case_tenv,
+      )
+    }
+    _, _ -> Error(LowerError("case arm/label mismatch"))
   }
 }
 

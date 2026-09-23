@@ -29,8 +29,8 @@ pub fn lower_case_test() {
   let text = lower_text(source)
   assert string.contains(text, "tagis")
   assert string.contains(text, "field")
-  assert string.contains(text, "case_end")
-  assert string.contains(text, "unreachable")
+  // The case is in tail position, so its arms return directly (no join).
+  assert !string.contains(text, "case_end")
 }
 
 pub fn lower_call_test() {

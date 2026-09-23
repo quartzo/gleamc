@@ -35,7 +35,6 @@ type Ctx {
     params: List(String),
     prefix: String,
     group: Dict(String, #(String, List(String), String)),
-    own: String,
   )
 }
 
@@ -56,7 +55,10 @@ pub fn emit(
   let env_structs = collect_env_structs(functions)
   let lit_list =
     dedupe(
-      list.append(collect_literals(functions), glue_literals(custom_types)),
+      list.append(
+        list.append(collect_literals(functions), glue_literals(custom_types)),
+        collect_rc_sites(functions, custom_types, tuples, ctors),
+      ),
       dict.new(),
       [],
     )
@@ -171,8 +173,8 @@ pub fn emit(
     string.join(
       list.flat_map(seeds, fn(ty) {
         [
-          emit_rc_glue(recursive, custom_types, ctors, "retain", ty),
-          emit_rc_glue(recursive, custom_types, ctors, "drop", ty),
+          emit_rc_glue(lits, recursive, custom_types, ctors, "retain", ty),
+          emit_rc_glue(lits, recursive, custom_types, ctors, "drop", ty),
         ]
       }),
       "\n\n",
@@ -233,8 +235,8 @@ fn header() -> String {
   <> "%GleamcBitArray = type { i8*, i64 }\n\n"
   <> "declare void @Gleamc_set_args(i32, i8**)\n"
   <> "declare i8* @gleamc_alloc(i64)\n"
-  <> "declare void @Gleamc_rc_retain(i8*)\n"
-  <> "declare void @Gleamc_rc_release(i8*)\n"
+  <> "declare void @Gleamc_rc_retain(i8*, i8*)\n"
+  <> "declare void @Gleamc_rc_release(i8*, i8*)\n"
   <> "declare %GleamcString @gleamc_string_lit(i8*, i64)\n"
   <> "declare %GleamcString @Gleamc_show_concat(%GleamcString, %GleamcString)\n"
   <> "declare %GleamcString @Gleamc_int_to_string(i64)\n"
@@ -691,9 +693,7 @@ fn emit_function(
       params: params,
       prefix: "",
       group: dict.new(),
-      own: "",
     )
-  let ctx = Ctx(..ctx, own: own_enabled(claim_indices(ctx), blocks, name))
   let b = Builder(next: 0, lines: [])
   let b = emit_allocas(ctx, params, locals, b)
   let b = case blocks {
@@ -701,7 +701,7 @@ fn emit_function(
       emit_line(b, "  br label %" <> block_name(ctx, label))
     [] -> b
   }
-  let #(b, _) = emit_block_list(ctx, blocks, blocks, b)
+  let #(b, _) = emit_block_list(ctx, blocks, b)
   let lines = list.reverse(b.lines)
   let args =
     list.map(params, fn(param) {
@@ -733,13 +733,6 @@ fn emit_allocas(
   locals: List(ir.Local),
   b: Builder,
 ) -> Builder {
-  let b = case ctx.own {
-    "" -> b
-    own -> {
-      let b = emit_line(b, "  " <> own <> " = alloca i64")
-      emit_line(b, "  store i64 0, i64* " <> own)
-    }
-  }
   let b =
     list.fold(locals, b, fn(b, local) {
       let ir.Local(name, ty) = local
@@ -763,187 +756,22 @@ fn emit_allocas(
   })
 }
 
-fn emit_block_list(
-  ctx: Ctx,
-  all: List(ir.Block),
-  blocks: List(ir.Block),
-  b: Builder,
-) {
+fn emit_block_list(ctx: Ctx, blocks: List(ir.Block), b: Builder) {
   case blocks {
     [] -> #(b, Nil)
     [block, ..rest] -> {
       let ir.Block(label, ops, term) = block
       let b = emit_line(b, "\n" <> block_name(ctx, label) <> ":")
-      let b = case detect_self_tail(ctx, all, ops, term) {
-        Ok(#(callee, pre, args, post)) ->
-          emit_tail(ctx, callee, pre, args, post, b)
-        Error(_) -> {
-          let #(b, _) = emit_ops(ctx, ops, b)
-          emit_term(ctx, term, b)
-        }
-      }
-      emit_block_list(ctx, all, rest, b)
+      let #(b, _) = emit_ops(ctx, ops, b)
+      let b = emit_term(ctx, term, b)
+      emit_block_list(ctx, rest, b)
     }
   }
 }
 
-/// A self tail call in the IR is `... OpCall(d, self, args) ...drops... ;
-/// Ret(d)`. The block already carries the correct ownership retains/drops, so
-/// it is emitted as `rebind params + goto entry` (constant stack) without
-/// touching the ownership pass.
-fn detect_self_tail(
-  ctx: Ctx,
-  all: List(ir.Block),
-  ops: List(ir.Op),
-  term: ir.Terminator,
-) {
-  case term {
-    ir.Ret(ir.Var(dest)) -> find_tail_call(ctx, dest, ops, [])
-    ir.Jmp(end) -> find_tail_call_join(ctx, end, all, ops, [])
-    _ -> Error(Nil)
-  }
-}
-
-fn tailable(ctx: Ctx, fun: String) -> Bool {
-  case fun == ctx.fn_name {
-    True -> True
-    False ->
-      case dict.get(ctx.group, fun) {
-        Ok(_) -> True
-        Error(_) -> False
-      }
-  }
-}
-
-/// Tail call whose result is copied into the `case` result local and jumps to
-/// the return block: `OpCall(d, self, args); OpCopy(res, d); ... ; Jmp(end)`
-/// with `end: Ret(res)`.
-fn find_tail_call_join(ctx, end, all, ops, before_rev) {
-  case ops {
-    [] -> Error(Nil)
-    [op, ..rest] ->
-      case op {
-        ir.OpCall(d, fun, args, _) ->
-          case tailable(ctx, fun) {
-            True ->
-              case rest {
-                [ir.OpCopy(res, src, _), ..after] ->
-                  case
-                    src == ir.Var(d)
-                    && list.all(after, is_cleanup)
-                    && returns_local(all, end, res)
-                  {
-                    True -> Ok(#(fun, list.reverse(before_rev), args, after))
-                    False ->
-                      find_tail_call_join(ctx, end, all, rest, [
-                        op,
-                        ..before_rev
-                      ])
-                  }
-                _ ->
-                  find_tail_call_join(ctx, end, all, rest, [op, ..before_rev])
-              }
-            False ->
-              find_tail_call_join(ctx, end, all, rest, [op, ..before_rev])
-          }
-        _ -> find_tail_call_join(ctx, end, all, rest, [op, ..before_rev])
-      }
-  }
-}
-
-fn returns_local(all, label, local) -> Bool {
-  case
-    list.find(all, fn(block) {
-      let ir.Block(l, _, _) = block
-      l == label
-    })
-  {
-    Ok(ir.Block(_, _, ir.Ret(ir.Var(v)))) -> v == local
-    _ -> False
-  }
-}
-
-fn find_tail_call(ctx, dest, ops, before_rev) {
-  case ops {
-    [] -> Error(Nil)
-    [op, ..rest] ->
-      case op {
-        ir.OpCall(d, fun, args, _) ->
-          case d == dest {
-            True ->
-              case tailable(ctx, fun) {
-                True ->
-                  case list.all(rest, is_cleanup) {
-                    True -> Ok(#(fun, list.reverse(before_rev), args, rest))
-                    False -> Error(Nil)
-                  }
-                False -> Error(Nil)
-              }
-            False -> find_tail_call(ctx, dest, rest, [op, ..before_rev])
-          }
-        _ -> find_tail_call(ctx, dest, rest, [op, ..before_rev])
-      }
-  }
-}
-
-fn is_cleanup(op) -> Bool {
-  case op {
-    ir.OpDrop(_, _) | ir.OpRetain(_, _) -> True
-    _ -> False
-  }
-}
-
-fn emit_tail(ctx: Ctx, callee: String, pre, args, post, b) -> Builder {
-  let target = case dict.get(ctx.group, callee) {
-    Ok(found) -> found
-    Error(_) -> #(ctx.prefix, ctx.params, ctx.entry)
-  }
+fn emit_rebind(ctx: Ctx, target, args, b: Builder) -> Builder {
   let #(prefix, params, entry) = target
-  // The call arguments are transferred into the callee's slots; their drops
-  // are suppressed (running them before the jump would free the values).
-  let arg_names =
-    list.filter_map(args, fn(arg) {
-      case arg {
-        ir.Var(name) -> Ok(name)
-        ir.Lit(_) -> Error(Nil)
-      }
-    })
-  // Ownership of the target slots after the rebind: a slot is owned only when
-  // the corresponding argument was owned by the caller (its drop is present
-  // in the original `post` and is being suppressed). Borrowed args stay
-  // borrowed.
-  let mask =
-    list.fold(
-      list.index_map(args, fn(arg, index) {
-        case arg {
-          ir.Var(n) ->
-            case
-              list.any(post, fn(op) {
-                case op {
-                  ir.OpDrop(m, _) -> m == n
-                  _ -> False
-                }
-              })
-            {
-              True -> mask_value(index + 1) - mask_value(index)
-              False -> 0
-            }
-          ir.Lit(_) -> 0
-        }
-      }),
-      0,
-      fn(acc, bit) { acc + bit },
-    )
-  let post =
-    list.filter(post, fn(op) {
-      case op {
-        ir.OpDrop(name, _) -> !list.contains(arg_names, name)
-        _ -> True
-      }
-    })
-  let #(b, _) = emit_ops(ctx, pre, b)
   let #(b, vals) = read_typed_args(ctx, args, b)
-  let #(b, _) = emit_ops(ctx, post, b)
   let b =
     list.index_fold(vals, b, fn(b, pair, index) {
       let #(ty, v) = pair
@@ -964,11 +792,6 @@ fn emit_tail(ctx: Ctx, callee: String, pre, args, post, b) -> Builder {
         Error(_) -> b
       }
     })
-  let b = case ctx.own {
-    "" -> b
-    own ->
-      emit_line(b, "  store i64 " <> int.to_string(mask) <> ", i64* " <> own)
-  }
   emit_line(b, "  br label %" <> entry)
 }
 
@@ -1207,13 +1030,36 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
     ir.OpRetain(src, ty) -> {
       let #(ty_s, v, b) = read_val(ctx, ir.Var(src), b)
       #(
-        rc_expr(ctx.recursive, records_ctors(ctx), "retain", ty, ty_s, v, b),
+        rc_expr(
+          ctx.lits,
+          ctx.recursive,
+          records_ctors(ctx),
+          "retain",
+          ty,
+          ty_s,
+          v,
+          ctx.fn_name <> ":" <> src,
+          b,
+        ),
         Nil,
       )
     }
     ir.OpDrop(src, ty) -> {
       let #(ty_s, v, b) = read_val(ctx, ir.Var(src), b)
-      #(rc_expr(ctx.recursive, records_ctors(ctx), "drop", ty, ty_s, v, b), Nil)
+      #(
+        rc_expr(
+          ctx.lits,
+          ctx.recursive,
+          records_ctors(ctx),
+          "drop",
+          ty,
+          ty_s,
+          v,
+          ctx.fn_name <> ":" <> src,
+          b,
+        ),
+        Nil,
+      )
     }
     ir.OpTuple(dest, elems, ty) -> {
       let ty_s = llvm_ty(ty, ctx.recursive)
@@ -1536,53 +1382,35 @@ fn emit_term(ctx: Ctx, term: ir.Terminator, b: Builder) {
     ir.Ret(value) -> {
       let ret_ty = llvm_ty(ctx.ret, ctx.recursive)
       let #(_, v, b) = read_val(ctx, value, b)
-      let b = emit_teardown(ctx, value, b)
       emit_line(b, "  ret " <> ret_ty <> " " <> v)
     }
     ir.Tailcall(fun, args) -> {
-      case fun == ctx.fn_name {
-        True -> {
-          let #(b, vals) = read_typed_args(ctx, args, b)
-          let b =
-            list.index_fold(vals, b, fn(b, pair, index) {
-              let #(ty, v) = pair
-              case list_at(ctx.params, index) {
-                Ok(pname) ->
-                  emit_line(
-                    b,
-                    "  store "
-                      <> ty
-                      <> " "
-                      <> v
-                      <> ", "
-                      <> ty
-                      <> "* "
-                      <> local_ptr(ctx, pname),
-                  )
-                Error(_) -> b
-              }
-            })
-          emit_line(b, "  br label %" <> ctx.entry)
-        }
-        False -> {
-          let ret_s = llvm_ty(ctx.ret, ctx.recursive)
-          let #(b, arg_list) = read_args(ctx, args, b)
-          let #(r, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  "
-                <> r
-                <> " = call "
-                <> ret_s
-                <> " @Gleamc_"
-                <> fun
-                <> "("
-                <> arg_list
-                <> ")",
-            )
-          emit_line(b, "  ret " <> ret_s <> " " <> r)
-        }
+      case dict.get(ctx.group, fun) {
+        Ok(target) -> emit_rebind(ctx, target, args, b)
+        Error(_) ->
+          case fun == ctx.fn_name {
+            True ->
+              emit_rebind(ctx, #(ctx.prefix, ctx.params, ctx.entry), args, b)
+            False -> {
+              let ret_s = llvm_ty(ctx.ret, ctx.recursive)
+              let #(b, arg_list) = read_args(ctx, args, b)
+              let #(r, b) = fresh(b)
+              let b =
+                emit_line(
+                  b,
+                  "  "
+                    <> r
+                    <> " = call "
+                    <> ret_s
+                    <> " @Gleamc_"
+                    <> fun
+                    <> "("
+                    <> arg_list
+                    <> ")",
+                )
+              emit_line(b, "  ret " <> ret_s <> " " <> r)
+            }
+          }
       }
     }
     ir.Unreachable -> emit_line(b, "  unreachable")
@@ -1879,124 +1707,6 @@ fn list_at(items: List(String), index: Int) -> Result(String, Nil) {
 
 fn records_ctors(ctx: Ctx) -> Dict(String, checker.CtorInfo) {
   ctx.ctors
-}
-
-fn mask_value(n: Int) -> Int {
-  case n <= 0 {
-    True -> 0
-    False -> mask_value(n - 1) * 2 + 1
-  }
-}
-
-fn claim_indices(ctx: Ctx) -> List(Int) {
-  list.filter_map(
-    list.index_map(ctx.params, fn(param, index) { #(param, index) }),
-    fn(pair) {
-      let #(param, index) = pair
-      case ownership.needs_drop(local_type(ctx.by_name, param), ctx.ctors) {
-        True -> Ok(index)
-        False -> Error(Nil)
-      }
-    },
-  )
-}
-
-/// Releases, at a return, the handle params that were *claimed* (transferred)
-/// on the way in, except the value being returned (which is handed to the
-/// caller). Params received from the outside wrapper stay borrowed (mask bit
-/// clear) and are not released here.
-fn emit_teardown(ctx: Ctx, value: ir.Operand, b: Builder) -> Builder {
-  case ctx.own {
-    "" -> b
-    own -> {
-      let ret_name = case value {
-        ir.Var(name) -> name
-        ir.Lit(_) -> ""
-      }
-      list.fold(claim_indices(ctx), b, fn(b, index) {
-        case list_at(ctx.params, index) {
-          Error(_) -> b
-          Ok(param) ->
-            case param == ret_name {
-              True -> b
-              False -> {
-                let ty = local_type(ctx.by_name, param)
-                let #(rel, b) = fresh(b)
-                let rel_lbl = "ownr_" <> string.replace(rel, "%", "")
-                let cont_lbl = "ownc_" <> string.replace(rel, "%", "")
-                let #(o, b) = fresh(b)
-                let b = emit_line(b, "  " <> o <> " = load i64, i64* " <> own)
-                let #(bit, b) = fresh(b)
-                let b =
-                  emit_line(
-                    b,
-                    "  "
-                      <> bit
-                      <> " = and i64 "
-                      <> o
-                      <> ", "
-                      <> int.to_string(
-                      mask_value(index + 1) - mask_value(index),
-                    ),
-                  )
-                let #(nz, b) = fresh(b)
-                let b =
-                  emit_line(b, "  " <> nz <> " = icmp ne i64 " <> bit <> ", 0")
-                let b =
-                  emit_line(
-                    b,
-                    "  br i1 "
-                      <> nz
-                      <> ", label %"
-                      <> rel_lbl
-                      <> ", label %"
-                      <> cont_lbl,
-                  )
-                let b = emit_line(b, "\n" <> rel_lbl <> ":")
-                let #(_, tv, b) = read_val(ctx, ir.Var(param), b)
-                let b =
-                  rc_expr(
-                    ctx.recursive,
-                    ctx.ctors,
-                    "drop",
-                    ty,
-                    llvm_ty(ty, ctx.recursive),
-                    tv,
-                    b,
-                  )
-                let b = emit_line(b, "  br label %" <> cont_lbl)
-                emit_line(b, "\n" <> cont_lbl <> ":")
-              }
-            }
-        }
-      })
-    }
-  }
-}
-
-fn own_enabled(
-  claim: List(Int),
-  blocks: List(ir.Block),
-  fn_name: String,
-) -> String {
-  case list.is_empty(claim) {
-    True -> ""
-    False ->
-      case
-        list.any(blocks, fn(block) {
-          let ir.Block(_, ops, _) = block
-          list.any(ops, fn(op) {
-            case op {
-              ir.OpCall(_, fun, _, _) -> fun == fn_name
-              _ -> False
-            }
-          })
-        })
-      {
-        True -> "%__own"
-        False -> ""
-      }
-  }
 }
 
 fn first_arg(args: List(ir.Operand)) -> ir.Operand {
@@ -3654,8 +3364,6 @@ fn emit_group(
         )
       })
     })
-  let b = emit_line(b, "  %__own = alloca i64")
-  let b = emit_line(b, "  store i64 0, i64* %__own")
   let switch_arms =
     list.index_map(group, fn(_, index) {
       " i32 "
@@ -3750,10 +3458,8 @@ fn emit_group(
           params: params,
           prefix: prefix,
           group: group_map,
-          own: "",
         )
-      let ctx = Ctx(..ctx, own: own_enabled(claim_indices(ctx), blocks, name))
-      let #(b, _) = emit_block_list(ctx, blocks, blocks, b)
+      let #(b, _) = emit_block_list(ctx, blocks, b)
       b
     })
   let dispatcher = string.join(list.reverse(b.lines), "\n") <> "\n}\n"
@@ -3843,6 +3549,51 @@ fn wrapper_for_group(
 // retain/drop glue
 // ---------------------------------------------------------------------------
 
+fn cstring_arg(lits: Dict(String, Int), content: String) -> String {
+  case literal_index(lits, content) {
+    -1 -> "null"
+    index -> {
+      let size = string.byte_size(content) + 1
+      "i8* getelementptr inbounds ({ i64, ["
+      <> int.to_string(size)
+      <> " x i8] }, { i64, ["
+      <> int.to_string(size)
+      <> " x i8] }* @.str."
+      <> int.to_string(index)
+      <> ", i32 0, i32 1, i64 0)"
+    }
+  }
+}
+
+fn collect_rc_sites(functions, custom_types, tuples, ctors) -> List(String) {
+  let _ = ctors
+  let from_ops =
+    list.flat_map(functions, fn(function) {
+      let ir.Function(name, _, _, blocks, _) = function
+      list.flat_map(blocks, fn(block) {
+        let ir.Block(_, ops, _) = block
+        list.filter_map(ops, fn(op) {
+          case op {
+            ir.OpRetain(src, _) -> Ok(name <> ":" <> src)
+            ir.OpDrop(src, _) -> Ok(name <> ":" <> src)
+            _ -> Error(Nil)
+          }
+        })
+      })
+    })
+  let seeds =
+    list.append(
+      list.map(custom_types, fn(custom) {
+        let ast.CustomType(_, name, _, _, _) = custom
+        TNamed(name)
+      }),
+      tuples,
+    )
+  let from_glue =
+    list.flat_map(seeds, fn(ty) { [rc_name("retain", ty), rc_name("drop", ty)] })
+  list.append(from_ops, from_glue)
+}
+
 fn rc_runtime(which: String) -> String {
   case which {
     "retain" -> "retain"
@@ -3854,13 +3605,29 @@ fn rc_name(which: String, ty: Type) -> String {
   "Gleamc_Rc_" <> which <> "_" <> mangle_glue(ty)
 }
 
-fn rc_expr(_recursive, ctors, which, ty, ty_s, reg, b) -> Builder {
+fn rc_expr(
+  lits: Dict(String, Int),
+  _recursive,
+  ctors,
+  which,
+  ty,
+  ty_s,
+  reg,
+  site,
+  b,
+) -> Builder {
   case ty {
     TString | TNamed("BitArray") -> {
       let #(d, b) = extract_value(ty_s, reg, [0], b)
       emit_line(
         b,
-        "  call void @Gleamc_rc_" <> rc_runtime(which) <> "(i8* " <> d <> ")",
+        "  call void @Gleamc_rc_"
+          <> rc_runtime(which)
+          <> "(i8* "
+          <> d
+          <> ", "
+          <> cstring_arg(lits, site)
+          <> ")",
       )
     }
     TNamed(_) | ast.TTuple(_) -> {
@@ -3880,7 +3647,14 @@ fn rc_expr(_recursive, ctors, which, ty, ty_s, reg, b) -> Builder {
   }
 }
 
-fn emit_rc_glue(recursive, custom_types, ctors, which, ty) -> String {
+fn emit_rc_glue(
+  lits: Dict(String, Int),
+  recursive,
+  custom_types,
+  ctors,
+  which,
+  ty,
+) -> String {
   let ty_s = llvm_ty(ty, recursive)
   let name = rc_name(which, ty)
   let b = Builder(next: 0, lines: [])
@@ -3897,12 +3671,14 @@ fn emit_rc_glue(recursive, custom_types, ctors, which, ty) -> String {
               True -> {
                 let #(fv, b) = extract_value(ty_s, "%v", [index], b)
                 rc_expr(
+                  lits,
                   recursive,
                   ctors,
                   which,
                   inner,
                   llvm_ty(inner, recursive),
                   fv,
+                  name,
                   b,
                 )
               }
@@ -3916,6 +3692,7 @@ fn emit_rc_glue(recursive, custom_types, ctors, which, ty) -> String {
       case is_recursive(recursive, type_name) {
         True ->
           rc_glue_recursive(
+            lits,
             recursive,
             custom_types,
             ctors,
@@ -3927,6 +3704,7 @@ fn emit_rc_glue(recursive, custom_types, ctors, which, ty) -> String {
           )
         False ->
           rc_glue_byvalue(
+            lits,
             recursive,
             custom_types,
             ctors,
@@ -3946,6 +3724,7 @@ fn emit_rc_glue(recursive, custom_types, ctors, which, ty) -> String {
 }
 
 fn rc_glue_byvalue(
+  lits: Dict(String, Int),
   recursive,
   custom_types,
   ctors,
@@ -3985,12 +3764,14 @@ fn rc_glue_byvalue(
                 True -> {
                   let #(fv, b) = extract_value(ty_s, "%v", [index + 1, i], b)
                   rc_expr(
+                    lits,
                     recursive,
                     ctors,
                     which,
                     inner,
                     llvm_ty(inner, recursive),
                     fv,
+                    name,
                     b,
                   )
                 }
@@ -4007,6 +3788,7 @@ fn rc_glue_byvalue(
 }
 
 fn rc_glue_recursive(
+  lits: Dict(String, Int),
   recursive,
   custom_types,
   ctors,
@@ -4024,7 +3806,13 @@ fn rc_glue_recursive(
   let b = emit_line(b, "  %vp = bitcast " <> ty_s <> " %v to i8*")
   let b = case which {
     "retain" -> {
-      let b = emit_line(b, "  call void @Gleamc_rc_retain(i8* %vp)")
+      let b =
+        emit_line(
+          b,
+          "  call void @Gleamc_rc_retain(i8* %vp, "
+            <> cstring_arg(lits, name)
+            <> ")",
+        )
       emit_line(b, "  br label %done")
     }
     _ -> {
@@ -4066,12 +3854,14 @@ fn rc_glue_recursive(
                       let #(fv, b) =
                         extract_value(struct_ty, "%av", [index + 1, i], b)
                       rc_expr(
+                        lits,
                         recursive,
                         ctors,
                         which,
                         inner,
                         llvm_ty(inner, recursive),
                         fv,
+                        name,
                         b,
                       )
                     }
@@ -4083,7 +3873,13 @@ fn rc_glue_recursive(
           },
         )
       let b = emit_line(b, "\nrel:")
-      let b = emit_line(b, "  call void @Gleamc_rc_release(i8* %vp)")
+      let b =
+        emit_line(
+          b,
+          "  call void @Gleamc_rc_release(i8* %vp, "
+            <> cstring_arg(lits, name)
+            <> ")",
+        )
       emit_line(b, "  br label %done")
     }
   }

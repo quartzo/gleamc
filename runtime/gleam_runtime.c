@@ -14,19 +14,75 @@ static size_t codepoint_offset(GleamcString s, int64_t index);
 #include <unicode/ustring.h>
 #include <utf8proc.h>
 
-void Gleamc_rc_retain(void* p) {
+#ifdef GLEAMC_RC_AUDIT
+/* Refcount audit: never free on 0/negative (allow negative), and report at
+ * exit every block whose refcount ended <0 or >0, with the last touch site. */
+typedef struct GleamcAudit {
+    void* p;
+    long rc;
+    int warned;
+    const char* site;
+    struct GleamcAudit* next;
+} GleamcAudit;
+static GleamcAudit* _audit = NULL;
+
+static GleamcAudit* _audit_get(void* p) {
+    GleamcAudit* e;
+    for (e = _audit; e != NULL; e = e->next) {
+        if (e->p == p) return e;
+    }
+    e = (GleamcAudit*)malloc(sizeof(GleamcAudit));
+    if (e == NULL) return NULL;
+    e->p = p; e->rc = 0; e->warned = 0;
+    e->site = "?";
+    e->next = _audit; _audit = e;
+    return e;
+}
+
+static void _audit_touch(void* p, const char* site, long delta) {
+    GleamcAudit* e = _audit_get(p);
+    if (e == NULL) return;
+    e->rc += delta;
+    if (site != NULL) e->site = site;
+    if (e->rc < 0 && !e->warned) {
+        e->warned = 1;
+        fprintf(stderr, "gleamc: rc underflow (rc=%ld) at %s p=%p\n", e->rc, e->site, p);
+    }
+}
+
+void Gleamc_rc_retain(void* p, const char* site) {
+    if (p == NULL) return;
+    GleamcHdr* h = (GleamcHdr*)((uint8_t*)p - sizeof(GleamcHdr));
+    if (h->refcount == GLEAMC_RC_STATIC) return;
+    h->refcount++;
+    _audit_touch(p, site, 1);
+}
+
+void Gleamc_rc_release(void* p, const char* site) {
+    if (p == NULL) return;
+    GleamcHdr* h = (GleamcHdr*)((uint8_t*)p - sizeof(GleamcHdr));
+    if (h->refcount == GLEAMC_RC_STATIC) return;
+    h->refcount--;
+    _audit_touch(p, site, -1);
+    /* Audit mode: never free (allow negative). */
+}
+#else
+void Gleamc_rc_retain(void* p, const char* site) {
+    (void)site;
     if (p == NULL) return;
     GleamcHdr* h = (GleamcHdr*)((uint8_t*)p - sizeof(GleamcHdr));
     if (h->refcount != GLEAMC_RC_STATIC) h->refcount++;
 }
 
-void Gleamc_rc_release(void* p) {
+void Gleamc_rc_release(void* p, const char* site) {
+    (void)site;
     if (p == NULL) return;
     GleamcHdr* h = (GleamcHdr*)((uint8_t*)p - sizeof(GleamcHdr));
     if (h->refcount != GLEAMC_RC_STATIC && --h->refcount == 0) {
         gleamc_release_slow(h);
     }
 }
+#endif
 
 static size_t _gleamc_live = 0;
 
@@ -35,6 +91,19 @@ static void _gleamc_report_leaks(void) {
     if (flag != NULL) {
         fprintf(stderr, "gleamc: live blocks = %zu\n", _gleamc_live);
     }
+#ifdef GLEAMC_RC_AUDIT
+    {
+        GleamcAudit* e;
+        size_t bad = 0;
+        for (e = _audit; e != NULL; e = e->next) {
+            if (e->rc != 0) {
+                fprintf(stderr, "gleamc: rc=%ld at %s p=%p\n", e->rc, e->site, e->p);
+                bad++;
+            }
+        }
+        fprintf(stderr, "gleamc: rc audit: %zu blocks with rc != 0\n", bad);
+    }
+#endif
 }
 
 __attribute__((constructor)) static void _gleamc_init(void) {

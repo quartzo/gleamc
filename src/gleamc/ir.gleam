@@ -161,6 +161,19 @@ pub fn op_owning(op: Op) -> List(Operand) {
 /// parameter modes: only args declared/inferred `Owned` transfer ownership.
 /// Calls whose callee is unknown (indirect, or missing from the maps) fail safe
 /// to transferring every argument.
+/// Owning args of a tail call (same rules as a direct `OpCall`).
+pub fn tailcall_owning_modes(
+  fun: String,
+  args: List(Operand),
+  fn_modes: Dict(String, List(ffi_modes.ParamMode)),
+  _ffi: Dict(String, ffi_modes.FfiSig),
+) -> List(Operand) {
+  case dict.get(fn_modes, fun) {
+    Ok(modes) -> owned_args(args, modes)
+    Error(_) -> args
+  }
+}
+
 pub fn op_owning_modes(
   op: Op,
   fn_modes: Dict(String, List(ffi_modes.ParamMode)),

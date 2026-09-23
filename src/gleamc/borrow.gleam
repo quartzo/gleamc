@@ -37,7 +37,62 @@ pub fn analyze(module: ir.Module) -> Dict(String, List(ffi_modes.ParamMode)) {
         False -> acc
       }
     })
+  // A tail call moves its arguments, so the callee's corresponding parameters
+  // must be `Owned` (the callee releases them at their last use).
+  let initial =
+    list.fold(functions, initial, fn(acc, function) {
+      let ir.Function(name, params, _, _, _) = function
+      case dict.get(tail_targets(functions), name) {
+        Error(_) -> acc
+        Ok(targets) ->
+          dict.insert(
+            acc,
+            name,
+            list.index_map(params, fn(param, index) {
+              case tail_target_name(targets, param, index) {
+                True -> ffi_modes.Owned
+                False ->
+                  ffi_modes.mode_at(
+                    case dict.get(acc, name) {
+                      Ok(modes) -> modes
+                      Error(_) -> list.map(params, fn(_) { ffi_modes.Borrow })
+                    },
+                    index,
+                  )
+              }
+            }),
+          )
+      }
+    })
   iterate(functions, ffi, initial, 0)
+}
+
+/// Parameter names (by position) of each function that are the target of a
+/// tail call somewhere in the module.
+fn tail_targets(functions) -> Dict(String, List(String)) {
+  list.fold(functions, dict.new(), fn(acc, function) {
+    let ir.Function(_, _, _, blocks, _) = function
+    list.fold(blocks, acc, fn(acc, block) {
+      let ir.Block(_, _, term) = block
+      case term {
+        ir.Tailcall(fun, _) ->
+          case
+            list.find(functions, fn(f) {
+              let ir.Function(n, _, _, _, _) = f
+              n == fun
+            })
+          {
+            Ok(ir.Function(_, params, _, _, _)) -> dict.insert(acc, fun, params)
+            Error(_) -> acc
+          }
+        _ -> acc
+      }
+    })
+  })
+}
+
+fn tail_target_name(targets, param, _index) -> Bool {
+  list.contains(targets, param)
 }
 
 fn iterate(functions, ffi, state, iteration) {
@@ -91,31 +146,53 @@ fn upgrade(function, ffi, state) {
 /// the body, or returned.
 fn consumed_params(function, ffi, state) {
   let ir.Function(_name, params, _, blocks, _) = function
+  let returned =
+    list.fold(blocks, dict.new(), fn(acc, block) {
+      let ir.Block(_, _, term) = block
+      case term {
+        ir.Ret(ir.Var(name)) -> dict.insert(acc, name, True)
+        _ -> acc
+      }
+    })
   list.fold(blocks, dict.new(), fn(acc, block) {
     let ir.Block(_, ops, term) = block
     let acc =
       list.fold(ops, acc, fn(set, op) {
-        ir.op_owning_modes(op, state, ffi)
-        |> list.fold(set, fn(set, operand) {
-          case operand {
-            ir.Var(name) ->
-              case list.contains(params, name) {
-                True -> dict.insert(set, name, True)
-                False -> set
-              }
-            ir.Lit(_) -> set
-          }
-        })
+        let set =
+          ir.op_owning_modes(op, state, ffi)
+          |> list.fold(set, fn(set, operand) {
+            consume_param(set, params, operand)
+          })
+        // A parameter copied into a returned local is returned (through the
+        // `case` join): `OpCopy(res, param) ... ; Ret(res)`.
+        case op {
+          ir.OpCopy(dest, src, _) ->
+            case dict.get(returned, dest) {
+              Ok(_) -> consume_param(set, params, src)
+              Error(_) -> set
+            }
+          _ -> set
+        }
       })
     case term {
-      ir.Ret(ir.Var(name)) ->
-        case list.contains(params, name) {
-          True -> dict.insert(acc, name, True)
-          False -> acc
-        }
+      ir.Ret(ir.Var(name)) -> consume_param(acc, params, ir.Var(name))
+      // Tail calls move their arguments (the caller does not return).
+      ir.Tailcall(_, args) ->
+        list.fold(args, acc, fn(set, arg) { consume_param(set, params, arg) })
       _ -> acc
     }
   })
+}
+
+fn consume_param(set, params, operand) {
+  case operand {
+    ir.Var(name) ->
+      case list.contains(params, name) {
+        True -> dict.insert(set, name, True)
+        False -> set
+      }
+    ir.Lit(_) -> set
+  }
 }
 
 /// IR function names whose value is taken as a closure, and can therefore be

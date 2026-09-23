@@ -61,9 +61,11 @@ void gleamc_release_slow(GleamcHdr* h);
 size_t gleamc_live_blocks(void);   /* live blocks (tests) */
 
 /* Generic refcount ops on a payload pointer (NULL-safe, static-safe).
- * Used by the LLVM backend to emit retain/drop without the C macros. */
-void Gleamc_rc_retain(void* p);
-void Gleamc_rc_release(void* p);
+ * `site` is a compile-time tag ("fn:local") used only when the runtime is
+ * built with -DGLEAMC_RC_AUDIT, which disables freeing and reports every
+ * block whose refcount ends up <0 or >0 at exit. */
+void Gleamc_rc_retain(void* p, const char* site);
+void Gleamc_rc_release(void* p, const char* site);
 
 /* ------------------------------------------------------------------ */
 /* String — UTF-8 text (bytes + length)                                */

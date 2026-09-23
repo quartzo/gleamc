@@ -230,6 +230,21 @@ fn insert_blocks(
           modes,
           ffi,
         )
+      let #(pre, moved) = case block.term {
+        ir.Tailcall(fun, args) ->
+          term_retains(
+            fun,
+            args,
+            list.length(block.ops),
+            handles,
+            base_live,
+            pre,
+            moved,
+            modes,
+            ffi,
+          )
+        _ -> #(pre, moved)
+      }
       dict.insert(acc, block.label, #(pre, moved))
     })
 
@@ -293,7 +308,7 @@ fn insert_blocks(
     let dead =
       set_diff(
         set_diff(owned_out, live_out_block),
-        transferred_set(block.term, handles),
+        transferred_set(block.term, handles, modes, ffi),
       )
     let drops =
       list.filter_map(locals, fn(local) {
@@ -522,7 +537,11 @@ fn retain_n(pre, index, var_name, var_ty, count) {
 
 fn insert_retains(ops, index, pre, acc) {
   case ops {
-    [] -> acc
+    [] ->
+      list.append(acc, case dict.get(pre, index) {
+        Ok(found) -> found
+        Error(_) -> []
+      })
     [op, ..rest] -> {
       let retains = case dict.get(pre, index) {
         Ok(found) -> found
@@ -616,10 +635,36 @@ fn forward_owned(
   }
 }
 
-fn transferred_set(term: ir.Terminator, handles) {
+fn term_retains(fun, args, index, handles, base_live, pre, moved, modes, ffi) {
+  let owning = ir.tailcall_owning_modes(fun, args, modes, ffi)
+  list.fold(dict.to_list(owning_counts(owning)), #(pre, moved), fn(acc, entry) {
+    let #(pre_acc, moved_acc) = acc
+    let #(var_name, count) = entry
+    case dict.get(handles, var_name) {
+      Error(_) -> acc
+      Ok(var_ty) -> {
+        let last = !set_member(base_live, var_name)
+        let retained = case last {
+          True -> count - 1
+          False -> count
+        }
+        #(retain_n(pre_acc, index, var_name, var_ty, retained), case last {
+          True -> set_add(moved_acc, var_name)
+          False -> moved_acc
+        })
+      }
+    }
+  })
+}
+
+fn transferred_set(term: ir.Terminator, handles, modes, ffi) {
   case term {
     ir.Ret(operand) -> sets_from(handle_names([operand], handles))
-    ir.Tailcall(_, args) -> sets_from(handle_names(args, handles))
+    ir.Tailcall(fun, args) ->
+      sets_from(handle_names(
+        ir.tailcall_owning_modes(fun, args, modes, ffi),
+        handles,
+      ))
     _ -> dict.new()
   }
 }

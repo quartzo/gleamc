@@ -93,62 +93,13 @@ pub fn plan(module: ir.Module) -> Plan {
 /// `end: Ret(res)`).
 fn tail_edges(function: ir.Function) -> List(Edge) {
   let ir.Function(name, _, _, blocks, _) = function
-  list.flat_map(blocks, fn(block) {
-    let ir.Block(_, ops, term) = block
-    ops
-    |> list.filter_map(fn(op) {
-      case op {
-        ir.OpCall(dest, fun, _, _) ->
-          case is_tail_result(blocks, ops, dest, term) {
-            True -> Ok(Edge(name, fun))
-            False -> Error(Nil)
-          }
-        _ -> Error(Nil)
-      }
-    })
+  list.filter_map(blocks, fn(block) {
+    let ir.Block(_, _, term) = block
+    case term {
+      ir.Tailcall(fun, _) -> Ok(Edge(name, fun))
+      _ -> Error(Nil)
+    }
   })
-}
-
-fn is_tail_result(blocks, ops, dest, term) -> Bool {
-  case term {
-    ir.Ret(ir.Var(v)) -> v == dest
-    ir.Jmp(end) -> copies_to_return(blocks, ops, dest, end)
-    _ -> False
-  }
-}
-
-fn copies_to_return(blocks, ops, dest, end) -> Bool {
-  case find_copy(ops, dest) {
-    Ok(res) -> returns_local(blocks, end, res)
-    Error(_) -> False
-  }
-}
-
-fn find_copy(ops, dest) -> Result(String, Nil) {
-  case ops {
-    [] -> Error(Nil)
-    [op, ..rest] ->
-      case op {
-        ir.OpCopy(res, ir.Var(src), _) ->
-          case src == dest {
-            True -> Ok(res)
-            False -> find_copy(rest, dest)
-          }
-        _ -> find_copy(rest, dest)
-      }
-  }
-}
-
-fn returns_local(blocks, label, local) -> Bool {
-  case
-    list.find(blocks, fn(block) {
-      let ir.Block(l, _, _) = block
-      l == label
-    })
-  {
-    Ok(ir.Block(_, _, ir.Ret(ir.Var(v)))) -> v == local
-    _ -> False
-  }
 }
 
 // ---------------------------------------------------------------------------

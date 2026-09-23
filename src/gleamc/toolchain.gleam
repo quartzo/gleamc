@@ -31,6 +31,15 @@ fn opt_flag(mode: Mode) -> String {
   }
 }
 
+/// `GLEAMC_RC_AUDIT=1` builds the runtime so it never frees on refcount 0 and
+/// reports every block whose refcount ended <0 or >0.
+fn audit_flag() -> String {
+  case ffi.get_env("GLEAMC_RC_AUDIT") {
+    Ok(_) -> " -DGLEAMC_RC_AUDIT"
+    Error(_) -> ""
+  }
+}
+
 fn link_flag(cc: String) -> String {
   case cc {
     "tcc" -> ""
@@ -56,6 +65,7 @@ pub fn build_command(
   <> " -std=c11 "
   <> opt_flag(mode)
   <> " -w"
+  <> audit_flag()
   <> link_flag(cc)
   <> " "
   <> include_flags(include_dirs)
