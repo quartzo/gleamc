@@ -377,17 +377,21 @@ fn block_use_def(block: ir.Block, handles: Dict(String, Type)) {
   #(used, defs)
 }
 
-fn compute_liveness(blocks: List(ir.Block), succ_map, use_def) {
+fn compute_liveness(
+  blocks: List(ir.Block),
+  succ_map: Dict(String, List(String)),
+  use_def: Dict(String, #(Dict(String, Bool), Dict(String, Bool))),
+) -> Dict(String, Dict(String, Bool)) {
   iterate_liveness(blocks, succ_map, use_def, dict.new(), 0)
 }
 
 fn iterate_liveness(
   blocks: List(ir.Block),
-  succ_map,
-  use_def,
-  current,
-  iteration,
-) {
+  succ_map: Dict(String, List(String)),
+  use_def: Dict(String, #(Dict(String, Bool), Dict(String, Bool))),
+  current: Dict(String, Dict(String, Bool)),
+  iteration: Int,
+) -> Dict(String, Dict(String, Bool)) {
   case iteration > 200 {
     True -> current
     False -> {
@@ -417,7 +421,11 @@ fn iterate_liveness(
   }
 }
 
-fn successors_live(term: ir.Terminator, _succ_map, state) {
+fn successors_live(
+  term: ir.Terminator,
+  _succ_map: Dict(String, List(String)),
+  state: Dict(String, Dict(String, Bool)),
+) -> Dict(String, Bool) {
   list.fold(successors(term), dict.new(), fn(acc, succ) {
     let succ_live = case dict.get(state, succ) {
       Ok(found) -> found
@@ -618,11 +626,11 @@ fn transferred_set(term: ir.Terminator, handles) {
 // set helpers (a set is a Dict(name, True))
 // ---------------------------------------------------------------------------
 
-fn set_add(set, name) {
+fn set_add(set: Dict(String, Bool), name: String) -> Dict(String, Bool) {
   dict.insert(set, name, True)
 }
 
-fn set_member(set, name) {
+fn set_member(set: Dict(String, Bool), name: String) -> Bool {
   case dict.get(set, name) {
     Ok(_) -> True
     Error(_) -> False
@@ -640,19 +648,28 @@ fn replicate_loop(count, acc) {
   }
 }
 
-fn sets_from(names) {
+fn sets_from(names: List(String)) -> Dict(String, Bool) {
   list.fold(names, dict.new(), set_add)
 }
 
-fn set_union(a, b) {
+fn set_union(
+  a: Dict(String, Bool),
+  b: Dict(String, Bool),
+) -> Dict(String, Bool) {
   list.fold(dict.keys(b), a, set_add)
 }
 
-fn set_diff(a, b) {
+fn set_diff(
+  a: Dict(String, Bool),
+  b: Dict(String, Bool),
+) -> Dict(String, Bool) {
   list.fold(dict.keys(b), a, fn(acc, name) { dict.delete(acc, name) })
 }
 
-fn set_intersect(a, b) {
+fn set_intersect(
+  a: Dict(String, Bool),
+  b: Dict(String, Bool),
+) -> Dict(String, Bool) {
   list.fold(dict.keys(a), dict.new(), fn(acc, name) {
     case dict.get(b, name) {
       Ok(_) -> set_add(acc, name)
@@ -661,7 +678,7 @@ fn set_intersect(a, b) {
   })
 }
 
-fn sets_equal(a, b) {
+fn sets_equal(a: Dict(String, Bool), b: Dict(String, Bool)) -> Bool {
   dict.size(a) == dict.size(b)
   && list.all(dict.keys(a), fn(name) {
     case dict.get(b, name) {
@@ -671,7 +688,10 @@ fn sets_equal(a, b) {
   })
 }
 
-fn sets_equal_maps(a, b) {
+fn sets_equal_maps(
+  a: Dict(String, Dict(String, Bool)),
+  b: Dict(String, Dict(String, Bool)),
+) -> Bool {
   dict.size(a) == dict.size(b)
   && list.all(dict.keys(a), fn(label) {
     let set_a = case dict.get(a, label) {

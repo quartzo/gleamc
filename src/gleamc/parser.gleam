@@ -4,19 +4,19 @@
 
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleamc/ast.{
-  type Module, Arm, CustomType, DConst, DCustomType, DFunction, DImport,
-  DTypeAlias, EBinop, EBitArray, EBlock, EBool, ECall, ECase, ECtor, EField,
-  EFloat, EInt, ELabelled, ELambda, ENil, EPanic, EString, ETuple, EUnop,
+  type Expr, type Module, Arm, CustomType, DConst, DCustomType, DFunction,
+  DImport, DTypeAlias, EBinop, EBitArray, EBlock, EBool, ECall, ECase, ECtor,
+  EField, EFloat, EInt, ELabelled, ELambda, ENil, EPanic, EString, ETuple, EUnop,
   EUpdate, EVar, Function, Import, Let, Module, PAs, PBitArray, PBool, PCtor,
   PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard, Stmt, TApp,
   TBool, TFloat, TFun, TInt, TNamed, TNil, TString, TTuple, TVar, Variant,
 }
 import gleamc/lexer
 import gleamc/token.{
-  EofKind, FloatKind, IntKind, Keyword, NameKind, NewlineKind, StringKind,
-  Symbol, Token, UpNameKind,
+  type Token, EofKind, FloatKind, IntKind, Keyword, NameKind, NewlineKind,
+  StringKind, Symbol, Token, UpNameKind,
 }
 
 pub type ParseError {
@@ -1070,7 +1070,7 @@ fn arm_combinations(alternatives) {
   })
 }
 
-fn parse_guard(tokens) {
+fn parse_guard(tokens: List(Token)) -> #(Option(Expr), List(Token)) {
   case peek(tokens) {
     Keyword("if") | Keyword("when") -> {
       let assert Ok(#(expr, rest)) =

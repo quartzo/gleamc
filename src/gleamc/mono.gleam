@@ -238,7 +238,7 @@ fn key(name, args) -> String {
 
 /// Substitutes the enclosing type variables, keeping generic applications as
 /// `TApp` (internal form used for inference). `mono_type` specialises after.
-fn subst_surface(surface_map, ty) -> Type {
+fn subst_surface(surface_map: Dict(String, Type), ty: Type) -> Type {
   case ty {
     TVar(name) ->
       case dict.get(surface_map, name) {
@@ -430,7 +430,11 @@ fn mono_fields(state: State, surface_map, fields) {
 
 /// Rewrites a surface type: substitutes the enclosing type variables and
 /// specialises generic applications (`Option(Int)` -> `Option_Int`).
-fn mono_type(state: State, surface_map, ty) -> Result(#(Type, State), String) {
+fn mono_type(
+  state: State,
+  surface_map: Dict(String, Type),
+  ty: Type,
+) -> Result(#(Type, State), String) {
   case ty {
     TVar(name) ->
       case dict.get(surface_map, name) {
@@ -457,7 +461,11 @@ fn mono_type(state: State, surface_map, ty) -> Result(#(Type, State), String) {
   }
 }
 
-fn mono_types(state: State, surface_map, types_list) {
+fn mono_types(
+  state: State,
+  surface_map: Dict(String, Type),
+  types_list: List(Type),
+) {
   case types_list {
     [] -> Ok(#([], state))
     [ty, ..rest] -> {
@@ -602,7 +610,12 @@ fn mono_expr_ex(state, locals, expected, expr) {
 
 /// Monomorphises tuple elements with the expected element types, so literals
 /// like `#([], [])` resolve their element type from the context.
-fn mono_exprs_ex(state, locals, expected_list, exprs) {
+fn mono_exprs_ex(
+  state: State,
+  locals: Dict(String, Scheme),
+  expected_list: List(types.Ty),
+  exprs: List(Expr),
+) {
   case exprs, expected_list {
     [], _ -> Ok(#([], state))
     [expr, ..rest_exprs], [expected, ..rest_expected] -> {
@@ -1041,7 +1054,7 @@ fn mono_block_ex(state, locals, expected, statements) {
   }
 }
 
-fn mono_exprs(state: State, locals: Dict(String, Scheme), exprs) {
+fn mono_exprs(state: State, locals: Dict(String, Scheme), exprs: List(Expr)) {
   case exprs {
     [] -> Ok(#([], state))
     [expr, ..rest] -> {
@@ -1136,7 +1149,12 @@ fn expected_param_tys(state: State, name, type_args) -> List(types.Ty) {
   }
 }
 
-fn mono_args_expect(state: State, locals, expected_list, args) {
+fn mono_args_expect(
+  state: State,
+  locals: Dict(String, Scheme),
+  expected_list: List(types.Ty),
+  args: List(Expr),
+) {
   case args, expected_list {
     [], _ -> Ok(#([], state))
     [arg, ..rest], [expected, ..rest_expected] -> {
@@ -1167,7 +1185,12 @@ fn mono_args_expect(state: State, locals, expected_list, args) {
   }
 }
 
-fn mono_arg_expect(state: State, locals, expected, arg) {
+fn mono_arg_expect(
+  state: State,
+  locals: Dict(String, Scheme),
+  expected: types.Ty,
+  arg: Expr,
+) {
   case arg {
     ECtor(name, ctor_args) ->
       mono_ctor_ex(state, locals, name, ctor_args, Some(expected))
@@ -1541,7 +1564,12 @@ fn order_pattern(field_names, ctx, args) -> Result(List(Pattern), String) {
   infer.order_pattern(field_names, ctx, args)
 }
 
-fn mono_patterns(state: State, locals: Dict(String, Scheme), patterns, tys) {
+fn mono_patterns(
+  state: State,
+  locals: Dict(String, Scheme),
+  patterns: List(Pattern),
+  tys: List(types.Ty),
+) {
   case patterns, tys {
     [], _ -> Ok(#([], dict.new(), state))
     [pattern, ..rest_patterns], [ty, ..rest_tys] -> {

@@ -7,7 +7,7 @@
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import gleamc/ast.{
@@ -456,29 +456,28 @@ fn variant_covered(args_of, field_types, ctors) -> Bool {
       case field_types {
         [] -> True
         _ ->
-          case
-            list.any(args_of, fn(args) { list.all(args, pattern_irrefutable) })
-          {
-            True -> True
-            False ->
-              case field_types {
-                [single] ->
-                  patterns_exhaustive(
-                    single,
-                    list.map(args_of, fn(args) { first_pattern(args) }),
-                    ctors,
-                  )
-                _ -> False
-              }
-          }
+          // Column-wise, like tuples: each field must be exhaustive across
+          // the constructor's argument patterns. Conservative (may accept
+          // some non-exhaustive cases) but never rejects an exhaustive one.
+          list.all(
+            list.index_map(field_types, fn(ty, index) { #(ty, index) }),
+            fn(pair) {
+              let #(ty, index) = pair
+              patterns_exhaustive(
+                ty,
+                list.map(args_of, fn(args) { arg_at(args, index) }),
+                ctors,
+              )
+            },
+          )
       }
   }
 }
 
-fn first_pattern(args) {
-  case args {
-    [first, ..] -> first
-    [] -> PWildcard
+fn arg_at(args, index) {
+  case list_at(args, index) {
+    Ok(pattern) -> pattern
+    Error(_) -> PWildcard
   }
 }
 
@@ -667,13 +666,23 @@ fn infer_named_call(env, signatures, ctors, name, args) {
 // match by name. Returns the arguments in formal order.
 // ---------------------------------------------------------------------------
 
-fn order_args(names, ctx, args) -> Result(List(Expr), CheckError) {
+fn order_args(
+  names: List(String),
+  ctx: String,
+  args: List(Expr),
+) -> Result(List(Expr), CheckError) {
   let slots = list.map(names, fn(_) { None })
   use filled <- result.try(fill_args(names, ctx, args, slots, 0))
   collect_slots(filled, ctx, [])
 }
 
-fn fill_args(names, ctx, args, slots, next_pos) {
+fn fill_args(
+  names: List(String),
+  ctx: String,
+  args: List(Expr),
+  slots: List(Option(Expr)),
+  next_pos: Int,
+) {
   case args {
     [] -> Ok(slots)
     [arg, ..rest] ->
