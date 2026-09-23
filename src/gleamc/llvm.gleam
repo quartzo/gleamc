@@ -245,28 +245,35 @@ pub fn emit(
     False -> ""
   }
 
-  header()
-  <> globals
-  <> "\n\n"
-  <> type_code
-  <> "\n\n"
-  <> builtins
-  <> "\n\n"
-  <> defs
-  <> "\n\n"
-  <> wrappers
-  <> "\n\n"
-  <> eq_glue
-  <> "\n\n"
-  <> env_drops
-  <> "\n\n"
-  <> rc_glue
-  <> "\n\n"
-  <> show_glue
-  <> "\n\n"
-  <> cmp_glue
-  <> "\n"
-  <> main_code
+  let out =
+    string.join(
+      [
+        header(),
+        globals,
+        "\n\n",
+        type_code,
+        "\n\n",
+        builtins,
+        "\n\n",
+        defs,
+        "\n\n",
+        wrappers,
+        "\n\n",
+        eq_glue,
+        "\n\n",
+        env_drops,
+        "\n\n",
+        rc_glue,
+        "\n\n",
+        show_glue,
+        "\n\n",
+        cmp_glue,
+        "\n",
+        main_code,
+      ],
+      "",
+    )
+  out
 }
 
 fn header() -> String {
