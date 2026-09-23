@@ -52,7 +52,6 @@ void gleamc_release_slow(GleamcHdr* h);
             ((GleamcHdr*)((uint8_t*)_gp - sizeof(GleamcHdr)))           \
                 ->refcount++;                                           \
     } while (0)
-#endif
 
 #define gleamc_release(p)                                               \
     do {                                                                \
@@ -65,6 +64,7 @@ void gleamc_release_slow(GleamcHdr* h);
                 gleamc_release_slow(_gh);                               \
         }                                                               \
     } while (0)
+#endif
 
 size_t gleamc_live_blocks(void);   /* live blocks (tests) */
 
@@ -104,7 +104,6 @@ bool gleamc_string_eq(GleamcString a, GleamcString b);
             if (_gh->refcount != GLEAMC_RC_STATIC) _gh->refcount++;     \
         }                                                               \
     } while (0)
-#endif
 
 #define gleamc_string_release(s)                                        \
     do {                                                                \
@@ -117,6 +116,7 @@ bool gleamc_string_eq(GleamcString a, GleamcString b);
                 gleamc_release_slow(_gh);                               \
         }                                                               \
     } while (0)
+#endif
 
 /* ------------------------------------------------------------------ */
 /* BitArray — raw bytes (bit arrays with 8-bit segments)               */
