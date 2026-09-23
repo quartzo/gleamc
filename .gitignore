@@ -49,6 +49,7 @@ erl_crash.dump
 /diffs/stringlist
 /diffs/stringops
 /diffs/letassert
+/diffs/letpatterns
 /diffs/update
 /diffs/bitarray
 /diffs/stdlib3
