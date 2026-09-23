@@ -944,6 +944,20 @@ GleamcFuture* gleamc_uv_timer_start(void* timer, int64_t ms) {
     return f;
 }
 
+/* One-shot timer on the scheduler loop: the returned future completes in
+ * `ms` (libuv callback), and `Gleamc_uv_await_nil` drives the loop until it
+ * does. This is the Vesper async base: `timer(ms): Future(())`. */
+GleamcFuture* Gleamc_uv_timer(int64_t ms) {
+    return gleamc_uv_timer_start(gleamc_uv_timer_init(gleamc_uv_loop()), ms);
+}
+
+/* `time.timer(ms)`: the Future is internal — this is the builtin the Gleam
+ * caller sees, returning `Nil` once the timeout fired on the libuv loop. */
+int Gleamc_time_timer(int64_t ms) {
+    Gleamc_uv_await_nil(Gleamc_uv_timer(ms));
+    return 0;
+}
+
 #define GLEAMC_FS_MAX 64
 static struct { uv_fs_t* req; GleamcFuture* fut; } gleamc_fs_map[GLEAMC_FS_MAX];
 static int gleamc_fs_map_n = 0;
@@ -1761,6 +1775,10 @@ GleamcFuture* Gleamc_uv_fs_unlink(GleamcString path) {
 int64_t Gleamc_uv_await_int(GleamcFuture* f) {
     gleamc_future_wait(f);
     return f == NULL ? 0 : f->value_i;
+}
+
+void Gleamc_uv_await_nil(GleamcFuture* f) {
+    gleamc_future_wait(f);
 }
 
 GleamcBitArray Gleamc_uv_await_bytes(GleamcFuture* f) {

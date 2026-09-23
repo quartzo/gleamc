@@ -675,6 +675,7 @@ fn builtins() -> Dict(String, Scheme) {
   dict.new()
   |> dict.insert("io.println", Scheme(none, Fun([s], n)))
   |> dict.insert("io.print", Scheme(none, Fun([s], n)))
+  |> dict.insert("time.timer", Scheme(none, Fun([i], n)))
   |> dict.insert("int.to_string", Scheme(none, Fun([i], s)))
   |> dict.insert("float.to_string", Scheme(none, Fun([f], s)))
   |> dict.insert("bool.to_string", Scheme(none, Fun([b], s)))

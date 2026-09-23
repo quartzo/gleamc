@@ -800,6 +800,11 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
       check_builtin(env, signatures, ctors, args, [TString], TNil, "io.println")
     "io", "print" ->
       check_builtin(env, signatures, ctors, args, [TString], TNil, "io.print")
+    // Async base (Vesper `std::time`): `timer(ms)` yields a `Future(())`
+    // internally; the caller sees `Nil` (the future is awaited by the
+    // scheduler loop, never exposed to Gleam).
+    "time", "timer" ->
+      check_builtin(env, signatures, ctors, args, [TInt], TNil, "time.timer")
     "int", "to_string" ->
       check_builtin(
         env,
