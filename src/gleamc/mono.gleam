@@ -897,15 +897,19 @@ fn pattern_names(pattern) -> List(String) {
 /// Scope-aware simultaneous substitution of captured variables by
 /// expressions. Shadowed bindings are left untouched.
 fn replace_vars(expr, replacements) {
-  replace_vars_bound(expr, replacements, [])
+  replace_vars_bound(expr, replacements, dict.new())
+}
+
+fn bind_names(names, bound) {
+  list.fold(names, bound, fn(acc, name) { dict.insert(acc, name, True) })
 }
 
 fn replace_vars_bound(expr, replacements, bound) {
   case expr {
     EVar(name) ->
-      case list.contains(bound, name) {
-        True -> expr
-        False ->
+      case dict.get(bound, name) {
+        Ok(_) -> expr
+        Error(_) ->
           case dict.get(replacements, name) {
             Ok(replacement) -> replacement
             Error(_) -> expr
@@ -946,7 +950,7 @@ fn replace_vars_bound(expr, replacements, bound) {
         replace_vars_bound(subject, replacements, bound),
         list.map(arms, fn(arm) {
           let Arm(pattern, guard, body) = arm
-          let inner = list.append(pattern_names(pattern), bound)
+          let inner = bind_names(pattern_names(pattern), bound)
           Arm(
             pattern,
             replace_opt_bound(guard, replacements, inner),
@@ -961,7 +965,7 @@ fn replace_vars_bound(expr, replacements, bound) {
     ELambda(names, body) ->
       ELambda(
         names,
-        replace_vars_bound(body, replacements, list.append(names, bound)),
+        replace_vars_bound(body, replacements, bind_names(names, bound)),
       )
     EUpdate(name, base, fields) ->
       EUpdate(
@@ -985,7 +989,7 @@ fn replace_statements(statements, replacements, bound) {
     [] -> []
     [Let(pattern, value), ..rest] -> {
       let value2 = replace_vars_bound(value, replacements, bound)
-      let inner = list.append(pattern_names(pattern), bound)
+      let inner = bind_names(pattern_names(pattern), bound)
       [Let(pattern, value2), ..replace_statements(rest, replacements, inner)]
     }
     [Stmt(expr), ..rest] -> [
@@ -1010,15 +1014,15 @@ fn has_binding(locals, name) {
 }
 
 fn free_var_names(expr) -> List(String) {
-  free_var_names_bound(expr, [])
+  free_var_names_bound(expr, dict.new())
 }
 
 fn free_var_names_bound(expr, bound) -> List(String) {
   case expr {
     EVar(name) ->
-      case list.contains(bound, name) {
-        True -> []
-        False -> [name]
+      case dict.get(bound, name) {
+        Ok(_) -> []
+        Error(_) -> [name]
       }
     ETuple(elements) ->
       list.flat_map(elements, fn(e) { free_var_names_bound(e, bound) })
@@ -1041,7 +1045,7 @@ fn free_var_names_bound(expr, bound) -> List(String) {
         free_var_names_bound(subject, bound),
         list.flat_map(arms, fn(arm) {
           let Arm(pattern, guard, body) = arm
-          let inner = list.append(pattern_names(pattern), bound)
+          let inner = bind_names(pattern_names(pattern), bound)
           list.append(
             free_var_names_opt(guard, inner),
             free_var_names_bound(body, inner),
@@ -1051,7 +1055,7 @@ fn free_var_names_bound(expr, bound) -> List(String) {
     EField(obj, _) -> free_var_names_bound(obj, bound)
     ELabelled(_, value) -> free_var_names_bound(value, bound)
     ELambda(names, body) ->
-      free_var_names_bound(body, list.append(names, bound))
+      free_var_names_bound(body, bind_names(names, bound))
     EUpdate(_, base, fields) ->
       list.append(
         free_var_names_bound(base, bound),
@@ -1070,7 +1074,7 @@ fn free_var_names_block(statements, bound) -> List(String) {
   case statements {
     [] -> []
     [Let(pattern, value), ..rest] -> {
-      let inner = list.append(pattern_names(pattern), bound)
+      let inner = bind_names(pattern_names(pattern), bound)
       list.append(
         free_var_names_bound(value, bound),
         free_var_names_block(rest, inner),

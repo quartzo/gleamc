@@ -264,6 +264,8 @@ fn borrow_only_uses(blocks, modes, ffi) -> Dict(String, Bool) {
 /// (or another such view): safe references. Views of owned temporaries are
 /// left owning (their container may be released while the view is used).
 fn extraction_views(blocks, borrow, params) -> Dict(String, String) {
+  let param_set =
+    list.fold(params, dict.new(), fn(acc, name) { dict.insert(acc, name, True) })
   list.fold(blocks, dict.new(), fn(acc, block) {
     let ir.Block(_, ops, _) = block
     list.fold(ops, acc, fn(acc, op) {
@@ -279,7 +281,7 @@ fn extraction_views(blocks, borrow, params) -> Dict(String, String) {
         _ ->
           case set_member(borrow, dest) {
             True ->
-              case list.contains(params, subject) || has_key(acc, subject) {
+              case set_member(param_set, subject) || has_key(acc, subject) {
                 True -> dict.insert(acc, dest, subject)
                 False -> acc
               }

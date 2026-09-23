@@ -195,6 +195,8 @@ fn upgrade(function, ffi, state) {
 /// the body, or returned.
 fn consumed_params(function, ffi, state) {
   let ir.Function(_name, params, _, blocks, _) = function
+  let param_set =
+    list.fold(params, dict.new(), fn(acc, name) { dict.insert(acc, name, True) })
   let returned =
     list.fold(blocks, dict.new(), fn(acc, block) {
       let ir.Block(_, _, term) = block
@@ -210,35 +212,35 @@ fn consumed_params(function, ffi, state) {
         let set =
           ir.op_owning_modes(op, state, ffi)
           |> list.fold(set, fn(set, operand) {
-            consume_param(set, params, operand)
+            consume_param(set, param_set, operand)
           })
         // A parameter copied into a returned local is returned (through the
         // `case` join): `OpCopy(res, param) ... ; Ret(res)`.
         case op {
           ir.OpCopy(dest, src, _) ->
             case dict.get(returned, dest) {
-              Ok(_) -> consume_param(set, params, src)
+              Ok(_) -> consume_param(set, param_set, src)
               Error(_) -> set
             }
           _ -> set
         }
       })
     case term {
-      ir.Ret(ir.Var(name)) -> consume_param(acc, params, ir.Var(name))
+      ir.Ret(ir.Var(name)) -> consume_param(acc, param_set, ir.Var(name))
       // Tail calls move their arguments (the caller does not return).
       ir.Tailcall(_, args) ->
-        list.fold(args, acc, fn(set, arg) { consume_param(set, params, arg) })
+        list.fold(args, acc, fn(set, arg) { consume_param(set, param_set, arg) })
       _ -> acc
     }
   })
 }
 
-fn consume_param(set, params, operand) {
+fn consume_param(set, param_set, operand) {
   case operand {
     ir.Var(name) ->
-      case list.contains(params, name) {
-        True -> dict.insert(set, name, True)
-        False -> set
+      case dict.get(param_set, name) {
+        Ok(_) -> dict.insert(set, name, True)
+        Error(_) -> set
       }
     ir.Lit(_) -> set
   }
