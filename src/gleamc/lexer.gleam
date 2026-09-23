@@ -3,6 +3,11 @@
 //// Newline rule: inside `(` and `[` newlines are ignored; inside `{` and at
 //// module level they are significant (the parser uses `Newline` as a
 //// declaration/statement separator).
+////
+//// Scanning is byte-offset based: the source is never re-sliced as a cursor,
+//// so tokenizing is O(n) instead of copying the remaining source at every
+//// character (`pop_grapheme` + `string.slice` were O(n) per character on the
+//// C runtime, making the whole lexer O(n^2)).
 
 import gleam/float
 import gleam/int
@@ -12,6 +17,7 @@ import gleamc/token.{
   type Token, EofKind, FloatKind, IntKind, Keyword, NameKind, NewlineKind,
   StringKind, Symbol, Token, UpNameKind, is_keyword,
 }
+import host
 
 pub type LexError {
   LexError(message: String, line: Int, col: Int)
@@ -28,7 +34,7 @@ pub fn describe_error(err: LexError) -> String {
 }
 
 pub fn tokenize(source: String) -> Result(List(Token), LexError) {
-  case scan(source, 1, 1, 0, []) {
+  case scan(source, 0, 1, 1, 0, []) {
     Ok(tokens) -> Ok(list.append(list.reverse(tokens), [Token(EofKind, 0, 0)]))
     Error(err) -> Error(err)
   }
@@ -40,31 +46,34 @@ pub fn tokenize(source: String) -> Result(List(Token), LexError) {
 
 fn scan(
   src: String,
+  off: Int,
   line: Int,
   col: Int,
   depth: Int,
   acc: List(Token),
 ) -> Result(List(Token), LexError) {
-  case src {
-    "" -> Ok(acc)
-    _ -> {
-      let c = first(src)
+  case is_eof(src, off) {
+    True -> Ok(acc)
+    False -> {
+      let c = char_at(src, off)
       case c {
-        "\n" -> newline(rest(src), line, col, depth, acc)
-        " " | "\t" | "\r" -> scan(rest(src), line, col + 1, depth, acc)
+        "\n" -> newline(src, advance(src, off), line, col, depth, acc)
+        " " | "\t" | "\r" ->
+          scan(src, advance(src, off), line, col + 1, depth, acc)
         "/" ->
-          case string.starts_with(src, "//") {
-            True -> skip_comment(src, line, col, depth, acc)
-            False -> symbol(src, line, col, depth, acc)
+          case starts_with(src, off, "//") {
+            True -> skip_comment(src, off, line, col, depth, acc)
+            False -> symbol(src, off, line, col, depth, acc)
           }
-        "\"" -> string_lit(rest(src), line, col + 1, depth, acc, [])
+        "\"" ->
+          string_lit(src, advance(src, off), line, col + 1, depth, acc, [])
         _ ->
           case is_digit(c) {
-            True -> number(src, line, col, depth, acc)
+            True -> number(src, off, line, col, depth, acc)
             False ->
               case is_ident_start(c) {
-                True -> ident(src, line, col, depth, acc)
-                False -> symbol(src, line, col, depth, acc)
+                True -> ident(src, off, line, col, depth, acc)
+                False -> symbol(src, off, line, col, depth, acc)
               }
           }
       }
@@ -72,26 +81,30 @@ fn scan(
   }
 }
 
-fn newline(src, line, col, depth, acc) -> Result(List(Token), LexError) {
+fn newline(src, off, line, col, depth, acc) -> Result(List(Token), LexError) {
   case depth > 0 {
-    True -> scan(src, line + 1, 1, depth, acc)
+    True -> scan(src, off, line + 1, 1, depth, acc)
     False ->
       case acc {
-        [Token(NewlineKind, _, _), ..] -> scan(src, line + 1, 1, depth, acc)
+        [Token(NewlineKind, _, _), ..] ->
+          scan(src, off, line + 1, 1, depth, acc)
         _ ->
-          scan(src, line + 1, 1, depth, [Token(NewlineKind, line, col), ..acc])
+          scan(src, off, line + 1, 1, depth, [
+            Token(NewlineKind, line, col),
+            ..acc
+          ])
       }
   }
 }
 
-fn skip_comment(src, line, col, depth, acc) -> Result(List(Token), LexError) {
-  case src {
-    "" -> Ok(acc)
-    _ -> {
-      let c = first(src)
+fn skip_comment(src, off, line, col, depth, acc) -> Result(List(Token), LexError) {
+  case is_eof(src, off) {
+    True -> Ok(acc)
+    False -> {
+      let c = char_at(src, off)
       case c {
-        "\n" -> newline(rest(src), line, col, depth, acc)
-        _ -> skip_comment(rest(src), line, col + 1, depth, acc)
+        "\n" -> newline(src, advance(src, off), line, col, depth, acc)
+        _ -> skip_comment(src, advance(src, off), line, col + 1, depth, acc)
       }
     }
   }
@@ -99,36 +112,37 @@ fn skip_comment(src, line, col, depth, acc) -> Result(List(Token), LexError) {
 
 fn string_lit(
   src,
+  off,
   line,
   col,
   depth,
   acc,
   buf: List(String),
 ) -> Result(List(Token), LexError) {
-  case src {
-    "" -> Error(LexError("unterminated string", line, col))
-    _ -> {
-      let c = first(src)
-      let r = rest(src)
+  case is_eof(src, off) {
+    True -> Error(LexError("unterminated string", line, col))
+    False -> {
+      let c = char_at(src, off)
+      let next = advance(src, off)
       case c {
         "\"" ->
-          scan(r, line, col + 1, depth, [
+          scan(src, next, line, col + 1, depth, [
             Token(StringKind(string.concat(list.reverse(buf))), line, col),
             ..acc
           ])
-        "\\" -> escape(r, line, col + 1, depth, acc, buf)
-        "\n" -> string_lit(r, line + 1, 1, depth, acc, ["\n", ..buf])
-        _ -> string_lit(r, line, col + 1, depth, acc, [c, ..buf])
+        "\\" -> escape(src, next, line, col + 1, depth, acc, buf)
+        "\n" -> string_lit(src, next, line + 1, 1, depth, acc, ["\n", ..buf])
+        _ -> string_lit(src, next, line, col + 1, depth, acc, [c, ..buf])
       }
     }
   }
 }
 
-fn escape(src, line, col, depth, acc, buf) -> Result(List(Token), LexError) {
-  case src {
-    "" -> Error(LexError("incomplete escape", line, col))
-    _ -> {
-      let c = first(src)
+fn escape(src, off, line, col, depth, acc, buf) -> Result(List(Token), LexError) {
+  case is_eof(src, off) {
+    True -> Error(LexError("incomplete escape", line, col))
+    False -> {
+      let c = char_at(src, off)
       let decoded = case c {
         "n" -> "\n"
         "t" -> "\t"
@@ -137,47 +151,50 @@ fn escape(src, line, col, depth, acc, buf) -> Result(List(Token), LexError) {
         "\\" -> "\\"
         _ -> c
       }
-      string_lit(rest(src), line, col + 1, depth, acc, [decoded, ..buf])
+      string_lit(src, advance(src, off), line, col + 1, depth, acc, [
+        decoded,
+        ..buf
+      ])
     }
   }
 }
 
-fn take_exponent(src) -> #(String, String) {
-  case first(src) {
+fn take_exponent(src, off) -> #(String, Int) {
+  case char_at(src, off) {
     "e" | "E" -> {
-      let after = rest(src)
-      let #(sign, after2) = case first(after) {
-        "+" | "-" -> #(first(after), rest(after))
-        _ -> #("", after)
+      let off1 = advance(src, off)
+      let #(sign, off2) = case char_at(src, off1) {
+        "+" | "-" -> #(char_at(src, off1), advance(src, off1))
+        _ -> #("", off1)
       }
-      let #(digits, after3) = take_while(after2, is_digit_or_underscore)
+      let #(digits, off3) = take_while(src, off2, is_digit_or_underscore)
       case digits == "" {
-        True -> #("", src)
-        False -> #("e" <> sign <> digits, after3)
+        True -> #("", off)
+        False -> #("e" <> sign <> digits, off3)
       }
     }
-    _ -> #("", src)
+    _ -> #("", off)
   }
 }
 
-fn number(src, line, col, depth, acc) -> Result(List(Token), LexError) {
-  let #(int_part, rest1) = take_while(src, is_digit_or_underscore)
-  let #(is_float, text, rest2) = case string.starts_with(rest1, ".") {
+fn number(src, off, line, col, depth, acc) -> Result(List(Token), LexError) {
+  let #(int_part, off1) = take_while(src, off, is_digit_or_underscore)
+  let #(is_float, text, off2) = case starts_with(src, off1, ".") {
     True -> {
-      let after = rest(rest1)
-      case is_digit(first(after)) {
+      let after = advance(src, off1)
+      case is_digit(char_at(src, after)) {
         True -> {
-          let #(frac, rest2) = take_while(after, is_digit_or_underscore)
-          #(True, int_part <> "." <> frac, rest2)
+          let #(frac, off2) = take_while(src, after, is_digit_or_underscore)
+          #(True, int_part <> "." <> frac, off2)
         }
-        False -> #(False, int_part, rest1)
+        False -> #(False, int_part, off1)
       }
     }
-    False -> #(False, int_part, rest1)
+    False -> #(False, int_part, off1)
   }
-  let #(exp_text, rest3) = case is_float {
-    True -> take_exponent(rest2)
-    False -> #("", rest2)
+  let #(exp_text, off3) = case is_float {
+    True -> take_exponent(src, off2)
+    False -> #("", off2)
   }
   let text = text <> exp_text
   let clean = string.replace(text, "_", "")
@@ -186,7 +203,7 @@ fn number(src, line, col, depth, acc) -> Result(List(Token), LexError) {
     True ->
       case float.parse(clean) {
         Ok(value) ->
-          scan(rest3, line, col2, depth, [
+          scan(src, off3, line, col2, depth, [
             Token(FloatKind(value), line, col),
             ..acc
           ])
@@ -195,7 +212,7 @@ fn number(src, line, col, depth, acc) -> Result(List(Token), LexError) {
     False ->
       case int.parse(clean) {
         Ok(value) ->
-          scan(rest3, line, col2, depth, [
+          scan(src, off3, line, col2, depth, [
             Token(IntKind(value), line, col),
             ..acc
           ])
@@ -204,10 +221,10 @@ fn number(src, line, col, depth, acc) -> Result(List(Token), LexError) {
   }
 }
 
-fn ident(src, line, col, depth, acc) -> Result(List(Token), LexError) {
-  let #(text, rest_src) = take_while(src, is_ident_char)
+fn ident(src, off, line, col, depth, acc) -> Result(List(Token), LexError) {
+  let #(text, off2) = take_while(src, off, is_ident_char)
   let col2 = col + string.length(text)
-  let kind = case is_upper(first(text)) {
+  let kind = case is_upper(char_at(text, 0)) {
     True -> UpNameKind(text)
     False ->
       case is_keyword(text) {
@@ -215,25 +232,25 @@ fn ident(src, line, col, depth, acc) -> Result(List(Token), LexError) {
         False -> NameKind(text)
       }
   }
-  scan(rest_src, line, col2, depth, [Token(kind, line, col), ..acc])
+  scan(src, off2, line, col2, depth, [Token(kind, line, col), ..acc])
 }
 
-fn symbol(src, line, col, depth, acc) -> Result(List(Token), LexError) {
-  let three = string.slice(src, 0, 3)
+fn symbol(src, off, line, col, depth, acc) -> Result(List(Token), LexError) {
+  let three = host.byte_slice(src, off, 3)
   case three {
     "<=." | ">=." -> {
-      let rest_src = rest(rest(rest(src)))
-      scan(rest_src, line, col + 3, depth, [
+      let off3 = advance(src, advance(src, advance(src, off)))
+      scan(src, off3, line, col + 3, depth, [
         Token(Symbol(three), line, col),
         ..acc
       ])
     }
-    _ -> symbol_two(src, line, col, depth, acc)
+    _ -> symbol_two(src, off, line, col, depth, acc)
   }
 }
 
-fn symbol_two(src, line, col, depth, acc) -> Result(List(Token), LexError) {
-  let two = string.slice(src, 0, 2)
+fn symbol_two(src, off, line, col, depth, acc) -> Result(List(Token), LexError) {
+  let two = host.byte_slice(src, off, 2)
   case two {
     "->"
     | "|>"
@@ -254,14 +271,14 @@ fn symbol_two(src, line, col, depth, acc) -> Result(List(Token), LexError) {
     | "<."
     | ">."
     | "<-" -> {
-      let rest_src = rest(rest(src))
-      scan(rest_src, line, col + 2, depth, [
+      let off2 = advance(src, advance(src, off))
+      scan(src, off2, line, col + 2, depth, [
         Token(Symbol(two), line, col),
         ..acc
       ])
     }
     _ -> {
-      let c = first(src)
+      let c = char_at(src, off)
       case is_symbol_char(c) {
         True -> {
           let depth2 = case c {
@@ -269,7 +286,7 @@ fn symbol_two(src, line, col, depth, acc) -> Result(List(Token), LexError) {
             ")" | "]" -> max_int(0, depth - 1)
             _ -> depth
           }
-          scan(rest(src), line, col + 1, depth2, [
+          scan(src, advance(src, off), line, col + 1, depth2, [
             Token(Symbol(c), line, col),
             ..acc
           ])
@@ -285,36 +302,43 @@ fn symbol_two(src, line, col, depth, acc) -> Result(List(Token), LexError) {
 // helpers
 // ---------------------------------------------------------------------------
 
-fn first(s: String) -> String {
-  case string.pop_grapheme(s) {
-    Ok(#(g, _)) -> g
-    Error(_) -> ""
-  }
+fn is_eof(src: String, off: Int) -> Bool {
+  host.char_code_at(src, off) < 0
 }
 
-fn rest(s: String) -> String {
-  case string.pop_grapheme(s) {
-    Ok(#(_, r)) -> r
-    Error(_) -> ""
-  }
+fn char_at(src: String, off: Int) -> String {
+  host.byte_slice(src, off, host.char_byte_len(src, off))
 }
 
-fn take_while(src: String, pred: fn(String) -> Bool) -> #(String, String) {
-  take_while_loop(src, pred, [])
+fn advance(src: String, off: Int) -> Int {
+  off + host.char_byte_len(src, off)
+}
+
+fn starts_with(src: String, off: Int, pattern: String) -> Bool {
+  host.byte_slice(src, off, string.length(pattern)) == pattern
+}
+
+fn take_while(
+  src: String,
+  off: Int,
+  pred: fn(String) -> Bool,
+) -> #(String, Int) {
+  take_while_loop(src, off, pred, off)
 }
 
 fn take_while_loop(
   src: String,
+  off: Int,
   pred: fn(String) -> Bool,
-  acc: List(String),
-) -> #(String, String) {
-  case src {
-    "" -> #(string.concat(list.reverse(acc)), "")
-    _ -> {
-      let c = first(src)
+  start: Int,
+) -> #(String, Int) {
+  case is_eof(src, off) {
+    True -> #(host.byte_slice(src, start, off - start), off)
+    False -> {
+      let c = char_at(src, off)
       case pred(c) {
-        True -> take_while_loop(rest(src), pred, [c, ..acc])
-        False -> #(string.concat(list.reverse(acc)), src)
+        True -> take_while_loop(src, advance(src, off), pred, start)
+        False -> #(host.byte_slice(src, start, off - start), off)
       }
     }
   }
