@@ -880,64 +880,123 @@ fn scheme_surface_type(state: State, locals, name) {
 
 /// Naive simultaneous substitution of variables by expressions (lambda
 /// captures). Assumes captured names are not shadowed inside the body.
+/// Names bound by a pattern (including `as` and labelled patterns).
+fn pattern_names(pattern) -> List(String) {
+  case pattern {
+    PVar(name) -> [name]
+    PAs(inner, name) -> [name, ..pattern_names(inner)]
+    PLabelled(_, inner) -> pattern_names(inner)
+    PCtor(_, args) -> list.flat_map(args, pattern_names)
+    PTuple(patterns) -> list.flat_map(patterns, pattern_names)
+    PBitArray(patterns) -> list.flat_map(patterns, pattern_names)
+    _ -> []
+  }
+}
+
+/// Scope-aware simultaneous substitution of captured variables by
+/// expressions. Shadowed bindings are left untouched.
 fn replace_vars(expr, replacements) {
+  replace_vars_bound(expr, replacements, [])
+}
+
+fn replace_vars_bound(expr, replacements, bound) {
   case expr {
     EVar(name) ->
-      case dict.get(replacements, name) {
-        Ok(replacement) -> replacement
-        Error(_) -> expr
+      case list.contains(bound, name) {
+        True -> expr
+        False ->
+          case dict.get(replacements, name) {
+            Ok(replacement) -> replacement
+            Error(_) -> expr
+          }
       }
     ETuple(elements) ->
-      ETuple(list.map(elements, fn(e) { replace_vars(e, replacements) }))
+      ETuple(
+        list.map(elements, fn(e) { replace_vars_bound(e, replacements, bound) }),
+      )
     EClosure(code, captures, env_ty, fn_ty) ->
       EClosure(
         code,
-        list.map(captures, fn(e) { replace_vars(e, replacements) }),
+        list.map(captures, fn(e) { replace_vars_bound(e, replacements, bound) }),
         env_ty,
         fn_ty,
       )
     ECtor(name, args) ->
-      ECtor(name, list.map(args, fn(e) { replace_vars(e, replacements) }))
+      ECtor(
+        name,
+        list.map(args, fn(e) { replace_vars_bound(e, replacements, bound) }),
+      )
     ECall(fun, args) ->
       ECall(
-        replace_vars(fun, replacements),
-        list.map(args, fn(e) { replace_vars(e, replacements) }),
+        replace_vars_bound(fun, replacements, bound),
+        list.map(args, fn(e) { replace_vars_bound(e, replacements, bound) }),
       )
     EBinop(op, l, r) ->
-      EBinop(op, replace_vars(l, replacements), replace_vars(r, replacements))
-    EUnop(op, e) -> EUnop(op, replace_vars(e, replacements))
+      EBinop(
+        op,
+        replace_vars_bound(l, replacements, bound),
+        replace_vars_bound(r, replacements, bound),
+      )
+    EUnop(op, e) -> EUnop(op, replace_vars_bound(e, replacements, bound))
     EBlock(statements) ->
-      EBlock(list.map(statements, fn(s) { replace_stmt(s, replacements) }))
+      EBlock(replace_statements(statements, replacements, bound))
     ECase(subject, arms) ->
       ECase(
-        replace_vars(subject, replacements),
+        replace_vars_bound(subject, replacements, bound),
         list.map(arms, fn(arm) {
           let Arm(pattern, guard, body) = arm
+          let inner = list.append(pattern_names(pattern), bound)
           Arm(
             pattern,
-            replace_opt(guard, replacements),
-            replace_vars(body, replacements),
+            replace_opt_bound(guard, replacements, inner),
+            replace_vars_bound(body, replacements, inner),
           )
         }),
       )
-    EField(obj, name) -> EField(replace_vars(obj, replacements), name)
+    EField(obj, name) ->
+      EField(replace_vars_bound(obj, replacements, bound), name)
     ELabelled(label, value) ->
-      ELabelled(label, replace_vars(value, replacements))
-    ELambda(names, body) -> ELambda(names, replace_vars(body, replacements))
+      ELabelled(label, replace_vars_bound(value, replacements, bound))
+    ELambda(names, body) ->
+      ELambda(
+        names,
+        replace_vars_bound(body, replacements, list.append(names, bound)),
+      )
+    EUpdate(name, base, fields) ->
+      EUpdate(
+        name,
+        replace_vars_bound(base, replacements, bound),
+        list.map(fields, fn(field) {
+          let #(label, value) = field
+          #(label, replace_vars_bound(value, replacements, bound))
+        }),
+      )
+    EBitArray(elements) ->
+      EBitArray(
+        list.map(elements, fn(e) { replace_vars_bound(e, replacements, bound) }),
+      )
     _ -> expr
   }
 }
 
-fn replace_stmt(statement, replacements) {
-  case statement {
-    Let(pattern, value) -> Let(pattern, replace_vars(value, replacements))
-    Stmt(expr) -> Stmt(replace_vars(expr, replacements))
+fn replace_statements(statements, replacements, bound) {
+  case statements {
+    [] -> []
+    [Let(pattern, value), ..rest] -> {
+      let value2 = replace_vars_bound(value, replacements, bound)
+      let inner = list.append(pattern_names(pattern), bound)
+      [Let(pattern, value2), ..replace_statements(rest, replacements, inner)]
+    }
+    [Stmt(expr), ..rest] -> [
+      Stmt(replace_vars_bound(expr, replacements, bound)),
+      ..replace_statements(rest, replacements, bound)
+    ]
   }
 }
 
-fn replace_opt(opt, replacements) {
+fn replace_opt_bound(opt, replacements, bound) {
   case opt {
-    Some(expr) -> Some(replace_vars(expr, replacements))
+    Some(expr) -> Some(replace_vars_bound(expr, replacements, bound))
     None -> None
   }
 }
@@ -950,49 +1009,83 @@ fn has_binding(locals, name) {
 }
 
 fn free_var_names(expr) -> List(String) {
+  free_var_names_bound(expr, [])
+}
+
+fn free_var_names_bound(expr, bound) -> List(String) {
   case expr {
-    EVar(name) -> [name]
-    ETuple(elements) -> list.flat_map(elements, free_var_names)
-    ECtor(_, args) -> list.flat_map(args, free_var_names)
+    EVar(name) ->
+      case list.contains(bound, name) {
+        True -> []
+        False -> [name]
+      }
+    ETuple(elements) ->
+      list.flat_map(elements, fn(e) { free_var_names_bound(e, bound) })
+    ECtor(_, args) ->
+      list.flat_map(args, fn(e) { free_var_names_bound(e, bound) })
     ECall(fun, args) ->
-      list.append(free_var_names(fun), list.flat_map(args, free_var_names))
-    EBinop(_, l, r) -> list.append(free_var_names(l), free_var_names(r))
-    EUnop(_, e) -> free_var_names(e)
-    EBlock(statements) -> list.flat_map(statements, free_var_names_stmt)
+      list.append(
+        free_var_names_bound(fun, bound),
+        list.flat_map(args, fn(e) { free_var_names_bound(e, bound) }),
+      )
+    EBinop(_, l, r) ->
+      list.append(
+        free_var_names_bound(l, bound),
+        free_var_names_bound(r, bound),
+      )
+    EUnop(_, e) -> free_var_names_bound(e, bound)
+    EBlock(statements) -> free_var_names_block(statements, bound)
     ECase(subject, arms) ->
       list.append(
-        free_var_names(subject),
+        free_var_names_bound(subject, bound),
         list.flat_map(arms, fn(arm) {
-          let Arm(_, guard, body) = arm
-          list.append(free_var_names_expr_opt(guard), free_var_names(body))
+          let Arm(pattern, guard, body) = arm
+          let inner = list.append(pattern_names(pattern), bound)
+          list.append(
+            free_var_names_opt(guard, inner),
+            free_var_names_bound(body, inner),
+          )
         }),
       )
-    EField(obj, _) -> free_var_names(obj)
-    ELabelled(_, value) -> free_var_names(value)
-    ELambda(_, body) -> free_var_names(body)
+    EField(obj, _) -> free_var_names_bound(obj, bound)
+    ELabelled(_, value) -> free_var_names_bound(value, bound)
+    ELambda(names, body) ->
+      free_var_names_bound(body, list.append(names, bound))
     EUpdate(_, base, fields) ->
       list.append(
-        free_var_names(base),
+        free_var_names_bound(base, bound),
         list.flat_map(fields, fn(field) {
           let #(_, value) = field
-          free_var_names(value)
+          free_var_names_bound(value, bound)
         }),
       )
-    EBitArray(elements) -> list.flat_map(elements, free_var_names)
+    EBitArray(elements) ->
+      list.flat_map(elements, fn(e) { free_var_names_bound(e, bound) })
     _ -> []
   }
 }
 
-fn free_var_names_stmt(statement) {
-  case statement {
-    Let(_, value) -> free_var_names(value)
-    Stmt(expr) -> free_var_names(expr)
+fn free_var_names_block(statements, bound) -> List(String) {
+  case statements {
+    [] -> []
+    [Let(pattern, value), ..rest] -> {
+      let inner = list.append(pattern_names(pattern), bound)
+      list.append(
+        free_var_names_bound(value, bound),
+        free_var_names_block(rest, inner),
+      )
+    }
+    [Stmt(expr), ..rest] ->
+      list.append(
+        free_var_names_bound(expr, bound),
+        free_var_names_block(rest, bound),
+      )
   }
 }
 
-fn free_var_names_expr_opt(opt) {
+fn free_var_names_opt(opt, bound) -> List(String) {
   case opt {
-    Some(expr) -> free_var_names(expr)
+    Some(expr) -> free_var_names_bound(expr, bound)
     None -> []
   }
 }
