@@ -910,14 +910,30 @@ fn infer_call(env: Env, st: St, fun, args) {
   case fun {
     EVar(name) -> {
       use #(fun_ty, st) <- result_try(infer_var(env, st, name))
-      infer_call_with(env, st, fun_ty, args, name)
+      infer_call_dispatch(env, st, fun_ty, args, name)
     }
     EField(EVar(module), name) ->
       infer_call(env, st, EVar(module <> "." <> name), args)
     _ -> {
       use #(fun_ty, st) <- result_try(infer(env, st, fun))
-      infer_call_with(env, st, fun_ty, args, "call")
+      infer_call_dispatch(env, st, fun_ty, args, "call")
     }
+  }
+}
+
+/// When the callee type is still a variable (e.g. calling a higher-order
+/// parameter), infer the arguments and unify the callee with their function
+/// type; otherwise the parameter types are known and can guide inference.
+fn infer_call_dispatch(env, st: St, fun_ty, args, ctx) {
+  case types.resolve(fun_ty, st.subst) {
+    Var(_) -> {
+      use #(arg_tys, st) <- result_try(infer_all(env, st, args))
+      let #(ret, counter) = types.fresh(st.counter)
+      let st = St(..st, counter: counter)
+      use st <- result_try(unify_st(fun_ty, Fun(arg_tys, ret), st))
+      Ok(#(ret, st))
+    }
+    _ -> infer_call_with(env, st, fun_ty, args, ctx)
   }
 }
 
