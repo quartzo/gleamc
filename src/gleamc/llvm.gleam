@@ -57,6 +57,7 @@ pub fn emit(
       string.compare(type_name_of(a), type_name_of(b))
     })
   let recursive = ownership.recursive_types(ctors)
+  let fields_of = ownership.type_fields(ctors)
   let tuples =
     collect_tuple_types(custom_types, functions)
     |> list.sort(fn(a, b) { string.compare(tuple_key(a), tuple_key(b)) })
@@ -191,7 +192,7 @@ pub fn emit(
   let env_drops =
     string.join(
       list.map(env_structs, fn(entry) {
-        emit_env_drop(entry, recursive, ctors, lits)
+        emit_env_drop(entry, recursive, fields_of, lits)
       }),
       "\n\n",
     )
@@ -199,8 +200,8 @@ pub fn emit(
     string.join(
       list.flat_map(seeds, fn(ty) {
         [
-          emit_rc_glue(lits, recursive, custom_types, ctors, "retain", ty),
-          emit_rc_glue(lits, recursive, custom_types, ctors, "drop", ty),
+          emit_rc_glue(lits, recursive, custom_types, fields_of, "retain", ty),
+          emit_rc_glue(lits, recursive, custom_types, fields_of, "drop", ty),
         ]
       }),
       "\n\n",
@@ -260,7 +261,8 @@ pub fn emit(
 fn header() -> String {
   "target triple = \"x86_64-pc-linux-gnu\"\n\n"
   <> "%GleamcString = type { i8*, i64 }\n"
-  <> "%GleamcBitArray = type { i8*, i64 }\n\n"
+  <> "%GleamcBitArray = type { i8*, i64 }\n"
+  <> "%GleamcFileResult = type { i64, %GleamcBitArray, i64 }\n\n"
   <> "declare void @Gleamc_set_args(i32, i8**)\n"
   <> "declare i8* @gleamc_alloc(i64)\n"
   <> "declare i8* @gleamc_alloc_site(i64, i8*)\n"
@@ -886,9 +888,11 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
       let #(lty, lv, b) = read_val(ctx, left, b)
       let #(_, rv, b) = read_val(ctx, right, b)
       let oty = operand_type(ctx.by_name, left)
-      case op_name == "==" || op_name == "!=", is_eq_aggregate_ty(oty) {
+      case
+        op_name == "==" || op_name == "!=", is_eq_special_ty(oty)
+      {
         True, True -> {
-          let eq = eq_name_ty(oty)
+          let eq = eq_call_name(oty)
           let #(c0, b) = fresh(b)
           let b =
             emit_line(
@@ -2090,6 +2094,21 @@ fn mangle_glue(ty: Type) -> String {
 
 fn eq_name_ty(ty: Type) -> String {
   "Gleamc_Eq_" <> mangle_glue(ty)
+}
+
+fn is_eq_special_ty(ty: Type) -> Bool {
+  case ty {
+    TString | TNamed("BitArray") -> True
+    _ -> is_eq_aggregate_ty(ty)
+  }
+}
+
+fn eq_call_name(ty: Type) -> String {
+  case ty {
+    TString -> "gleamc_string_eq"
+    TNamed("BitArray") -> "Gleamc_bit_array_eq"
+    _ -> eq_name_ty(ty)
+  }
 }
 
 fn is_eq_aggregate_ty(ty: Type) -> Bool {
@@ -3677,7 +3696,7 @@ fn env_drop_ptr(env_ty: String) -> String {
   }
 }
 
-fn emit_env_drop(entry, recursive, ctors, lits) -> String {
+fn emit_env_drop(entry, recursive, fields_of, lits) -> String {
   let #(env_ty, field_types) = entry
   let safe_ty = safe(env_ty)
   let done = "ed_" <> safe_ty <> "_done"
@@ -3696,7 +3715,7 @@ fn emit_env_drop(entry, recursive, ctors, lits) -> String {
       b,
       fn(b, pair) {
         let #(fty, index) = pair
-        case ownership.needs_drop(fty, ctors) {
+        case ownership.needs_drop_in(fty, fields_of, recursive) {
           True -> {
             let #(gp, b) = fresh(b)
             let b =
@@ -3720,7 +3739,7 @@ fn emit_env_drop(entry, recursive, ctors, lits) -> String {
                 b,
                 "  " <> fv <> " = load " <> fty_s <> ", " <> fty_s <> "* " <> gp,
               )
-            rc_expr(lits, recursive, ctors, "drop", fty, fty_s, fv, "env", b)
+            rc_expr(lits, recursive, fields_of, "drop", fty, fty_s, fv, "env", b)
           }
           False -> b
         }
@@ -3753,7 +3772,7 @@ fn rc_name(which: String, ty: Type) -> String {
 fn rc_expr(
   lits: Dict(String, Int),
   _recursive,
-  ctors,
+  _fields_of,
   which,
   ty,
   ty_s,
@@ -3845,7 +3864,6 @@ fn rc_expr(
       }
     }
     TNamed(_) | ast.TTuple(_) -> {
-      let _ = ctors
       emit_line(
         b,
         "  call void @"
@@ -3865,7 +3883,7 @@ fn emit_rc_glue(
   lits: Dict(String, Int),
   recursive,
   custom_types,
-  ctors,
+  fields_of,
   which,
   ty,
 ) -> String {
@@ -3881,13 +3899,13 @@ fn emit_rc_glue(
           b,
           fn(b, pair) {
             let #(inner, index) = pair
-            case ownership.needs_drop(inner, ctors) {
+            case ownership.needs_drop_in(inner, fields_of, recursive) {
               True -> {
                 let #(fv, b) = extract_value(ty_s, "%v", [index], b)
                 rc_expr(
                   lits,
                   recursive,
-                  ctors,
+                  fields_of,
                   which,
                   inner,
                   llvm_ty(inner, recursive),
@@ -3909,7 +3927,7 @@ fn emit_rc_glue(
             lits,
             recursive,
             custom_types,
-            ctors,
+            fields_of,
             which,
             type_name,
             ty_s,
@@ -3921,7 +3939,7 @@ fn emit_rc_glue(
             lits,
             recursive,
             custom_types,
-            ctors,
+            fields_of,
             which,
             type_name,
             ty_s,
@@ -3941,7 +3959,7 @@ fn rc_glue_byvalue(
   lits: Dict(String, Int),
   recursive,
   custom_types,
-  ctors,
+  fields_of,
   which,
   type_name,
   ty_s,
@@ -3974,13 +3992,13 @@ fn rc_glue_byvalue(
             b,
             fn(b, fp) {
               let #(inner, i) = fp
-              case ownership.needs_drop(inner, ctors) {
+              case ownership.needs_drop_in(inner, fields_of, recursive) {
                 True -> {
                   let #(fv, b) = extract_value(ty_s, "%v", [index + 1, i], b)
                   rc_expr(
                     lits,
                     recursive,
-                    ctors,
+                    fields_of,
                     which,
                     inner,
                     llvm_ty(inner, recursive),
@@ -4005,7 +4023,7 @@ fn rc_glue_recursive(
   lits: Dict(String, Int),
   recursive,
   custom_types,
-  ctors,
+  fields_of,
   which,
   type_name,
   ty_s,
@@ -4063,14 +4081,14 @@ fn rc_glue_recursive(
                 b,
                 fn(b, fp) {
                   let #(inner, i) = fp
-                  case ownership.needs_drop(inner, ctors) {
+                  case ownership.needs_drop_in(inner, fields_of, recursive) {
                     True -> {
                       let #(fv, b) =
                         extract_value(struct_ty, "%av", [index + 1, i], b)
                       rc_expr(
                         lits,
                         recursive,
-                        ctors,
+                        fields_of,
                         which,
                         inner,
                         llvm_ty(inner, recursive),

@@ -57,7 +57,7 @@ fn scan(
             True -> skip_comment(src, line, col, depth, acc)
             False -> symbol(src, line, col, depth, acc)
           }
-        "\"" -> string_lit(rest(src), line, col + 1, depth, acc, "")
+        "\"" -> string_lit(rest(src), line, col + 1, depth, acc, [])
         _ ->
           case is_digit(c) {
             True -> number(src, line, col, depth, acc)
@@ -103,7 +103,7 @@ fn string_lit(
   col,
   depth,
   acc,
-  buf: String,
+  buf: List(String),
 ) -> Result(List(Token), LexError) {
   case src {
     "" -> Error(LexError("unterminated string", line, col))
@@ -113,12 +113,12 @@ fn string_lit(
       case c {
         "\"" ->
           scan(r, line, col + 1, depth, [
-            Token(StringKind(buf), line, col),
+            Token(StringKind(string.concat(list.reverse(buf))), line, col),
             ..acc
           ])
         "\\" -> escape(r, line, col + 1, depth, acc, buf)
-        "\n" -> string_lit(r, line + 1, 1, depth, acc, buf <> "\n")
-        _ -> string_lit(r, line, col + 1, depth, acc, buf <> c)
+        "\n" -> string_lit(r, line + 1, 1, depth, acc, ["\n", ..buf])
+        _ -> string_lit(r, line, col + 1, depth, acc, [c, ..buf])
       }
     }
   }
@@ -137,7 +137,7 @@ fn escape(src, line, col, depth, acc, buf) -> Result(List(Token), LexError) {
         "\\" -> "\\"
         _ -> c
       }
-      string_lit(rest(src), line, col + 1, depth, acc, buf <> decoded)
+      string_lit(rest(src), line, col + 1, depth, acc, [decoded, ..buf])
     }
   }
 }
@@ -181,7 +181,7 @@ fn number(src, line, col, depth, acc) -> Result(List(Token), LexError) {
   }
   let text = text <> exp_text
   let clean = string.replace(text, "_", "")
-  let col2 = col + string.length(src) - string.length(rest3)
+  let col2 = col + string.length(text)
   case is_float {
     True ->
       case float.parse(clean) {
@@ -206,7 +206,7 @@ fn number(src, line, col, depth, acc) -> Result(List(Token), LexError) {
 
 fn ident(src, line, col, depth, acc) -> Result(List(Token), LexError) {
   let #(text, rest_src) = take_while(src, is_ident_char)
-  let col2 = col + string.length(src) - string.length(rest_src)
+  let col2 = col + string.length(text)
   let kind = case is_upper(first(text)) {
     True -> UpNameKind(text)
     False ->
@@ -222,7 +222,7 @@ fn symbol(src, line, col, depth, acc) -> Result(List(Token), LexError) {
   let three = string.slice(src, 0, 3)
   case three {
     "<=." | ">=." -> {
-      let rest_src = string.slice(src, 3, string.length(src))
+      let rest_src = rest(rest(rest(src)))
       scan(rest_src, line, col + 3, depth, [
         Token(Symbol(three), line, col),
         ..acc
@@ -254,7 +254,7 @@ fn symbol_two(src, line, col, depth, acc) -> Result(List(Token), LexError) {
     | "<."
     | ">."
     | "<-" -> {
-      let rest_src = string.slice(src, 2, string.length(src))
+      let rest_src = rest(rest(src))
       scan(rest_src, line, col + 2, depth, [
         Token(Symbol(two), line, col),
         ..acc
@@ -300,21 +300,21 @@ fn rest(s: String) -> String {
 }
 
 fn take_while(src: String, pred: fn(String) -> Bool) -> #(String, String) {
-  take_while_loop(src, pred, "")
+  take_while_loop(src, pred, [])
 }
 
 fn take_while_loop(
   src: String,
   pred: fn(String) -> Bool,
-  acc: String,
+  acc: List(String),
 ) -> #(String, String) {
   case src {
-    "" -> #(acc, "")
+    "" -> #(string.concat(list.reverse(acc)), "")
     _ -> {
       let c = first(src)
       case pred(c) {
-        True -> take_while_loop(rest(src), pred, acc <> c)
-        False -> #(acc, src)
+        True -> take_while_loop(rest(src), pred, [c, ..acc])
+        False -> #(string.concat(list.reverse(acc)), src)
       }
     }
   }

@@ -23,9 +23,15 @@ pub fn insert(
 ) -> ir.Module {
   let ir.Module(functions) = module
   let modes = borrow.analyze(module)
+  // `type_fields`/`recursive_types` are module-wide; compute them once instead
+  // of rebuilding them on every `needs_drop` call (once per local per function).
+  let fields_of = type_fields(ctors)
+  let recursive = recursive_types(ctors)
   let ffi = ffi_modes.table()
   ir.Module(
-    list.map(functions, fn(function) { insert_fn(function, ctors, modes, ffi) }),
+    list.map(functions, fn(function) {
+      insert_fn(function, fields_of, recursive, modes, ffi)
+    }),
   )
 }
 
@@ -36,6 +42,12 @@ pub fn insert(
 pub fn needs_drop(ty: Type, ctors: Dict(String, checker.CtorInfo)) -> Bool {
   let fields_of = type_fields(ctors)
   let recursive = recursive_types_from(fields_of)
+  needs_drop_in(ty, fields_of, recursive)
+}
+
+/// Like `needs_drop`, but with `fields_of`/`recursive` precomputed by the
+/// caller (avoiding an O(N) `type_fields` rebuild on every call).
+pub fn needs_drop_in(ty: Type, fields_of, recursive) -> Bool {
   needs_drop_seen(ty, fields_of, recursive, [])
 }
 
@@ -146,12 +158,12 @@ pub fn type_fields(
 // per-function pass
 // ---------------------------------------------------------------------------
 
-fn insert_fn(function: ir.Function, ctors, modes, ffi) -> ir.Function {
+fn insert_fn(function: ir.Function, fields_of, recursive, modes, ffi) -> ir.Function {
   let ir.Function(name, params, ret, blocks, locals) = function
   let handles =
     list.fold(locals, dict.new(), fn(acc, local) {
       let ir.Local(local_name, local_ty) = local
-      case needs_drop(local_ty, ctors) {
+      case needs_drop_in(local_ty, fields_of, recursive) {
         True -> dict.insert(acc, local_name, local_ty)
         False -> acc
       }
@@ -650,19 +662,23 @@ fn retain_n(pre, index, var_name, var_ty, count) {
 }
 
 fn insert_retains(ops, index, pre, acc) {
+  // `acc` is the reverse of the output produced so far, so appending to the
+  // end of the result is O(1) (per element) instead of O(n) per op.
   case ops {
-    [] ->
-      list.append(acc, case dict.get(pre, index) {
+    [] -> {
+      let trailing = case dict.get(pre, index) {
         Ok(found) -> found
         Error(_) -> []
-      })
+      }
+      list.reverse(list.append(list.reverse(trailing), acc))
+    }
     [op, ..rest] -> {
       let retains = case dict.get(pre, index) {
         Ok(found) -> found
         Error(_) -> []
       }
-      // retains go BEFORE the op | the keeps lists in forward order
-      let acc = list.append(acc, list.append(retains, [op]))
+      // final order is `retains ++ [op]`, so reversed it is `[op] ++ rev(retains)`.
+      let acc = list.append([op], list.append(list.reverse(retains), acc))
       insert_retains(rest, index + 1, pre, acc)
     }
   }

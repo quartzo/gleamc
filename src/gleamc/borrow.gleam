@@ -17,8 +17,6 @@ import gleam/string
 import gleamc/ffi_modes
 import gleamc/ir
 
-const max_iterations = 200
-
 pub fn analyze(module: ir.Module) -> Dict(String, List(ffi_modes.ParamMode)) {
   let ir.Module(functions) = module
   let ffi = ffi_modes.table()
@@ -39,10 +37,11 @@ pub fn analyze(module: ir.Module) -> Dict(String, List(ffi_modes.ParamMode)) {
     })
   // A tail call moves its arguments, so the callee's corresponding parameters
   // must be `Owned` (the callee releases them at their last use).
+  let targets = tail_targets(functions)
   let initial =
     list.fold(functions, initial, fn(acc, function) {
       let ir.Function(name, params, _, _, _) = function
-      case dict.get(tail_targets(functions), name) {
+      case dict.get(targets, name) {
         Error(_) -> acc
         Ok(targets) ->
           dict.insert(
@@ -64,25 +63,68 @@ pub fn analyze(module: ir.Module) -> Dict(String, List(ffi_modes.ParamMode)) {
           )
       }
     })
-  iterate(functions, ffi, initial, 0)
+  let callers = callers_map(functions)
+  let by_name =
+    list.fold(functions, dict.new(), fn(acc, function) {
+      let ir.Function(name, _, _, _, _) = function
+      dict.insert(acc, name, function)
+    })
+  let queue =
+    list.map(functions, fn(function) {
+      let ir.Function(name, _, _, _, _) = function
+      name
+    })
+  iterate(by_name, ffi, callers, initial, queue)
+}
+
+/// Reverse call graph: callee -> functions that call it (direct calls and tail
+/// calls), so a mode upgrade can be propagated to exactly the callers that
+/// depend on it instead of rescanning every function on every iteration.
+fn callers_map(functions) -> Dict(String, List(String)) {
+  list.fold(functions, dict.new(), fn(acc, function) {
+    let ir.Function(name, _, _, blocks, _) = function
+    let callees =
+      list.flat_map(blocks, fn(block) {
+        let ir.Block(_, ops, term) = block
+        let from_ops =
+          list.filter_map(ops, fn(op) {
+            case op {
+              ir.OpCall(_, fun, _, _) -> Ok(fun)
+              _ -> Error(Nil)
+            }
+          })
+        let from_term = case term {
+          ir.Tailcall(fun, _) -> [fun]
+          _ -> []
+        }
+        list.append(from_ops, from_term)
+      })
+    list.fold(callees, acc, fn(acc, callee) {
+      let existing = case dict.get(acc, callee) {
+        Ok(found) -> found
+        Error(_) -> []
+      }
+      dict.insert(acc, callee, [name, ..existing])
+    })
+  })
 }
 
 /// Parameter names (by position) of each function that are the target of a
 /// tail call somewhere in the module.
 fn tail_targets(functions) -> Dict(String, List(String)) {
+  let params_by_name =
+    list.fold(functions, dict.new(), fn(acc, function) {
+      let ir.Function(name, params, _, _, _) = function
+      dict.insert(acc, name, params)
+    })
   list.fold(functions, dict.new(), fn(acc, function) {
     let ir.Function(_, _, _, blocks, _) = function
     list.fold(blocks, acc, fn(acc, block) {
       let ir.Block(_, _, term) = block
       case term {
         ir.Tailcall(fun, _) ->
-          case
-            list.find(functions, fn(f) {
-              let ir.Function(n, _, _, _, _) = f
-              n == fun
-            })
-          {
-            Ok(ir.Function(_, params, _, _, _)) -> dict.insert(acc, fun, params)
+          case dict.get(params_by_name, fun) {
+            Ok(params) -> dict.insert(acc, fun, params)
             Error(_) -> acc
           }
         _ -> acc
@@ -95,19 +137,26 @@ fn tail_target_name(targets, param, _index) -> Bool {
   list.contains(targets, param)
 }
 
-fn iterate(functions, ffi, state, iteration) {
-  case iteration >= max_iterations {
-    True -> state
-    False -> {
-      let #(next, changed) =
-        list.fold(functions, #(state, False), fn(acc, function) {
-          let #(current, changed_so_far) = acc
-          let #(updated, this_changed) = upgrade(function, ffi, current)
-          #(updated, changed_so_far || this_changed)
-        })
-      case changed {
-        True -> iterate(functions, ffi, next, iteration + 1)
-        False -> next
+fn iterate(by_name, ffi, callers, state, queue) {
+  case queue {
+    [] -> state
+    [name, ..rest] -> {
+      case dict.get(by_name, name) {
+        Error(_) -> iterate(by_name, ffi, callers, state, rest)
+        Ok(function) -> {
+          let #(next, changed) = upgrade(function, ffi, state)
+          let rest = case changed {
+            True -> {
+              let cs = case dict.get(callers, name) {
+                Ok(found) -> found
+                Error(_) -> []
+              }
+              list.append(cs, rest)
+            }
+            False -> rest
+          }
+          iterate(by_name, ffi, callers, next, rest)
+        }
       }
     }
   }

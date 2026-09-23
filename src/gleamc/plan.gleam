@@ -109,9 +109,10 @@ fn tail_edges(function: ir.Function) -> List(Edge) {
 // ---------------------------------------------------------------------------
 
 fn mutual_groups(names: List(String), edges: List(Edge)) -> List(Group) {
+  let adjacency = group_adjacency(edges)
   let reach =
     list.fold(names, dict.new(), fn(acc, name) {
-      dict.insert(acc, name, reachable(name, edges, dict.new()))
+      dict.insert(acc, name, reachable(name, adjacency, dict.new()))
     })
   let members =
     list.filter(names, fn(name) {
@@ -154,20 +155,29 @@ fn reaches(a, b, reach) -> Bool {
   }
 }
 
-fn reachable(name, edges, seen) -> Dict(String, Bool) {
+/// Caller -> callees adjacency, built once (avoids re-scanning the edge list
+/// at every step of the reachability DFS, which made it O(V^2 * E)).
+fn group_adjacency(edges: List(Edge)) -> Dict(String, List(String)) {
+  list.fold(edges, dict.new(), fn(acc, edge) {
+    let Edge(caller, callee) = edge
+    let existing = case dict.get(acc, caller) {
+      Ok(found) -> found
+      Error(_) -> []
+    }
+    dict.insert(acc, caller, [callee, ..existing])
+  })
+}
+
+fn reachable(name, adjacency, seen) -> Dict(String, Bool) {
   case dict.get(seen, name) {
     Ok(_) -> seen
     Error(_) -> {
       let seen = dict.insert(seen, name, True)
-      let next =
-        list.filter(edges, fn(edge) {
-          let Edge(caller, _) = edge
-          caller == name
-        })
-      list.fold(next, seen, fn(acc, edge) {
-        let Edge(_, callee) = edge
-        reachable(callee, edges, acc)
-      })
+      let next = case dict.get(adjacency, name) {
+        Ok(found) -> found
+        Error(_) -> []
+      }
+      list.fold(next, seen, fn(acc, callee) { reachable(callee, adjacency, acc) })
     }
   }
 }

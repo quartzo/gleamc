@@ -166,7 +166,7 @@ fn request_fn(state: State, name: String, args: List(Type)) -> State {
           State(
             ..state,
             fn_names: dict.insert(state.fn_names, key(name, args), name),
-            pending_fn: list.append(state.pending_fn, [#(name, args)]),
+            pending_fn: [#(name, args), ..state.pending_fn],
           )
       }
     _ -> {
@@ -177,7 +177,7 @@ fn request_fn(state: State, name: String, args: List(Type)) -> State {
           State(
             ..state,
             fn_names: dict.insert(state.fn_names, key(name, args), specialized),
-            pending_fn: list.append(state.pending_fn, [#(name, args)]),
+            pending_fn: [#(name, args), ..state.pending_fn],
           )
       }
     }
@@ -211,7 +211,7 @@ fn request_type(
           [] -> TNamed(name)
           _ -> TApp(name, args)
         }),
-        pending_type: list.append(state.pending_type, [#(name, args)]),
+        pending_type: [#(name, args), ..state.pending_type],
       ),
     )
   }
