@@ -259,6 +259,13 @@ fn subst_surface(surface_map, ty) -> Type {
 }
 
 fn specialise_fn(state: State, name, type_args) {
+  case specialise_fn_inner(state, name, type_args) {
+    Ok(found) -> Ok(found)
+    Error(err) -> Error("while specialising `" <> name <> "`: " <> err)
+  }
+}
+
+fn specialise_fn_inner(state: State, name, type_args) {
   case dict.get(state.surface_fns, name) {
     Error(_) -> Ok(state)
     Ok(function) -> {
