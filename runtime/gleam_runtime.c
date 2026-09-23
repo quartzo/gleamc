@@ -9,6 +9,7 @@ static size_t codepoint_offset(GleamcString s, int64_t index);
 #include <uv.h>
 #include <fcntl.h>
 #include <string.h>
+#include <stdint.h>
 #include <unistd.h>
 
 #include <unicode/ustring.h>
@@ -18,25 +19,54 @@ static size_t codepoint_offset(GleamcString s, int64_t index);
 /* Refcount audit: never free on 0/negative (allow negative), and report at
  * exit every block whose refcount ended <0 or >0, with the last touch site. */
 typedef struct GleamcAudit {
-    void* p;
+    void* p;      /* NULL marks an empty slot */
     long rc;
     int warned;
     const char* site;
-    struct GleamcAudit* next;
 } GleamcAudit;
 static GleamcAudit* _audit = NULL;
+static size_t _audit_cap = 0;   /* power of two */
+static size_t _audit_used = 0;
+
+static size_t _audit_hash(void* p) {
+    uint64_t x = (uint64_t)(uintptr_t)p;
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    return (size_t)x;
+}
+
+static void _audit_grow(void) {
+    size_t nc = _audit_cap ? _audit_cap * 2 : 1024;
+    GleamcAudit* nt = (GleamcAudit*)calloc(nc, sizeof(GleamcAudit));
+    if (nt == NULL) return;
+    for (size_t i = 0; i < _audit_cap; i++) {
+        if (_audit[i].p == NULL) continue;
+        size_t j = _audit_hash(_audit[i].p) & (nc - 1);
+        while (nt[j].p != NULL) j = (j + 1) & (nc - 1);
+        nt[j] = _audit[i];
+    }
+    free(_audit);
+    _audit = nt;
+    _audit_cap = nc;
+}
 
 static GleamcAudit* _audit_get(void* p) {
-    GleamcAudit* e;
-    for (e = _audit; e != NULL; e = e->next) {
-        if (e->p == p) return e;
+    if (p == NULL) return NULL;
+    if (_audit_used * 10 >= _audit_cap * 7) _audit_grow();
+    if (_audit == NULL) return NULL;
+    size_t i = _audit_hash(p) & (_audit_cap - 1);
+    while (_audit[i].p != NULL && _audit[i].p != p) {
+        i = (i + 1) & (_audit_cap - 1);
     }
-    e = (GleamcAudit*)malloc(sizeof(GleamcAudit));
-    if (e == NULL) return NULL;
-    e->p = p; e->rc = 0; e->warned = 0;
-    e->site = "?";
-    e->next = _audit; _audit = e;
-    return e;
+    if (_audit[i].p == NULL) {
+        _audit[i].p = p;
+        _audit[i].rc = 0;
+        _audit[i].warned = 0;
+        _audit[i].site = "?";
+        _audit_used++;
+    }
+    return &_audit[i];
 }
 
 static void _audit_init(void* p, const char* site) {
@@ -101,11 +131,12 @@ static void _gleamc_report_leaks(void) {
     }
 #ifdef GLEAMC_RC_AUDIT
     {
-        GleamcAudit* e;
         size_t bad = 0;
-        for (e = _audit; e != NULL; e = e->next) {
-            if (e->rc != 0) {
-                fprintf(stderr, "gleamc: rc=%ld at %s p=%p\n", e->rc, e->site, e->p);
+        for (size_t i = 0; i < _audit_cap; i++) {
+            if (_audit[i].p == NULL) continue;
+            if (_audit[i].rc != 0) {
+                fprintf(stderr, "gleamc: rc=%ld at %s p=%p\n", _audit[i].rc,
+                        _audit[i].site, _audit[i].p);
                 bad++;
             }
         }
