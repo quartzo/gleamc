@@ -91,6 +91,10 @@ pub fn check_resolved(
     builtins()
     |> merge_globals(functions)
     |> merge_globals(ctor_schemes(ctors))
+  let env_counts =
+    dict.fold(globals, dict.new(), fn(acc, _, scheme) {
+      counts_add(acc, type_var_counts(types.env_free_vars([scheme])))
+    })
   use #(functions, st) <- result_try(infer_in_order(
     order_functions(definitions),
     functions_by_name,
@@ -99,6 +103,7 @@ pub fn check_resolved(
     var_ids,
     functions,
     globals,
+    env_counts,
     st,
   ))
   let #(resolved, functions) =
@@ -189,12 +194,13 @@ fn infer_in_order(
   var_ids,
   functions,
   globals,
+  counts,
   st,
 ) {
   case order {
     [] -> Ok(#(functions, st))
     [name, ..rest] -> {
-      use #(functions, globals, st) <- result_try(infer_one(
+      use #(functions, globals, counts, st) <- result_try(infer_one(
         name,
         functions_by_name,
         ctors,
@@ -202,6 +208,7 @@ fn infer_in_order(
         var_ids,
         functions,
         globals,
+        counts,
         st,
       ))
       infer_in_order(
@@ -212,6 +219,7 @@ fn infer_in_order(
         var_ids,
         functions,
         globals,
+        counts,
         st,
       )
     }
@@ -226,10 +234,11 @@ fn infer_one(
   var_ids,
   functions,
   globals,
+  counts,
   st: St,
 ) {
   case dict.get(functions_by_name, name) {
-    Error(_) -> Ok(#(functions, globals, st))
+    Error(_) -> Ok(#(functions, globals, counts, st))
     Ok(function) -> {
       let scheme = case dict.get(functions, name) {
         Ok(found) -> found
@@ -258,12 +267,18 @@ fn infer_one(
         Ok(found) -> found
         Error(_) -> dict.new()
       }
-      let frozen = env_free_except(globals, name)
+      let remove = type_var_counts(types.env_free_vars([scheme]))
       let _ = id_map
-      let scheme = types.generalize(frozen, zonked)
+      let scheme = generalize_counts(counts, remove, zonked)
+      let counts =
+        counts_add(
+          counts_sub(counts, remove),
+          type_var_counts(types.env_free_vars([scheme])),
+        )
       Ok(#(
         dict.insert(functions, name, scheme),
         dict.insert(globals, name, scheme),
+        counts,
         st,
       ))
     }
@@ -321,15 +336,53 @@ fn referenced_names(expr: Expr, names: Dict(String, Bool)) -> List(String) {
   })
 }
 
-/// Free type variables of the whole environment except the scheme for `name`,
-/// without copying the environment dict.
-fn env_free_except(globals, name) {
-  dict.fold(globals, [], fn(acc, key, scheme) {
-    case key == name {
-      True -> acc
-      False -> list.append(types.env_free_vars([scheme]), acc)
+/// Multiset of free type-variable ids over the environment, kept incrementally
+/// so `generalize` does not have to rescan every scheme on every function.
+fn type_var_counts(ids: List(Int)) -> Dict(Int, Int) {
+  list.fold(ids, dict.new(), fn(acc, id) {
+    dict.insert(acc, id, case dict.get(acc, id) {
+      Ok(n) -> n + 1
+      Error(_) -> 1
+    })
+  })
+}
+
+fn counts_add(a, b) {
+  dict.fold(b, a, fn(acc, id, n) {
+    dict.insert(acc, id, case dict.get(acc, id) {
+      Ok(m) -> m + n
+      Error(_) -> n
+    })
+  })
+}
+
+fn counts_sub(a, b) {
+  dict.fold(b, a, fn(acc, id, n) {
+    case dict.get(acc, id) {
+      Ok(m) ->
+        case m - n {
+          0 -> dict.delete(acc, id)
+          left -> dict.insert(acc, id, left)
+        }
+      Error(_) -> acc
     }
   })
+}
+
+fn generalize_counts(counts, remove, ty: Ty) -> Scheme {
+  let vars =
+    list.filter(util.dedupe(types.free_vars(ty)), fn(id) {
+      let c = case dict.get(counts, id) {
+        Ok(n) -> n
+        Error(_) -> 0
+      }
+      let r = case dict.get(remove, id) {
+        Ok(n) -> n
+        Error(_) -> 0
+      }
+      c - r <= 0
+    })
+  Scheme(vars, ty)
 }
 
 fn expr_var_names(expr: Expr, acc: List(String)) -> List(String) {
