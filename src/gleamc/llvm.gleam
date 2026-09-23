@@ -46,7 +46,12 @@ pub fn emit(
   let tuples = collect_tuple_types(custom_types, functions)
   let fn_types = collect_fn_types(custom_types, functions)
   let env_structs = collect_env_structs(functions)
-  let lit_list = collect_literals(functions)
+  let lit_list =
+    dedupe(
+      list.append(collect_literals(functions), glue_literals(custom_types)),
+      dict.new(),
+      [],
+    )
   let lits =
     lit_list
     |> list.index_map(fn(content, index) { #(content, index) })
@@ -103,19 +108,47 @@ pub fn emit(
       list.map(collect_wrappers(functions), fn(entry) { entry }),
       "\n\n",
     )
+  let seeds =
+    list.append(
+      list.map(custom_types, fn(custom) {
+        let ast.CustomType(_, name, _, _, _) = custom
+        TNamed(name)
+      }),
+      tuples,
+    )
   let eq_glue =
     string.join(
-      {
-        let seeds =
-          list.append(
-            list.map(custom_types, fn(custom) {
-              let ast.CustomType(_, name, _, _, _) = custom
-              TNamed(name)
-            }),
-            tuples,
-          )
-        list.map(seeds, fn(ty) { emit_eq_glue(recursive, custom_types, ty) })
-      },
+      list.map(seeds, fn(ty) { emit_eq_glue(recursive, custom_types, ty) }),
+      "\n\n",
+    )
+  let cmp_glue =
+    string.join(
+      list.append(
+        [
+          emit_cmp_glue(recursive, custom_types, ast.TInt),
+          emit_cmp_glue(recursive, custom_types, ast.TFloat),
+          emit_cmp_glue(recursive, custom_types, ast.TBool),
+          emit_cmp_glue(recursive, custom_types, TString),
+          emit_cmp_glue(recursive, custom_types, ast.TNil),
+        ],
+        list.map(seeds, fn(ty) { emit_cmp_glue(recursive, custom_types, ty) }),
+      ),
+      "\n\n",
+    )
+  let show_glue =
+    string.join(
+      list.append(
+        [
+          emit_show_glue(recursive, custom_types, lits, ast.TInt),
+          emit_show_glue(recursive, custom_types, lits, ast.TFloat),
+          emit_show_glue(recursive, custom_types, lits, ast.TBool),
+          emit_show_glue(recursive, custom_types, lits, TString),
+          emit_show_glue(recursive, custom_types, lits, ast.TNil),
+        ],
+        list.map(seeds, fn(ty) {
+          emit_show_glue(recursive, custom_types, lits, ty)
+        }),
+      ),
       "\n\n",
     )
 
@@ -141,6 +174,10 @@ pub fn emit(
   <> wrappers
   <> "\n\n"
   <> eq_glue
+  <> "\n\n"
+  <> show_glue
+  <> "\n\n"
+  <> cmp_glue
   <> "\n"
   <> main_code
 }
@@ -151,6 +188,15 @@ fn header() -> String {
   <> "%GleamcBitArray = type { i8*, i64 }\n\n"
   <> "declare void @Gleamc_set_args(i32, i8**)\n"
   <> "declare i8* @gleamc_alloc(i64)\n"
+  <> "declare %GleamcString @gleamc_string_lit(i8*, i64)\n"
+  <> "declare %GleamcString @Gleamc_show_concat(%GleamcString, %GleamcString)\n"
+  <> "declare %GleamcString @Gleamc_int_to_string(i64)\n"
+  <> "declare %GleamcString @Gleamc_float_to_string(double)\n"
+  <> "declare %GleamcString @Gleamc_bool_to_string(i1)\n"
+  <> "declare %GleamcString @Gleamc_string_show(%GleamcString)\n"
+  <> "declare void @Gleamc_panic(%GleamcString)\n"
+  <> "declare i32 @Gleamc_io_debug(%GleamcString)\n"
+  <> "declare i32 @Gleamc_string_compare_bytes(%GleamcString, %GleamcString)\n"
   <> "declare %GleamcString @gleamc_string_concat(%GleamcString, %GleamcString)\n"
   <> "declare i1 @gleamc_string_eq(%GleamcString, %GleamcString)\n"
 }
@@ -539,20 +585,27 @@ fn builtin_decls(
     list.filter_map(ops, fn(op) {
       case op {
         ir.OpBuiltin(_, builtin, args, ret_ty) ->
-          Ok(
-            "declare "
-            <> llvm_ty(ret_ty, recursive)
-            <> " @Gleamc_"
-            <> string.replace(builtin, ".", "_")
-            <> "("
-            <> string.join(
-              list.map(args, fn(arg) {
-                llvm_ty(operand_type(by_name, arg), recursive)
-              }),
-              ", ",
-            )
-            <> ")",
-          )
+          case
+            special_builtin(builtin)
+            || runtime_declared("Gleamc_" <> string.replace(builtin, ".", "_"))
+          {
+            True -> Error(Nil)
+            False ->
+              Ok(
+                "declare "
+                <> llvm_ty(ret_ty, recursive)
+                <> " @Gleamc_"
+                <> string.replace(builtin, ".", "_")
+                <> "("
+                <> string.join(
+                  list.map(args, fn(arg) {
+                    llvm_ty(operand_type(by_name, arg), recursive)
+                  }),
+                  ", ",
+                )
+                <> ")",
+              )
+          }
         _ -> Error(Nil)
       }
     })
@@ -755,25 +808,94 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
       #(b, Nil)
     }
     ir.OpBuiltin(dest, builtin, args, ret_ty) -> {
-      let #(b, arg_list) = read_args(ctx, args, b)
-      let ret_s = llvm_ty(ret_ty, ctx.recursive)
-      let name = "Gleamc_" <> string.replace(builtin, ".", "_")
-      let #(tmp, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  "
-            <> tmp
-            <> " = call "
-            <> ret_s
-            <> " @"
-            <> name
-            <> "("
-            <> arg_list
-            <> ")",
-        )
-      let b = store_local(ctx, dest, ret_s, tmp, b)
-      #(b, Nil)
+      case builtin {
+        "gleamc.show" -> {
+          let first = first_arg(args)
+          let oty = operand_type(ctx.by_name, first)
+          let #(_, v, b) = read_val(ctx, first, b)
+          let #(r, b) = inspect_val(ctx.recursive, ctx.lits, oty, v, b)
+          let b = store_local(ctx, dest, "%GleamcString", r, b)
+          #(b, Nil)
+        }
+        "io.debug" -> {
+          let first = first_arg(args)
+          let oty = operand_type(ctx.by_name, first)
+          let #(_, v, b) = read_val(ctx, first, b)
+          let #(s, b) = inspect_val(ctx.recursive, ctx.lits, oty, v, b)
+          let #(r, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> r
+                <> " = call i32 @Gleamc_io_debug(%GleamcString "
+                <> s
+                <> ")",
+            )
+          let b = store_local(ctx, dest, "i32", r, b)
+          #(b, Nil)
+        }
+        "gleamc.key_compare" -> {
+          let first = first_arg(args)
+          let oty = operand_type(ctx.by_name, first)
+          let #(ty_s, lv, b) = read_val(ctx, first, b)
+          let second = case args {
+            [_, s, ..] -> s
+            _ -> ir.Lit(ir.LUnit)
+          }
+          let #(_, rv, b) = read_val(ctx, second, b)
+          let #(r, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> r
+                <> " = call i32 @Gleamc_Cmp_"
+                <> mangle_glue(oty)
+                <> "("
+                <> ty_s
+                <> " "
+                <> lv
+                <> ", "
+                <> ty_s
+                <> " "
+                <> rv
+                <> ")",
+            )
+          let b = store_local(ctx, dest, "i32", r, b)
+          #(b, Nil)
+        }
+        "panic" -> {
+          let first = first_arg(args)
+          let #(_, v, b) = read_val(ctx, first, b)
+          let b =
+            emit_line(b, "  call void @Gleamc_panic(%GleamcString " <> v <> ")")
+          let ty_s = llvm_ty(ret_ty, ctx.recursive)
+          let b = store_local(ctx, dest, ty_s, "undef", b)
+          #(b, Nil)
+        }
+        _ -> {
+          let #(b, arg_list) = read_args(ctx, args, b)
+          let ret_s = llvm_ty(ret_ty, ctx.recursive)
+          let name = "Gleamc_" <> string.replace(builtin, ".", "_")
+          let #(tmp, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> tmp
+                <> " = call "
+                <> ret_s
+                <> " @"
+                <> name
+                <> "("
+                <> arg_list
+                <> ")",
+            )
+          let b = store_local(ctx, dest, ret_s, tmp, b)
+          #(b, Nil)
+        }
+      }
     }
     ir.OpCopy(dest, src, ty) -> {
       let ty_s = llvm_ty(ty, ctx.recursive)
@@ -1306,6 +1428,39 @@ fn store_env_fields(
         emit_line(b, "  store " <> ty <> " " <> v <> ", " <> ty <> "* " <> fp)
       store_env_fields(env_ty, ep, rest, index + 1, b)
     }
+  }
+}
+
+fn first_arg(args: List(ir.Operand)) -> ir.Operand {
+  case args {
+    [first, ..] -> first
+    [] -> ir.Lit(ir.LUnit)
+  }
+}
+
+fn runtime_declared(name: String) -> Bool {
+  case name {
+    "Gleamc_set_args"
+    | "gleamc_alloc"
+    | "gleamc_string_lit"
+    | "Gleamc_show_concat"
+    | "Gleamc_int_to_string"
+    | "Gleamc_float_to_string"
+    | "Gleamc_bool_to_string"
+    | "Gleamc_string_show"
+    | "Gleamc_panic"
+    | "Gleamc_io_debug"
+    | "Gleamc_string_compare_bytes"
+    | "gleamc_string_concat"
+    | "gleamc_string_eq" -> True
+    _ -> False
+  }
+}
+
+fn special_builtin(name: String) -> Bool {
+  case name {
+    "gleamc.show" | "io.debug" | "gleamc.key_compare" | "panic" -> True
+    _ -> False
   }
 }
 
@@ -1920,6 +2075,794 @@ fn eq_expr(recursive, ty, left, right, b) {
       #(r, b)
     }
   }
+}
+
+fn glue_literals(custom_types: List(ast.CustomType)) -> List(String) {
+  list.append(
+    ["#(", "(", ")", ", ", "[", "]", "Nil", "<function>", "?"],
+    list.flat_map(custom_types, fn(custom) {
+      let ast.CustomType(_, name, _, variants, _) = custom
+      list.map(variants, fn(variant) {
+        let ast.Variant(vn, _) = variant
+        base_ctor_name(vn, name)
+      })
+    }),
+  )
+}
+
+fn literal_struct(lits, content: String, b: Builder) {
+  let index = literal_index(lits, content)
+  let size = string.byte_size(content) + 1
+  let #(t0, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  "
+        <> t0
+        <> " = insertvalue %GleamcString undef, i8* getelementptr inbounds ({ i64, ["
+        <> int.to_string(size)
+        <> " x i8] }, { i64, ["
+        <> int.to_string(size)
+        <> " x i8] }* @.str."
+        <> int.to_string(index)
+        <> ", i32 0, i32 1, i64 0), 0",
+    )
+  let #(t1, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  "
+        <> t1
+        <> " = insertvalue %GleamcString "
+        <> t0
+        <> ", i64 "
+        <> int.to_string(string.byte_size(content))
+        <> ", 1",
+    )
+  #(t1, b)
+}
+
+fn concat_ss(b: Builder, x: String, y: String) {
+  let #(r, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  "
+        <> r
+        <> " = call %GleamcString @Gleamc_show_concat(%GleamcString "
+        <> x
+        <> ", %GleamcString "
+        <> y
+        <> ")",
+    )
+  #(r, b)
+}
+
+fn inspect_val(recursive, lits, ty: Type, val: String, b: Builder) {
+  case ty {
+    ast.TFun(_, _) -> literal_struct(lits, "<function>", b)
+    _ -> {
+      let ty_s = llvm_ty(ty, recursive)
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> r
+            <> " = call %GleamcString @Gleamc_Inspect_"
+            <> mangle_glue(ty)
+            <> "("
+            <> ty_s
+            <> " "
+            <> val
+            <> ")",
+        )
+      #(r, b)
+    }
+  }
+}
+
+fn emit_show_glue(recursive, custom_types, lits, ty) -> String {
+  let ty_s = llvm_ty(ty, recursive)
+  let name = "Gleamc_Inspect_" <> mangle_glue(ty)
+  let b = Builder(next: 0, lines: [])
+  let b =
+    emit_line(b, "define %GleamcString @" <> name <> "(" <> ty_s <> " %a) {")
+  let #(b, _) = show_body(recursive, custom_types, lits, ty, ty_s, b)
+  let lines = list.reverse(b.lines)
+  string.join(lines, "\n") <> "\n}\n"
+}
+
+fn show_body(recursive, custom_types, lits, ty, ty_s, b) {
+  case ty {
+    ast.TInt -> {
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> r <> " = call %GleamcString @Gleamc_int_to_string(i64 %a)",
+        )
+      #(emit_line(b, "  ret %GleamcString " <> r), Nil)
+    }
+    ast.TFloat -> {
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> r
+            <> " = call %GleamcString @Gleamc_float_to_string(double %a)",
+        )
+      #(emit_line(b, "  ret %GleamcString " <> r), Nil)
+    }
+    ast.TBool -> {
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> r <> " = call %GleamcString @Gleamc_bool_to_string(i1 %a)",
+        )
+      #(emit_line(b, "  ret %GleamcString " <> r), Nil)
+    }
+    TString -> {
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> r
+            <> " = call %GleamcString @Gleamc_string_show(%GleamcString %a)",
+        )
+      #(emit_line(b, "  ret %GleamcString " <> r), Nil)
+    }
+    ast.TNil | TNamed("Nil") -> {
+      let #(r, b) = literal_struct(lits, "Nil", b)
+      #(emit_line(b, "  ret %GleamcString " <> r), Nil)
+    }
+    ast.TFun(_, _) -> {
+      let #(r, b) = literal_struct(lits, "<function>", b)
+      #(emit_line(b, "  ret %GleamcString " <> r), Nil)
+    }
+    ast.TTuple(types) -> show_tuple(recursive, lits, ty_s, types, b)
+    TNamed(type_name) ->
+      case list_info(custom_types, type_name) {
+        Ok(info) -> show_list(recursive, lits, type_name, info, b)
+        Error(_) -> show_adt(recursive, custom_types, lits, type_name, ty_s, b)
+      }
+    _ -> {
+      let #(r, b) = literal_struct(lits, "?", b)
+      #(emit_line(b, "  ret %GleamcString " <> r), Nil)
+    }
+  }
+}
+
+fn show_tuple(recursive, lits, ty_s, types, b) -> #(Builder, Nil) {
+  let #(r0, b) = literal_struct(lits, "#(", b)
+  let #(r, b) = show_tuple_fields(recursive, lits, ty_s, types, 0, r0, b)
+  let #(cl, b) = literal_struct(lits, ")", b)
+  let #(r, b) = concat_ss(b, r, cl)
+  #(emit_line(b, "  ret %GleamcString " <> r), Nil)
+}
+
+fn show_tuple_fields(
+  recursive,
+  lits,
+  ty_s,
+  types,
+  index: Int,
+  r: String,
+  b: Builder,
+) -> #(String, Builder) {
+  case types {
+    [] -> #(r, b)
+    [inner, ..rest] -> {
+      let #(r, b) = case index {
+        0 -> #(r, b)
+        _ -> {
+          let #(sep, b) = literal_struct(lits, ", ", b)
+          concat_ss(b, r, sep)
+        }
+      }
+      let #(fv, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> fv
+            <> " = extractvalue "
+            <> ty_s
+            <> " %a, "
+            <> int.to_string(index),
+        )
+      let #(sv, b) = inspect_val(recursive, lits, inner, fv, b)
+      let #(r, b) = concat_ss(b, r, sv)
+      show_tuple_fields(recursive, lits, ty_s, rest, index + 1, r, b)
+    }
+  }
+}
+
+fn list_info(custom_types, type_name) {
+  let variants = variant_fields_of(custom_types, type_name)
+  case
+    list.find(variants, fn(variant) {
+      let #(base, _) = variant
+      string.starts_with(base, "ListCons")
+    })
+  {
+    Ok(variant) -> {
+      let #(cons, fields) = variant
+      case fields {
+        [head, tail] -> Ok(#(cons, head, tail))
+        _ -> Error(Nil)
+      }
+    }
+    Error(_) -> Error(Nil)
+  }
+}
+
+fn show_adt(recursive, custom_types, lits, type_name, ty_s, b) {
+  let is_rec = is_recursive(recursive, type_name)
+  let struct_ty = "%" <> type_name
+  let #(av, b) = case is_rec {
+    True -> {
+      let #(v, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> v <> " = load " <> struct_ty <> ", " <> ty_s <> " %a",
+        )
+      #(v, b)
+    }
+    False -> #("%a", b)
+  }
+  let #(at, b) = extract_value(struct_ty, av, [0], b)
+  let variants = variant_fields_of(custom_types, type_name)
+  let arms =
+    list.index_map(variants, fn(_, index) {
+      " i8 " <> int.to_string(index) <> ", label %v" <> int.to_string(index)
+    })
+  let b =
+    emit_line(
+      b,
+      "  switch i8 "
+        <> at
+        <> ", label %vfall ["
+        <> string.join(arms, "")
+        <> " ]",
+    )
+  let b =
+    list.fold(
+      list.index_map(variants, fn(variant, index) { #(index, variant) }),
+      b,
+      fn(b, entry) {
+        let #(index, variant) = entry
+        let #(base, fields) = variant
+        let b = emit_line(b, "\nv" <> int.to_string(index) <> ":")
+        let #(r0, b) = literal_struct(lits, base, b)
+        case fields {
+          [] -> emit_line(b, "  ret %GleamcString " <> r0)
+          _ -> {
+            let #(open, b) = literal_struct(lits, "(", b)
+            let #(r, b) = concat_ss(b, r0, open)
+            let #(r, b) =
+              show_adt_fields(
+                recursive,
+                lits,
+                struct_ty,
+                av,
+                index + 1,
+                fields,
+                0,
+                r,
+                b,
+              )
+            let #(close, b) = literal_struct(lits, ")", b)
+            let #(r, b) = concat_ss(b, r, close)
+            emit_line(b, "  ret %GleamcString " <> r)
+          }
+        }
+      },
+    )
+  let b = emit_line(b, "\nvfall:")
+  let #(q, b) = literal_struct(lits, "?", b)
+  let b = emit_line(b, "  ret %GleamcString " <> q)
+  #(b, Nil)
+}
+
+fn show_adt_fields(
+  recursive,
+  lits,
+  struct_ty,
+  av,
+  group: Int,
+  fields,
+  index: Int,
+  r: String,
+  b: Builder,
+) -> #(String, Builder) {
+  case fields {
+    [] -> #(r, b)
+    [inner, ..rest] -> {
+      let #(r, b) = case index {
+        0 -> #(r, b)
+        _ -> {
+          let #(sep, b) = literal_struct(lits, ", ", b)
+          concat_ss(b, r, sep)
+        }
+      }
+      let #(fv, b) = extract_value(struct_ty, av, [group, index], b)
+      let #(sv, b) = inspect_val(recursive, lits, inner, fv, b)
+      let #(r, b) = concat_ss(b, r, sv)
+      show_adt_fields(
+        recursive,
+        lits,
+        struct_ty,
+        av,
+        group,
+        rest,
+        index + 1,
+        r,
+        b,
+      )
+    }
+  }
+}
+
+fn show_list(recursive, lits, type_name, info, b) {
+  let #(cons, head_ty, _tail_ty) = info
+  let struct_ty = "%" <> type_name
+  let ptr_ty = "%" <> type_name <> "*"
+  let cons_index = variant_index_of_type(lits, type_name, cons)
+  let _ = cons_index
+  let b = emit_line(b, "  %lr = alloca %GleamcString")
+  let b = emit_line(b, "  %lcur = alloca " <> ptr_ty)
+  let b = emit_line(b, "  %lfirst = alloca i1")
+  let b = emit_line(b, "  store " <> ptr_ty <> " %a, " <> ptr_ty <> "* %lcur")
+  let b = emit_line(b, "  store i1 true, i1* %lfirst")
+  let #(s0, b) = literal_struct(lits, "[", b)
+  let b = emit_line(b, "  store %GleamcString " <> s0 <> ", %GleamcString* %lr")
+  let b = emit_line(b, "  br label %lloop")
+  let b = emit_line(b, "\nlloop:")
+  let #(cv, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  " <> cv <> " = load " <> ptr_ty <> ", " <> ptr_ty <> "* %lcur",
+    )
+  let #(isnull, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  " <> isnull <> " = icmp eq " <> ptr_ty <> " " <> cv <> ", null",
+    )
+  let b = emit_line(b, "  br i1 " <> isnull <> ", label %ldone, label %lcheck")
+  let b = emit_line(b, "\nlcheck:")
+  let #(sv, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  " <> sv <> " = load " <> struct_ty <> ", " <> ptr_ty <> " " <> cv,
+    )
+  let #(tag, b) = extract_value(struct_ty, sv, [0], b)
+  let #(iscons, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  "
+        <> iscons
+        <> " = icmp eq i8 "
+        <> tag
+        <> ", "
+        <> int.to_string(cons_index),
+    )
+  let b = emit_line(b, "  br i1 " <> iscons <> ", label %lbody, label %ldone")
+  let b = emit_line(b, "\nlbody:")
+  let #(fst, b) = fresh(b)
+  let b = emit_line(b, "  " <> fst <> " = load i1, i1* %lfirst")
+  let b = emit_line(b, "  br i1 " <> fst <> ", label %lnofirst, label %lsep")
+  let b = emit_line(b, "\nlsep:")
+  let #(rp, b) = fresh(b)
+  let b =
+    emit_line(b, "  " <> rp <> " = load %GleamcString, %GleamcString* %lr")
+  let #(sepl, b) = literal_struct(lits, ", ", b)
+  let #(r1, b) = concat_ss(b, rp, sepl)
+  let b = emit_line(b, "  store %GleamcString " <> r1 <> ", %GleamcString* %lr")
+  let b = emit_line(b, "  br label %lnofirst")
+  let b = emit_line(b, "\nlnofirst:")
+  let b = emit_line(b, "  store i1 false, i1* %lfirst")
+  let #(sv2, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  " <> sv2 <> " = load " <> struct_ty <> ", " <> ptr_ty <> " " <> cv,
+    )
+  let #(head, b) = extract_value(struct_ty, sv2, [cons_index + 1, 0], b)
+  let #(hs, b) = inspect_val(recursive, lits, head_ty, head, b)
+  let #(rp2, b) = fresh(b)
+  let b =
+    emit_line(b, "  " <> rp2 <> " = load %GleamcString, %GleamcString* %lr")
+  let #(r2, b) = concat_ss(b, rp2, hs)
+  let b = emit_line(b, "  store %GleamcString " <> r2 <> ", %GleamcString* %lr")
+  let #(sv3, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  " <> sv3 <> " = load " <> struct_ty <> ", " <> ptr_ty <> " " <> cv,
+    )
+  let #(tail, b) = extract_value(struct_ty, sv3, [cons_index + 1, 1], b)
+  let b =
+    emit_line(
+      b,
+      "  store " <> ptr_ty <> " " <> tail <> ", " <> ptr_ty <> "* %lcur",
+    )
+  let b = emit_line(b, "  br label %lloop")
+  let b = emit_line(b, "\nldone:")
+  let #(rp3, b) = fresh(b)
+  let b =
+    emit_line(b, "  " <> rp3 <> " = load %GleamcString, %GleamcString* %lr")
+  let #(cl, b) = literal_struct(lits, "]", b)
+  let #(r3, b) = concat_ss(b, rp3, cl)
+  let b = emit_line(b, "  ret %GleamcString " <> r3)
+  #(b, Nil)
+}
+
+fn variant_index_of_type(_lits, type_name, base) -> Int {
+  // The list constructor is always the first variant in the custom type's
+  // declaration order; the group index in the struct is variant index + 1.
+  // Cons is index 0 for List types (Nil is index 1).
+  let _ = type_name
+  let _ = base
+  0
+}
+
+fn emit_cmp_glue(recursive, custom_types, ty) -> String {
+  let ty_s = llvm_ty(ty, recursive)
+  let name = "Gleamc_Cmp_" <> mangle_glue(ty)
+  let b = Builder(next: 0, lines: [])
+  let b =
+    emit_line(
+      b,
+      "define i32 @" <> name <> "(" <> ty_s <> " %a, " <> ty_s <> " %b) {",
+    )
+  let #(b, _) = cmp_body(recursive, custom_types, ty, ty_s, b)
+  let lines = list.reverse(b.lines)
+  string.join(lines, "\n") <> "\n}\n"
+}
+
+fn cmp_body(recursive, custom_types, ty, ty_s, b) {
+  case ty {
+    ast.TInt -> {
+      let #(r, b) = int_cmp(b, "i64", "sgt", "slt", "%a", "%b")
+      #(emit_line(b, "  ret i32 " <> r), Nil)
+    }
+    ast.TFloat -> {
+      let #(r, b) = int_cmp(b, "double", "ogt", "olt", "%a", "%b")
+      #(emit_line(b, "  ret i32 " <> r), Nil)
+    }
+    ast.TBool -> {
+      let #(g, b) = fresh(b)
+      let b = emit_line(b, "  " <> g <> " = zext i1 %a to i32")
+      let #(l, b) = fresh(b)
+      let b = emit_line(b, "  " <> l <> " = zext i1 %b to i32")
+      let #(r, b) = fresh(b)
+      let b = emit_line(b, "  " <> r <> " = sub i32 " <> g <> ", " <> l)
+      #(emit_line(b, "  ret i32 " <> r), Nil)
+    }
+    TString -> {
+      let #(c, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> c
+            <> " = call i64 @Gleamc_string_compare_bytes(%GleamcString %a, %GleamcString %b)",
+        )
+      let #(r, b) = fresh(b)
+      let b = emit_line(b, "  " <> r <> " = trunc i64 " <> c <> " to i32")
+      #(emit_line(b, "  ret i32 " <> r), Nil)
+    }
+    ast.TNil | TNamed("Nil") | ast.TFun(_, _) -> #(
+      emit_line(b, "  ret i32 0"),
+      Nil,
+    )
+    ast.TTuple(types) -> {
+      let #(r, b) =
+        cmp_chain(
+          recursive,
+          custom_types,
+          "%" <> "GleamcTuple_" <> tuple_suffix(types),
+          "%a",
+          "%b",
+          types,
+          [],
+          0,
+          b,
+        )
+      #(emit_line(b, "  ret i32 " <> r), Nil)
+    }
+    TNamed(type_name) -> cmp_named(recursive, custom_types, type_name, ty_s, b)
+    _ -> #(emit_line(b, "  ret i32 0"), Nil)
+  }
+}
+
+fn cmp_kind(num_ty: String) -> String {
+  case num_ty {
+    "double" -> "fcmp"
+    _ -> "icmp"
+  }
+}
+
+fn int_cmp(b, int_ty, gt_op, lt_op, left, right) {
+  let #(gt, b) = fresh(b)
+  let kind = cmp_kind(int_ty)
+  let b =
+    emit_line(
+      b,
+      "  "
+        <> gt
+        <> " = "
+        <> kind
+        <> " "
+        <> gt_op
+        <> " "
+        <> int_ty
+        <> " "
+        <> left
+        <> ", "
+        <> right,
+    )
+  let #(lt, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  "
+        <> lt
+        <> " = "
+        <> kind
+        <> " "
+        <> lt_op
+        <> " "
+        <> int_ty
+        <> " "
+        <> left
+        <> ", "
+        <> right,
+    )
+  let #(g, b) = fresh(b)
+  let b = emit_line(b, "  " <> g <> " = zext i1 " <> gt <> " to i32")
+  let #(l, b) = fresh(b)
+  let b = emit_line(b, "  " <> l <> " = zext i1 " <> lt <> " to i32")
+  let #(r, b) = fresh(b)
+  let b = emit_line(b, "  " <> r <> " = sub i32 " <> g <> ", " <> l)
+  #(r, b)
+}
+
+fn cmp_chain(
+  recursive,
+  custom_types,
+  struct_ty,
+  av,
+  bv,
+  fields,
+  prefix,
+  index,
+  b,
+) {
+  case fields {
+    [] -> #("0", b)
+    [ty, ..rest] -> {
+      let #(rest_res, b) =
+        cmp_chain(
+          recursive,
+          custom_types,
+          struct_ty,
+          av,
+          bv,
+          rest,
+          prefix,
+          index + 1,
+          b,
+        )
+      let idxs = list.append(prefix, [index])
+      let #(lv, b) = extract_value(struct_ty, av, idxs, b)
+      let #(rv, b) = extract_value(struct_ty, bv, idxs, b)
+      let #(ci, b) = cmp_expr(recursive, custom_types, ty, lv, rv, b)
+      let #(nz, b) = fresh(b)
+      let b = emit_line(b, "  " <> nz <> " = icmp ne i32 " <> ci <> ", 0")
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> r
+            <> " = select i1 "
+            <> nz
+            <> ", i32 "
+            <> ci
+            <> ", i32 "
+            <> rest_res,
+        )
+      #(r, b)
+    }
+  }
+}
+
+fn cmp_expr(recursive, _custom_types, ty, left, right, b) {
+  case ty {
+    TString -> {
+      let #(c, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> c
+            <> " = call i64 @Gleamc_string_compare_bytes(%GleamcString "
+            <> left
+            <> ", %GleamcString "
+            <> right
+            <> ")",
+        )
+      let #(r, b) = fresh(b)
+      let b = emit_line(b, "  " <> r <> " = trunc i64 " <> c <> " to i32")
+      #(r, b)
+    }
+    ast.TInt -> int_cmp_i(b, "i64", "sgt", "slt", left, right)
+    ast.TFloat -> int_cmp_i(b, "double", "ogt", "olt", left, right)
+    ast.TBool -> {
+      let #(g, b) = fresh(b)
+      let b = emit_line(b, "  " <> g <> " = zext i1 " <> left <> " to i32")
+      let #(l, b) = fresh(b)
+      let b = emit_line(b, "  " <> l <> " = zext i1 " <> right <> " to i32")
+      let #(r, b) = fresh(b)
+      let b = emit_line(b, "  " <> r <> " = sub i32 " <> g <> ", " <> l)
+      #(r, b)
+    }
+    ast.TNil | TNamed("Nil") | ast.TFun(_, _) -> #("0", b)
+    _ -> {
+      let ty_s = llvm_ty(ty, recursive)
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> r
+            <> " = call i32 @Gleamc_Cmp_"
+            <> mangle_glue(ty)
+            <> "("
+            <> ty_s
+            <> " "
+            <> left
+            <> ", "
+            <> ty_s
+            <> " "
+            <> right
+            <> ")",
+        )
+      #(r, b)
+    }
+  }
+}
+
+fn int_cmp_i(b, num_ty, gt_op, lt_op, left, right) {
+  let #(gt, b) = fresh(b)
+  let kind = cmp_kind(num_ty)
+  let b =
+    emit_line(
+      b,
+      "  "
+        <> gt
+        <> " = "
+        <> kind
+        <> " "
+        <> gt_op
+        <> " "
+        <> num_ty
+        <> " "
+        <> left
+        <> ", "
+        <> right,
+    )
+  let #(lt, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  "
+        <> lt
+        <> " = "
+        <> kind
+        <> " "
+        <> lt_op
+        <> " "
+        <> num_ty
+        <> " "
+        <> left
+        <> ", "
+        <> right,
+    )
+  let #(g, b) = fresh(b)
+  let b = emit_line(b, "  " <> g <> " = zext i1 " <> gt <> " to i32")
+  let #(l, b) = fresh(b)
+  let b = emit_line(b, "  " <> l <> " = zext i1 " <> lt <> " to i32")
+  let #(r, b) = fresh(b)
+  let b = emit_line(b, "  " <> r <> " = sub i32 " <> g <> ", " <> l)
+  #(r, b)
+}
+
+fn cmp_named(recursive, custom_types, type_name, ty_s, b) {
+  let is_rec = is_recursive(recursive, type_name)
+  let struct_ty = "%" <> type_name
+  let #(av, bv, b) = case is_rec {
+    True -> {
+      let #(av, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> av <> " = load " <> struct_ty <> ", " <> ty_s <> " %a",
+        )
+      let #(bv, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> bv <> " = load " <> struct_ty <> ", " <> ty_s <> " %b",
+        )
+      #(av, bv, b)
+    }
+    False -> #("%a", "%b", b)
+  }
+  let #(at, b) = extract_value(struct_ty, av, [0], b)
+  let #(bt, b) = extract_value(struct_ty, bv, [0], b)
+  let #(tne, b) = fresh(b)
+  let b = emit_line(b, "  " <> tne <> " = icmp ne i8 " <> at <> ", " <> bt)
+  let b = emit_line(b, "  br i1 " <> tne <> ", label %ctag, label %csw")
+  let b = emit_line(b, "\nctag:")
+  let #(ad, b) = fresh(b)
+  let b = emit_line(b, "  " <> ad <> " = zext i8 " <> at <> " to i32")
+  let #(bd, b) = fresh(b)
+  let b = emit_line(b, "  " <> bd <> " = zext i8 " <> bt <> " to i32")
+  let #(td, b) = fresh(b)
+  let b = emit_line(b, "  " <> td <> " = sub i32 " <> ad <> ", " <> bd)
+  let b = emit_line(b, "  ret i32 " <> td)
+  let b = emit_line(b, "\ncsw:")
+  let variants = variant_fields_of(custom_types, type_name)
+  let arms =
+    list.index_map(variants, fn(_, index) {
+      " i8 " <> int.to_string(index) <> ", label %cv" <> int.to_string(index)
+    })
+  let b =
+    emit_line(
+      b,
+      "  switch i8 "
+        <> at
+        <> ", label %czero ["
+        <> string.join(arms, "")
+        <> " ]",
+    )
+  let b = emit_line(b, "\nczero:")
+  let b = emit_line(b, "  ret i32 0")
+  let b =
+    list.fold(
+      list.index_map(variants, fn(variant, index) { #(index, variant) }),
+      b,
+      fn(b, entry) {
+        let #(index, variant) = entry
+        let #(_, fields) = variant
+        let b = emit_line(b, "\ncv" <> int.to_string(index) <> ":")
+        let #(r, b) =
+          cmp_chain(
+            recursive,
+            custom_types,
+            struct_ty,
+            av,
+            bv,
+            fields,
+            [index + 1],
+            0,
+            b,
+          )
+        emit_line(b, "  ret i32 " <> r)
+      },
+    )
+  #(b, Nil)
 }
 
 // ---------------------------------------------------------------------------
