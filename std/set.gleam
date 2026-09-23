@@ -9,9 +9,8 @@ pub opaque type Set(member) {
 }
 
 fn members_of(set: Set(member)) -> List(member) {
-  case set {
-    Set(members) -> members
-  }
+  let Set(members) = set
+  members
 }
 
 fn compare(a: member, b: member) -> Order {
@@ -75,7 +74,10 @@ fn insert_members(members: List(member), member: member) -> Set(member) {
     [first, ..rest] ->
       case compare(first, member) {
         order.Eq -> Set([first, ..rest])
-        order.Lt -> Set([first, ..members_of(insert_members(rest, member))])
+        order.Lt -> {
+          let Set(inserted) = insert_members(rest, member)
+          Set([first, ..inserted])
+        }
         order.Gt -> Set([member, ..members])
       }
   }
@@ -91,7 +93,10 @@ fn delete_members(members: List(member), member: member) -> Set(member) {
     [first, ..rest] ->
       case compare(first, member) {
         order.Eq -> Set(rest)
-        order.Lt -> Set([first, ..members_of(delete_members(rest, member))])
+        order.Lt -> {
+          let Set(kept) = delete_members(rest, member)
+          Set([first, ..kept])
+        }
         order.Gt -> Set(members)
       }
   }

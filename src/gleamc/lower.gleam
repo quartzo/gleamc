@@ -16,7 +16,7 @@ import gleamc/ast.{
   ECtor, EEnvGet, EField, EFloat, EInt, ELabelled, ELambda, ENil, EPanic,
   EString, ETuple, EUnop, EUpdate, EVar, Let, Module, PBitArray, PBool, PCtor,
   PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard, Stmt, TBool,
-  TFun, TInt, TNamed, TString, TTuple,
+  TFun, TInt, TNamed, TNil, TString, TTuple,
 }
 import gleamc/checker
 import gleamc/infer
@@ -232,12 +232,109 @@ fn bind_let(
     PWildcard -> Ok(b)
     PNil -> Ok(b)
     PVar(name) -> Ok(bind_var(b, name, operand, ty))
+    PLabelled(_, inner) -> bind_let(b, inner, operand, ty)
     PTuple(patterns) ->
       case ty {
         TTuple(types) -> bind_tuple_let(b, patterns, types, operand, 0)
         _ -> Error(LowerError("tuple pattern against non-tuple"))
       }
+    PCtor(name, patterns) ->
+      case single_variant(b, name) {
+        False ->
+          Error(LowerError(
+            "constructor pattern in `let` is not irrefutable: `" <> name <> "`",
+          ))
+        True -> bind_ctor_let(b, operand, name, patterns, 0)
+      }
     _ -> Error(LowerError("unsupported let pattern"))
+  }
+}
+
+/// Binds an irrefutable constructor pattern (single-variant type) by reading
+/// each field into a fresh local. Labelled fields are matched by name.
+fn bind_ctor_let(
+  b,
+  operand,
+  ctor,
+  patterns,
+  fallback_index,
+) -> Result(Builder, LowerError) {
+  case patterns {
+    [] -> Ok(b)
+    [pattern, ..rest] -> {
+      let fields = ctor_fields_named(b, ctor)
+      let index = case pattern {
+        PLabelled(label, _) ->
+          case field_index(fields, label) {
+            Ok(found) -> found
+            Error(_) -> fallback_index
+          }
+        _ -> fallback_index
+      }
+      let field_ty = field_type_at(fields, index)
+      let #(dest, b1) = fresh_local(b, "field", field_ty)
+      let b2 = emit(b1, ir.OpField(dest, operand, ctor, index, field_ty))
+      use b3 <- result.try(bind_let(b2, pattern, ir.Var(dest), field_ty))
+      bind_ctor_let(b3, operand, ctor, rest, index + 1)
+    }
+  }
+}
+
+fn ctor_fields_named(b: Builder, name: String) -> List(#(String, Type)) {
+  case dict.get(b.ctors, name) {
+    Ok(checker.CtorInfo(_, fields)) -> fields
+    Error(_) -> []
+  }
+}
+
+fn field_index(fields, label) -> Result(Int, Nil) {
+  fields
+  |> list.index_map(fn(field, index) {
+    let #(name, _) = field
+    #(name, index)
+  })
+  |> list.find(fn(pair) {
+    let #(name, _) = pair
+    name == label
+  })
+  |> result.map(fn(pair) {
+    let #(_, index) = pair
+    index
+  })
+}
+
+fn field_type_at(fields, index) -> Type {
+  case
+    fields
+    |> list.index_map(fn(field, i) { #(i, field) })
+    |> list.find(fn(pair) {
+      let #(i, _) = pair
+      i == index
+    })
+  {
+    Ok(pair) -> {
+      let #(_, field) = pair
+      let #(_, ty) = field
+      ty
+    }
+    Error(_) -> TNil
+  }
+}
+
+/// Whether the constructor's type has a single variant (so a `let` pattern is
+/// irrefutable).
+fn single_variant(b: Builder, name: String) -> Bool {
+  case dict.get(b.ctors, name) {
+    Error(_) -> False
+    Ok(checker.CtorInfo(type_name, _)) ->
+      list.length(
+        list.filter(dict.keys(b.ctors), fn(key) {
+          case dict.get(b.ctors, key) {
+            Ok(checker.CtorInfo(other, _)) -> other == type_name
+            Error(_) -> False
+          }
+        }),
+      ) == 1
   }
 }
 

@@ -55,8 +55,6 @@ adding list support, and are now covered by `diffs/lists.gleam`:
 - `let` bindings take no type annotation (`let x: T = ...`).
 - A top-level function cannot be used as a value (e.g. passing `insert` to
   `list.fold`); wrap it in a lambda.
-- `let` binds only variables, tuples and wildcards; a constructor pattern must
-  go through `case`.
 
 ## Type system
 
