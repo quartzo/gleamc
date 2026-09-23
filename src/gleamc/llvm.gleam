@@ -18,6 +18,7 @@ import gleamc/ast.{type Type, TNamed, TString}
 import gleamc/checker
 import gleamc/ir
 import gleamc/ownership
+import gleamc/plan
 
 type Ctx {
   Ctx(
@@ -32,6 +33,8 @@ type Ctx {
     fn_name: String,
     entry: String,
     params: List(String),
+    prefix: String,
+    group: Dict(String, #(String, List(String), String)),
   )
 }
 
@@ -88,6 +91,8 @@ pub fn emit(
       list.map(env_structs, fn(entry) { env_type_decl(entry, recursive) }),
       "\n",
     )
+    <> "\n"
+    <> group_type_decls(eligible_groups(ir_module, ctors), recursive)
 
   let builtins =
     string.join(
@@ -99,9 +104,30 @@ pub fn emit(
       "\n",
     )
 
-  let defs =
+  let group_fns = eligible_groups(ir_module, ctors)
+  let member_names =
+    list.flat_map(group_fns, fn(group) { list.map(group, fn(f) { f.name }) })
+  let group_defs =
     string.join(
-      list.map(functions, fn(function) {
+      list.flat_map(group_fns, fn(group) {
+        let #(dispatcher, wrappers) =
+          emit_group(group, recursive, lits, custom_types, ctors, tuples)
+        list.append([dispatcher], wrappers)
+      }),
+      "\n\n",
+    )
+  let normal_fns =
+    list.filter(functions, fn(function) {
+      !list.contains(member_names, function.name)
+    })
+  let defs =
+    group_defs
+    <> case group_defs {
+      "" -> ""
+      _ -> "\n\n"
+    }
+    <> string.join(
+      list.map(normal_fns, fn(function) {
         emit_function(function, recursive, lits, custom_types, ctors, tuples)
       }),
       "\n\n",
@@ -647,6 +673,8 @@ fn emit_function(
         [] -> "bb0"
       },
       params: params,
+      prefix: "",
+      group: dict.new(),
     )
   let b = Builder(next: 0, lines: [])
   let b = emit_allocas(ctx, params, locals, b)
@@ -691,7 +719,7 @@ fn emit_allocas(
     list.fold(locals, b, fn(b, local) {
       let ir.Local(name, ty) = local
       let ty_s = llvm_ty(ty, ctx.recursive)
-      emit_line(b, "  %l." <> safe(name) <> " = alloca " <> ty_s)
+      emit_line(b, "  " <> local_ptr(ctx, name) <> " = alloca " <> ty_s)
     })
   list.fold(params, b, fn(b, param) {
     let ty = local_type(ctx.by_name, param)
@@ -704,8 +732,8 @@ fn emit_allocas(
         <> safe(param)
         <> ", "
         <> ty_s
-        <> "* %l."
-        <> safe(param),
+        <> "* "
+        <> local_ptr(ctx, param),
     )
   })
 }
@@ -722,7 +750,8 @@ fn emit_block_list(
       let ir.Block(label, ops, term) = block
       let b = emit_line(b, "\n" <> block_name(ctx, label) <> ":")
       let b = case detect_self_tail(ctx, all, ops, term) {
-        Ok(#(pre, args, post)) -> emit_self_tail(ctx, pre, args, post, b)
+        Ok(#(callee, pre, args, post)) ->
+          emit_tail(ctx, callee, pre, args, post, b)
         Error(_) -> {
           let #(b, _) = emit_ops(ctx, ops, b)
           emit_term(ctx, term, b)
@@ -744,22 +773,33 @@ fn detect_self_tail(
   term: ir.Terminator,
 ) {
   case term {
-    ir.Ret(ir.Var(dest)) -> find_tail_call(ctx.fn_name, dest, ops, [])
-    ir.Jmp(end) -> find_tail_call_join(ctx.fn_name, end, all, ops, [])
+    ir.Ret(ir.Var(dest)) -> find_tail_call(ctx, dest, ops, [])
+    ir.Jmp(end) -> find_tail_call_join(ctx, end, all, ops, [])
     _ -> Error(Nil)
+  }
+}
+
+fn tailable(ctx: Ctx, fun: String) -> Bool {
+  case fun == ctx.fn_name {
+    True -> True
+    False ->
+      case dict.get(ctx.group, fun) {
+        Ok(_) -> True
+        Error(_) -> False
+      }
   }
 }
 
 /// Tail call whose result is copied into the `case` result local and jumps to
 /// the return block: `OpCall(d, self, args); OpCopy(res, d); ... ; Jmp(end)`
 /// with `end: Ret(res)`.
-fn find_tail_call_join(fn_name, end, all, ops, before_rev) {
+fn find_tail_call_join(ctx, end, all, ops, before_rev) {
   case ops {
     [] -> Error(Nil)
     [op, ..rest] ->
       case op {
         ir.OpCall(d, fun, args, _) ->
-          case fun == fn_name {
+          case tailable(ctx, fun) {
             True ->
               case rest {
                 [ir.OpCopy(res, src, _), ..after] ->
@@ -768,23 +808,20 @@ fn find_tail_call_join(fn_name, end, all, ops, before_rev) {
                     && list.all(after, is_cleanup)
                     && returns_local(all, end, res)
                   {
-                    True -> Ok(#(list.reverse(before_rev), args, after))
+                    True -> Ok(#(fun, list.reverse(before_rev), args, after))
                     False ->
-                      find_tail_call_join(fn_name, end, all, rest, [
+                      find_tail_call_join(ctx, end, all, rest, [
                         op,
                         ..before_rev
                       ])
                   }
                 _ ->
-                  find_tail_call_join(fn_name, end, all, rest, [
-                    op,
-                    ..before_rev
-                  ])
+                  find_tail_call_join(ctx, end, all, rest, [op, ..before_rev])
               }
             False ->
-              find_tail_call_join(fn_name, end, all, rest, [op, ..before_rev])
+              find_tail_call_join(ctx, end, all, rest, [op, ..before_rev])
           }
-        _ -> find_tail_call_join(fn_name, end, all, rest, [op, ..before_rev])
+        _ -> find_tail_call_join(ctx, end, all, rest, [op, ..before_rev])
       }
   }
 }
@@ -801,7 +838,7 @@ fn returns_local(all, label, local) -> Bool {
   }
 }
 
-fn find_tail_call(fn_name, dest, ops, before_rev) {
+fn find_tail_call(ctx, dest, ops, before_rev) {
   case ops {
     [] -> Error(Nil)
     [op, ..rest] ->
@@ -809,17 +846,17 @@ fn find_tail_call(fn_name, dest, ops, before_rev) {
         ir.OpCall(d, fun, args, _) ->
           case d == dest {
             True ->
-              case fun == fn_name {
+              case tailable(ctx, fun) {
                 True ->
                   case list.all(rest, is_cleanup) {
-                    True -> Ok(#(list.reverse(before_rev), args, rest))
+                    True -> Ok(#(fun, list.reverse(before_rev), args, rest))
                     False -> Error(Nil)
                   }
                 False -> Error(Nil)
               }
-            False -> find_tail_call(fn_name, dest, rest, [op, ..before_rev])
+            False -> find_tail_call(ctx, dest, rest, [op, ..before_rev])
           }
-        _ -> find_tail_call(fn_name, dest, rest, [op, ..before_rev])
+        _ -> find_tail_call(ctx, dest, rest, [op, ..before_rev])
       }
   }
 }
@@ -831,23 +868,40 @@ fn is_cleanup(op) -> Bool {
   }
 }
 
-fn emit_self_tail(ctx: Ctx, pre, args, post, b) -> Builder {
+fn emit_tail(ctx: Ctx, callee: String, pre, args, post, b) -> Builder {
+  let target = case dict.get(ctx.group, callee) {
+    Ok(found) -> found
+    Error(_) -> #(ctx.prefix, ctx.params, ctx.entry)
+  }
+  let #(prefix, params, entry) = target
   let #(b, _) = emit_ops(ctx, pre, b)
   let #(b, vals) = read_typed_args(ctx, args, b)
   let #(b, _) = emit_ops(ctx, post, b)
   let b =
     list.index_fold(vals, b, fn(b, pair, index) {
       let #(ty, v) = pair
-      case list_at(ctx.params, index) {
+      case list_at(params, index) {
         Ok(pname) ->
           emit_line(
             b,
-            "  store " <> ty <> " " <> v <> ", " <> ty <> "* %l." <> safe(pname),
+            "  store "
+              <> ty
+              <> " "
+              <> v
+              <> ", "
+              <> ty
+              <> "* %l."
+              <> prefix
+              <> safe(pname),
           )
         Error(_) -> b
       }
     })
-  emit_line(b, "  br label %" <> ctx.entry)
+  emit_line(b, "  br label %" <> entry)
+}
+
+fn local_ptr(ctx: Ctx, name: String) -> String {
+  "%l." <> ctx.prefix <> safe(name)
 }
 
 fn block_name_of(blocks: List(ir.Block), label: String) -> String {
@@ -1250,7 +1304,11 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
     ir.OpEnvGet(dest, env_ty, index, ty) -> {
       let ty_s = llvm_ty(ty, ctx.recursive)
       let #(envraw, b) = fresh(b)
-      let b = emit_line(b, "  " <> envraw <> " = load i8*, i8** %l.__env")
+      let b =
+        emit_line(
+          b,
+          "  " <> envraw <> " = load i8*, i8** " <> local_ptr(ctx, "__env"),
+        )
       let #(ep, b) = fresh(b)
       let b =
         emit_line(
@@ -1419,8 +1477,8 @@ fn emit_term(ctx: Ctx, term: ir.Terminator, b: Builder) {
                       <> v
                       <> ", "
                       <> ty
-                      <> "* %l."
-                      <> safe(pname),
+                      <> "* "
+                      <> local_ptr(ctx, pname),
                   )
                 Error(_) -> b
               }
@@ -1486,8 +1544,8 @@ fn read_val(ctx: Ctx, operand: ir.Operand, b: Builder) {
             <> ty_s
             <> ", "
             <> ty_s
-            <> "* %l."
-            <> safe(name),
+            <> "* "
+            <> local_ptr(ctx, name),
         )
       #(ty_s, tmp, b)
     }
@@ -1537,7 +1595,7 @@ fn read_literal(ctx: Ctx, value: ir.Literal, b: Builder) {
 }
 
 fn store_local(
-  _ctx: Ctx,
+  ctx: Ctx,
   dest: String,
   ty_s: String,
   val: String,
@@ -1545,7 +1603,14 @@ fn store_local(
 ) -> Builder {
   emit_line(
     b,
-    "  store " <> ty_s <> " " <> val <> ", " <> ty_s <> "* %l." <> safe(dest),
+    "  store "
+      <> ty_s
+      <> " "
+      <> val
+      <> ", "
+      <> ty_s
+      <> "* "
+      <> local_ptr(ctx, dest),
   )
 }
 
@@ -3210,6 +3275,368 @@ fn cmp_named(recursive, custom_types, type_name, ty_s, b) {
       },
     )
   #(b, Nil)
+}
+
+// ---------------------------------------------------------------------------
+// mutual tail-call groups (single dispatcher, the trampoline)
+// ---------------------------------------------------------------------------
+
+fn eligible_groups(
+  module: ir.Module,
+  ctors: Dict(String, checker.CtorInfo),
+) -> List(List(ir.Function)) {
+  let ir.Module(functions) = module
+  let planned = plan.plan(module)
+  let groups = case planned {
+    plan.Plan(_, _, groups, _, _, _) -> groups
+  }
+  list.filter_map(groups, fn(group) {
+    let plan.Group(members, _) = group
+    case lookup_all(functions, members) {
+      Ok(fns) ->
+        case
+          list.any(fns, fn(f) { f.name == "main" }) || !group_ok(fns, ctors)
+        {
+          True -> Error(Nil)
+          False -> Ok(fns)
+        }
+      Error(_) -> Error(Nil)
+    }
+  })
+}
+
+fn lookup_all(
+  functions: List(ir.Function),
+  names: List(String),
+) -> Result(List(ir.Function), Nil) {
+  case names {
+    [] -> Ok([])
+    [name, ..rest] ->
+      case
+        list.find(functions, fn(function) {
+          let ir.Function(other, _, _, _, _) = function
+          other == name
+        })
+      {
+        Ok(function) ->
+          case lookup_all(functions, rest) {
+            Ok(fns) -> Ok([function, ..fns])
+            Error(_) -> Error(Nil)
+          }
+        Error(_) -> Error(Nil)
+      }
+  }
+}
+
+/// A mutual group is eligible when every member has the same return type and
+/// only scalar locals (no handle), so the frame rebind can never dangle a
+/// borrowed reference. Handle groups await the frame-claim ownership stage.
+fn group_ok(
+  fns: List(ir.Function),
+  ctors: Dict(String, checker.CtorInfo),
+) -> Bool {
+  let rets =
+    list.map(fns, fn(f) {
+      let ir.Function(_, _, ret, _, _) = f
+      ir.describe_type(ret)
+    })
+  let scalar =
+    list.all(fns, fn(f) {
+      let ir.Function(_, _, _, _, locals) = f
+      list.all(locals, fn(local) {
+        let ir.Local(_, ty) = local
+        !ownership.needs_drop(ty, ctors)
+      })
+    })
+  all_equal(rets) && scalar && list.length(fns) > 1
+}
+
+fn all_equal(items: List(String)) -> Bool {
+  case items {
+    [] -> True
+    [first, ..rest] -> list.all(rest, fn(item) { item == first })
+  }
+}
+
+fn group_type_decls(
+  groups: List(List(ir.Function)),
+  recursive: Dict(String, Bool),
+) -> String {
+  string.join(
+    list.flat_map(groups, fn(group) {
+      let gid = string.join(list.map(group, fn(f) { f.name }), "_")
+      list.index_map(group, fn(function, index) {
+        let ir.Function(_, params, _, _, locals) = function
+        let by_name = locals_map(locals)
+        "%__"
+        <> gid
+        <> ".m"
+        <> int.to_string(index)
+        <> " = type { "
+        <> string.join(
+          list.map(params, fn(param) {
+            llvm_ty(local_type(by_name, param), recursive)
+          }),
+          ", ",
+        )
+        <> " }"
+      })
+    }),
+    "\n",
+  )
+}
+
+fn block_names_prefixed(
+  blocks: List(ir.Block),
+  prefix: String,
+) -> Dict(String, String) {
+  blocks
+  |> list.index_map(fn(block, index) {
+    let ir.Block(label, _, _) = block
+    #(label, prefix <> "bb" <> int.to_string(index))
+  })
+  |> dict.from_list
+}
+
+fn entry_name(blocks: List(ir.Block), prefix: String) -> String {
+  let _ = blocks
+  prefix <> "bb0"
+}
+
+fn emit_group(
+  group: List(ir.Function),
+  recursive: Dict(String, Bool),
+  lits: Dict(String, Int),
+  custom_types: List(ast.CustomType),
+  ctors: Dict(String, checker.CtorInfo),
+  tuples: List(Type),
+) -> #(String, List(String)) {
+  let gid = string.join(list.map(group, fn(f) { f.name }), "_")
+  let disp = "__g_" <> gid
+  let ret = case group {
+    [first, ..] -> {
+      let ir.Function(_, _, ret, _, _) = first
+      ret
+    }
+    [] -> ast.TNil
+  }
+  let ret_s = llvm_ty(ret, recursive)
+  let indexed =
+    list.index_map(group, fn(function, index) {
+      let prefix = "m" <> int.to_string(index) <> "_"
+      let ir.Function(name, params, _, blocks, _) = function
+      #(function, index, prefix, entry_name(blocks, prefix), name, params)
+    })
+  let group_map =
+    indexed
+    |> list.map(fn(entry) {
+      let #(_, _, prefix, entry_label, name, params) = entry
+      #(name, #(prefix, params, entry_label))
+    })
+    |> dict.from_list
+
+  // dispatcher
+  let b = Builder(next: 0, lines: [])
+  let b =
+    emit_line(
+      b,
+      "define " <> ret_s <> " @" <> disp <> "(i32 %__fn, i8* %__args) {",
+    )
+  let b =
+    list.fold(indexed, b, fn(b, entry) {
+      let #(function, _, prefix, _, _, _) = entry
+      let ir.Function(_, _, _, _, locals) = function
+      list.fold(locals, b, fn(b, local) {
+        let ir.Local(name, ty) = local
+        emit_line(
+          b,
+          "  %l."
+            <> prefix
+            <> safe(name)
+            <> " = alloca "
+            <> llvm_ty(ty, recursive),
+        )
+      })
+    })
+  let switch_arms =
+    list.index_map(group, fn(_, index) {
+      " i32 "
+      <> int.to_string(index)
+      <> ", label %__pro"
+      <> int.to_string(index)
+    })
+  let b =
+    emit_line(
+      b,
+      "  switch i32 %__fn, label %__bad [ "
+        <> string.join(switch_arms, " ")
+        <> " ]",
+    )
+  let b = emit_line(b, "\n__bad:")
+  let b = emit_line(b, "  unreachable")
+  // prologues
+  let b =
+    list.fold(indexed, b, fn(b, entry) {
+      let #(function, index, prefix, entry_label, _, _) = entry
+      let ir.Function(_, params, _, _, locals) = function
+      let by_name = locals_map(locals)
+      let struct_ty = "%__" <> gid <> ".m" <> int.to_string(index)
+      let b = emit_line(b, "\n__pro" <> int.to_string(index) <> ":")
+      let #(p, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> p <> " = bitcast i8* %__args to " <> struct_ty <> "*",
+        )
+      let b =
+        list.fold(
+          list.index_map(params, fn(param, field) { #(param, field) }),
+          b,
+          fn(b, pair) {
+            let #(param, field) = pair
+            let pty_s = llvm_ty(local_type(by_name, param), recursive)
+            let #(gp, b) = fresh(b)
+            let b =
+              emit_line(
+                b,
+                "  "
+                  <> gp
+                  <> " = getelementptr "
+                  <> struct_ty
+                  <> ", "
+                  <> struct_ty
+                  <> "* "
+                  <> p
+                  <> ", i32 0, i32 "
+                  <> int.to_string(field),
+              )
+            let #(v, b) = fresh(b)
+            let b =
+              emit_line(
+                b,
+                "  " <> v <> " = load " <> pty_s <> ", " <> pty_s <> "* " <> gp,
+              )
+            emit_line(
+              b,
+              "  store "
+                <> pty_s
+                <> " "
+                <> v
+                <> ", "
+                <> pty_s
+                <> "* %l."
+                <> prefix
+                <> safe(param),
+            )
+          },
+        )
+      emit_line(b, "  br label %" <> entry_label)
+    })
+  // member bodies
+  let b =
+    list.fold(indexed, b, fn(b, entry) {
+      let #(function, _, prefix, entry_label, name, params) = entry
+      let ir.Function(_, _, member_ret, blocks, locals) = function
+      let ctx =
+        Ctx(
+          recursive: recursive,
+          by_name: locals_map(locals),
+          lits: lits,
+          blocks: block_names_prefixed(blocks, prefix),
+          ret: member_ret,
+          custom_types: custom_types,
+          ctors: ctors,
+          tuples: tuples,
+          fn_name: name,
+          entry: entry_label,
+          params: params,
+          prefix: prefix,
+          group: group_map,
+        )
+      let #(b, _) = emit_block_list(ctx, blocks, blocks, b)
+      b
+    })
+  let dispatcher = string.join(list.reverse(b.lines), "\n") <> "\n}\n"
+  let wrappers =
+    list.map(indexed, fn(entry) {
+      let #(function, index, _, _, _, _) = entry
+      wrapper_for_group(function, index, gid, ret_s, recursive, disp)
+    })
+  #(dispatcher, wrappers)
+}
+
+fn wrapper_for_group(
+  function: ir.Function,
+  index: Int,
+  gid: String,
+  ret_s: String,
+  recursive: Dict(String, Bool),
+  disp: String,
+) -> String {
+  let ir.Function(name, params, _, _, locals) = function
+  let by_name = locals_map(locals)
+  let struct_ty = "%__" <> gid <> ".m" <> int.to_string(index)
+  let decls =
+    list.index_map(params, fn(param, field) {
+      llvm_ty(local_type(by_name, param), recursive)
+      <> " %a"
+      <> int.to_string(field)
+    })
+  let stores =
+    string.join(
+      list.map(
+        list.index_map(params, fn(param, field) { #(param, field) }),
+        fn(pair) {
+          let #(param, field) = pair
+          let pty_s = llvm_ty(local_type(by_name, param), recursive)
+          "  %g"
+          <> int.to_string(field)
+          <> " = getelementptr "
+          <> struct_ty
+          <> ", "
+          <> struct_ty
+          <> "* %__a, i32 0, i32 "
+          <> int.to_string(field)
+          <> "\n"
+          <> "  store "
+          <> pty_s
+          <> " %a"
+          <> int.to_string(field)
+          <> ", "
+          <> pty_s
+          <> "* %g"
+          <> int.to_string(field)
+        },
+      ),
+      "\n",
+    )
+  "define "
+  <> ret_s
+  <> " @Gleamc_"
+  <> name
+  <> "("
+  <> string.join(decls, ", ")
+  <> ") {\n"
+  <> "  %__a = alloca "
+  <> struct_ty
+  <> "\n"
+  <> case stores {
+    "" -> ""
+    _ -> stores <> "\n"
+  }
+  <> "  %__ap = bitcast "
+  <> struct_ty
+  <> "* %__a to i8*\n"
+  <> "  %__r = call "
+  <> ret_s
+  <> " @"
+  <> disp
+  <> "(i32 "
+  <> int.to_string(index)
+  <> ", i8* %__ap)\n"
+  <> "  ret "
+  <> ret_s
+  <> " %__r\n}\n"
 }
 
 // ---------------------------------------------------------------------------
