@@ -1657,3 +1657,89 @@ GleamcBitArray Gleamc_host_blob_slice(GleamcBitArray blob, int64_t offset) {
     if (len > 0) memcpy(out, blob.data + offset, len);
     return (GleamcBitArray){out, len};
 }
+
+/* ------------------------------------------------------------------ */
+/* Host async surface (Vesper docs 09/11/14). I/O starts return a      */
+/* Future; `await` drives the scheduler to completion. There is no      */
+/* synchronous disk path.                                              */
+/* ------------------------------------------------------------------ */
+
+static void gleamc_future_wait(GleamcFuture* f) {
+    if (f == NULL) return;
+    while (!f->done) uv_run((uv_loop_t*)gleamc_uv_loop(), UV_RUN_ONCE);
+}
+
+static GleamcFuture* gleamc_future_err(GleamcFuture* f, int32_t code) {
+    f->done = true; f->has_error = true; f->error_code = code;
+    f->value_i = 0; f->value_p = NULL; f->uv_armed = false;
+    return f;
+}
+
+GleamcFuture* Gleamc_uv_fs_open(GleamcString path, int64_t flags, int64_t mode) {
+    char* cpath = gleamc_to_cstr(path);
+    if (cpath == NULL)
+        return gleamc_future_err(gleamc_alloc(sizeof(GleamcFuture)), 12);
+    GleamcFuture* f = gleamc_uv_fs_open(gleamc_uv_loop(), cpath,
+                                        (int32_t)flags, (int32_t)mode);
+    free(cpath);
+    return f;
+}
+
+GleamcFuture* Gleamc_uv_fs_read(int64_t fd, int64_t n) {
+    return gleamc_uv_fs_read(gleamc_uv_loop(), (void*)(intptr_t)fd, n);
+}
+
+GleamcFuture* Gleamc_uv_fs_fstat(int64_t fd) {
+    return gleamc_uv_fs_fstat(gleamc_uv_loop(), (void*)(intptr_t)fd);
+}
+
+GleamcFuture* Gleamc_uv_fs_close(int64_t fd) {
+    return gleamc_uv_fs_close(gleamc_uv_loop(), (void*)(intptr_t)fd);
+}
+
+GleamcFuture* Gleamc_uv_fs_write(int64_t fd, GleamcBitArray data) {
+    GleamcFuture* f = gleamc_alloc(sizeof(GleamcFuture));
+    f->done = false; f->has_error = false; f->error_code = 0;
+    f->value_i = 0; f->uv_armed = true;
+    size_t n = data.len;
+    uint8_t* buf = (uint8_t*)malloc(n > 0 ? n : 1);
+    if (n > 0 && data.data != NULL) memcpy(buf, data.data, n);
+    f->value_p = buf;
+    uv_buf_t iov = uv_buf_init((char*)buf, n);
+    uv_fs_t* req = (uv_fs_t*)gleamc_alloc(uv_req_size(UV_FS));
+    gleamc_fs_bind(req, f);
+    uv_fs_write((uv_loop_t*)gleamc_uv_loop(), req, (uv_file)(intptr_t)fd,
+                &iov, 1, -1, gleamc_fs_cb);
+    return f;
+}
+
+GleamcFuture* Gleamc_uv_fs_unlink(GleamcString path) {
+    char* cpath = gleamc_to_cstr(path);
+    if (cpath == NULL)
+        return gleamc_future_err(gleamc_alloc(sizeof(GleamcFuture)), 12);
+    GleamcFuture* f = gleamc_alloc(sizeof(GleamcFuture));
+    f->done = false; f->has_error = false; f->error_code = 0;
+    f->value_i = 0; f->value_p = NULL; f->uv_armed = true;
+    uv_fs_t* req = (uv_fs_t*)gleamc_alloc(uv_req_size(UV_FS));
+    gleamc_fs_bind(req, f);
+    uv_fs_unlink((uv_loop_t*)gleamc_uv_loop(), req, cpath, gleamc_fs_cb);
+    free(cpath);
+    return f;
+}
+
+int64_t Gleamc_uv_await_int(GleamcFuture* f) {
+    gleamc_future_wait(f);
+    return f == NULL ? 0 : f->value_i;
+}
+
+GleamcBitArray Gleamc_uv_await_bytes(GleamcFuture* f) {
+    gleamc_future_wait(f);
+    if (f == NULL) return (GleamcBitArray){NULL, 0};
+    return (GleamcBitArray){(uint8_t*)f->value_p, (size_t)f->value_i};
+}
+
+int64_t Gleamc_uv_error(GleamcFuture* f) {
+    if (f == NULL) return 0;
+    gleamc_future_wait(f);
+    return f->has_error ? (int64_t)f->error_code : 0;
+}

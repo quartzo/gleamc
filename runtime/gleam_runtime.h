@@ -311,4 +311,16 @@ void gleamc_task_spawn(bool (*step)(void*), void* frame,
                        GleamcFuture** fut_slot);
 int32_t gleamc_tasks_drain(void);
 
+/* Host async surface (Vesper docs 09/11/14): starts return a Future,
+ * `await` (Gleamc_uv_await_*) drives the scheduler to completion. */
+GleamcFuture* Gleamc_uv_fs_open(GleamcString path, int64_t flags, int64_t mode);
+GleamcFuture* Gleamc_uv_fs_read(int64_t fd, int64_t n);
+GleamcFuture* Gleamc_uv_fs_fstat(int64_t fd);
+GleamcFuture* Gleamc_uv_fs_close(int64_t fd);
+GleamcFuture* Gleamc_uv_fs_write(int64_t fd, GleamcBitArray data);
+GleamcFuture* Gleamc_uv_fs_unlink(GleamcString path);
+int64_t Gleamc_uv_await_int(GleamcFuture* f);
+GleamcBitArray Gleamc_uv_await_bytes(GleamcFuture* f);
+int64_t Gleamc_uv_error(GleamcFuture* f);
+
 #endif /* GLEAMC_RUNTIME_H */

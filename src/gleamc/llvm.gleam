@@ -712,21 +712,7 @@ fn builtin_decls(
             || runtime_declared("Gleamc_" <> string.replace(builtin, ".", "_"))
           {
             True -> Error(Nil)
-            False ->
-              Ok(
-                "declare "
-                <> llvm_ty(ret_ty, recursive)
-                <> " @Gleamc_"
-                <> string.replace(builtin, ".", "_")
-                <> "("
-                <> string.join(
-                  list.map(args, fn(arg) {
-                    llvm_ty(operand_type(by_name, arg), recursive)
-                  }),
-                  ", ",
-                )
-                <> ")",
-              )
+            False -> Ok(builtin_decl(builtin, ret_ty, args, by_name, recursive))
           }
         _ -> Error(Nil)
       }
@@ -1071,27 +1057,7 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
           let b = store_local(ctx, dest, ty_s, "undef", b)
           #(b, Nil)
         }
-        _ -> {
-          let #(b, arg_list) = read_args(ctx, args, b)
-          let ret_s = llvm_ty(ret_ty, ctx.recursive)
-          let name = "Gleamc_" <> string.replace(builtin, ".", "_")
-          let #(tmp, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  "
-                <> tmp
-                <> " = call "
-                <> ret_s
-                <> " @"
-                <> name
-                <> "("
-                <> arg_list
-                <> ")",
-            )
-          let b = store_local(ctx, dest, ret_s, tmp, b)
-          #(b, Nil)
-        }
+        _ -> emit_builtin_call(ctx, dest, builtin, args, ret_ty, b)
       }
     }
     ir.OpCopy(dest, src, ty) -> {
@@ -1825,6 +1791,120 @@ fn runtime_declared(name: String) -> Bool {
     | "Gleamc_rc_release"
     | "gleamc_alloc_site" -> True
     _ -> False
+  }
+}
+
+fn is_file_result(ty: Type) -> Bool {
+  case ty {
+    TNamed("FileResult") -> True
+    _ -> False
+  }
+}
+
+/// Runtime functions that return or take `GleamcFileResult` (a 32-byte
+/// aggregate) use the C ABI: `sret` for the result and `byval` pointers for
+/// arguments. Emitting them by value would mismatch clang's lowering.
+fn builtin_arg_ty(by_name, recursive, arg) -> String {
+  let ty = operand_type(by_name, arg)
+  case is_file_result(ty) {
+    True -> "ptr byval(%GleamcFileResult)"
+    False -> llvm_ty(ty, recursive)
+  }
+}
+
+fn builtin_decl(builtin, ret_ty, args, by_name, recursive) -> String {
+  let name = "Gleamc_" <> string.replace(builtin, ".", "_")
+  let arg_str =
+    string.join(
+      list.map(args, fn(arg) { builtin_arg_ty(by_name, recursive, arg) }),
+      ", ",
+    )
+  case is_file_result(ret_ty) {
+    True ->
+      "declare void @"
+      <> name
+      <> "(ptr sret(%GleamcFileResult)"
+      <> case arg_str {
+        "" -> ""
+        _ -> ", " <> arg_str
+      }
+      <> ")"
+    False ->
+      "declare "
+      <> llvm_ty(ret_ty, recursive)
+      <> " @"
+      <> name
+      <> "("
+      <> arg_str
+      <> ")"
+  }
+}
+
+fn emit_builtin_call(ctx: Ctx, dest, builtin, args, ret_ty, b) {
+  let name = "Gleamc_" <> string.replace(builtin, ".", "_")
+  let ret_s = llvm_ty(ret_ty, ctx.recursive)
+  let sret = is_file_result(ret_ty)
+  let #(b, rev_parts) =
+    list.fold(args, #(b, []), fn(acc, arg) {
+      let #(b, parts) = acc
+      let oty = operand_type(ctx.by_name, arg)
+      case is_file_result(oty) {
+        True -> {
+          let #(_, v, b) = read_val(ctx, arg, b)
+          let #(slot, b) = fresh(b)
+          let b = emit_line(b, "  " <> slot <> " = alloca %GleamcFileResult")
+          let b =
+            emit_line(
+              b,
+              "  store %GleamcFileResult "
+                <> v
+                <> ", %GleamcFileResult* "
+                <> slot,
+            )
+          #(b, ["ptr byval(%GleamcFileResult) " <> slot, ..parts])
+        }
+        False -> {
+          let #(ty_s, v, b) = read_val(ctx, arg, b)
+          #(b, [ty_s <> " " <> v, ..parts])
+        }
+      }
+    })
+  let arg_list = string.join(list.reverse(rev_parts), ", ")
+  case sret {
+    True -> {
+      let b =
+        emit_line(
+          b,
+          "  call void @"
+          <> name
+          <> "(ptr sret(%GleamcFileResult) "
+          <> local_ptr(ctx, dest)
+          <> case arg_list {
+            "" -> ""
+            _ -> ", " <> arg_list
+          }
+          <> ")",
+        )
+      #(b, Nil)
+    }
+    False -> {
+      let #(tmp, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+          <> tmp
+          <> " = call "
+          <> ret_s
+          <> " @"
+          <> name
+          <> "("
+          <> arg_list
+          <> ")",
+        )
+      let b = store_local(ctx, dest, ret_s, tmp, b)
+      #(b, Nil)
+    }
   }
 }
 
