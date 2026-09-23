@@ -1,5 +1,6 @@
 *.beam
 *.ez
+*.ll
 /build
 erl_crash.dump
 
@@ -66,6 +67,11 @@ erl_crash.dump
 /diffs/unicode
 /diffs/guards2
 /diffs/alias
+/diffs/fnvalue
+/diffs/int_float
+/diffs/labelled_expected
+/diffs/list_extra
+/diffs/nestedclosure
 
 # compiler output next to the compiler sources
 /src/gleamc/*.c

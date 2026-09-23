@@ -18,7 +18,13 @@ const work_dir = "/tmp/gleamc"
 const smoke_source = "import gleam/io\n\npub fn main() {\n  io.println(\"Hello from gleamc!\")\n}\n"
 
 pub type Options {
-  Options(cc: Option(String), mode: toolchain.Mode, run: Bool, quiet: Bool)
+  Options(
+    cc: Option(String),
+    mode: toolchain.Mode,
+    run: Bool,
+    quiet: Bool,
+    llvm: Bool,
+  )
 }
 
 type Command {
@@ -29,7 +35,13 @@ type Command {
 }
 
 fn default_options() -> Options {
-  Options(cc: None, mode: toolchain.Debug, run: False, quiet: False)
+  Options(
+    cc: None,
+    mode: toolchain.Debug,
+    run: False,
+    quiet: False,
+    llvm: False,
+  )
 }
 
 pub fn main() -> Nil {
@@ -66,6 +78,7 @@ fn parse(
           parse(rest, Options(..options, mode: toolchain.Debug), source)
         "--run" -> parse(rest, Options(..options, run: True), source)
         "--quiet" -> parse(rest, Options(..options, quiet: True), source)
+        "--llvm" -> parse(rest, Options(..options, llvm: True), source)
         "smoke" -> parse(rest, options, source)
         _ ->
           case string.split(arg, "=") {
@@ -110,10 +123,17 @@ fn compile_file(source: String, options: Options) -> Nil {
 }
 
 fn compile_modules(modules, base: String, options: Options) -> Nil {
-  case pipeline.compile_modules(modules) {
+  let result = case options.llvm {
+    True -> pipeline.compile_modules_llvm(modules)
+    False -> pipeline.compile_modules(modules)
+  }
+  case result {
     Error(err) -> io.println(base <> ".gleam: " <> err)
     Ok(c_code) -> {
-      let c_path = base <> ".c"
+      let c_path = case options.llvm {
+        True -> base <> ".ll"
+        False -> base <> ".c"
+      }
       case ffi.write_file(c_path, c_code) {
         Error(err) -> io.println("error writing " <> c_path <> ": " <> err)
         Ok(_) -> build(c_path, base, options)

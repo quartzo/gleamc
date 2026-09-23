@@ -1493,13 +1493,45 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         "fs.chmod",
       )
     "host", "run" ->
-      check_builtin(env, signatures, ctors, args, [TString], TNamed("BitArray"), "host.run")
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TNamed("BitArray"),
+        "host.run",
+      )
     "host", "argv" ->
-      check_builtin(env, signatures, ctors, args, [], TNamed("BitArray"), "host.argv")
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [],
+        TNamed("BitArray"),
+        "host.argv",
+      )
     "host", "get_env" ->
-      check_builtin(env, signatures, ctors, args, [TString], TString, "host.get_env")
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TString,
+        "host.get_env",
+      )
     "host", "which" ->
-      check_builtin(env, signatures, ctors, args, [TString], TString, "host.which")
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TString,
+        "host.which",
+      )
     "host", "blob_slice" ->
       check_builtin(
         env,

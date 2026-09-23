@@ -13,6 +13,7 @@ import gleamc/codegen
 import gleamc/consts
 import gleamc/dce
 import gleamc/ir
+import gleamc/llvm
 import gleamc/lower
 import gleamc/merge
 import gleamc/mono
@@ -37,6 +38,14 @@ pub fn compile_modules(
 ) -> Result(String, String) {
   use #(_module, owned, ctors, custom_types) <- result.try(cascade(modules))
   Ok(codegen.emit(owned, custom_types, ctors))
+}
+
+/// LLVM IR backend (`llvm.emit`). Same cascade as `compile_modules`.
+pub fn compile_modules_llvm(
+  modules: List(#(String, Module)),
+) -> Result(String, String) {
+  use #(_module, owned, ctors, custom_types) <- result.try(cascade(modules))
+  Ok(llvm.emit(owned, custom_types, ctors))
 }
 
 pub fn compile_ir_modules(
