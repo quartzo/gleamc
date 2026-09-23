@@ -50,6 +50,7 @@ pub fn emit(
   let ir.Module(functions) = ir_module
   let recursive = ownership.recursive_types(ctors)
   let tuples = collect_tuple_types(custom_types, functions)
+  let all_groups = eligible_groups(ir_module, ctors)
   let fn_types = collect_fn_types(custom_types, functions)
   let env_structs = collect_env_structs(functions)
   let lit_list =
@@ -92,7 +93,7 @@ pub fn emit(
       "\n",
     )
     <> "\n"
-    <> group_type_decls(eligible_groups(ir_module, ctors), recursive)
+    <> group_type_decls(all_groups, recursive)
 
   let builtins =
     string.join(
@@ -104,7 +105,7 @@ pub fn emit(
       "\n",
     )
 
-  let group_fns = eligible_groups(ir_module, ctors)
+  let group_fns = all_groups
   let member_names =
     list.flat_map(group_fns, fn(group) { list.map(group, fn(f) { f.name }) })
   let group_defs =
@@ -3335,20 +3336,13 @@ fn group_ok(
   fns: List(ir.Function),
   ctors: Dict(String, checker.CtorInfo),
 ) -> Bool {
+  let _ = ctors
   let rets =
     list.map(fns, fn(f) {
       let ir.Function(_, _, ret, _, _) = f
       ir.describe_type(ret)
     })
-  let scalar =
-    list.all(fns, fn(f) {
-      let ir.Function(_, _, _, _, locals) = f
-      list.all(locals, fn(local) {
-        let ir.Local(_, ty) = local
-        !ownership.needs_drop(ty, ctors)
-      })
-    })
-  all_equal(rets) && scalar && list.length(fns) > 1
+  all_equal(rets) && list.length(fns) > 1
 }
 
 fn all_equal(items: List(String)) -> Bool {

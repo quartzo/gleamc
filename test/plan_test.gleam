@@ -55,3 +55,49 @@ pub fn plan_deterministic_test() {
   let assert Ok(b) = pipeline.compile_to_plan(mutual)
   assert plan.to_text(a) == plan.to_text(b)
 }
+
+const string_mutual = "fn ping(s: String, n: Int) -> Int {
+  case n {
+    0 -> 1
+    _ -> pong(s, n - 1)
+  }
+}
+
+fn pong(s: String, n: Int) -> Int {
+  case n {
+    0 -> 2
+    _ -> ping(s, n - 1)
+  }
+}
+
+pub fn main() {
+  ping(\"x\", 3)
+}
+"
+
+pub fn plan_string_mutual_test() {
+  let assert Ok(planned) = pipeline.compile_to_plan(string_mutual)
+  let text = plan.to_text(planned)
+  assert string.contains(text, "[ping, pong]")
+}
+
+const string_mutual2 = "fn ping(s: String, n: Int) -> Int {
+  case n { 0 -> 1 _ -> pong(s, n - 1) }
+}
+fn pong(s: String, n: Int) -> Int {
+  case n { 0 -> 2 _ -> ping(s, n - 1) }
+}
+pub fn main() { ping(\"x\", 3) }
+"
+
+pub fn llvm_group_emit_test() {
+  let assert Ok(code) = pipeline.compile_to_llvm(string_mutual2)
+  assert string.contains(code, "__g_ping_pong")
+  assert string.contains(code, "@__g_ping_pong")
+}
+
+pub fn plan_string_mutual2_test() {
+  let assert Ok(p) = pipeline.compile_to_plan(string_mutual2)
+  assert string.contains(plan.to_text(p), "[ping, pong]")
+  assert string.contains(plan.to_text(p), "ping -> pong")
+}

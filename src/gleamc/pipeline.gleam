@@ -30,6 +30,11 @@ pub fn compile_to_c(source: String) -> Result(String, String) {
 }
 
 /// Planification stage: owned IR -> machine plan (pure, deterministic).
+pub fn compile_to_llvm(source: String) -> Result(String, String) {
+  use module <- result.try(map_err(parser.parse(source), parser.describe_error))
+  compile_modules_llvm([#("", module)])
+}
+
 pub fn compile_to_plan(source: String) -> Result(plan.Plan, String) {
   use module <- result.try(map_err(parser.parse(source), parser.describe_error))
   use #(_module, owned, _ctors, _custom_types) <- result.try(
