@@ -4,7 +4,7 @@
 //// discovered from the entry points by a worklist that reuses the HM checker
 //// for type computation. After this pass every `TApp`/`TVar` is gone and
 //// constructors/functions have concrete, mangled names, so the existing
-//// monomorphic backend (lower + ownership + codegen) can run unchanged.
+//// monomorphic backend (lower + ownership) can run unchanged.
 
 import gleam/dict.{type Dict}
 import gleam/int

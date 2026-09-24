@@ -167,7 +167,7 @@ pub fn infer(
       infer_field(obj_ty, name, ctors)
     }
     ELabelled(_, value) -> infer(env, signatures, ctors, value)
-    ELambda(_, _) -> Error(CheckError("lambda not lifted before codegen"))
+    ELambda(_, _) -> Error(CheckError("lambda not lifted before lowering"))
     EClosure(_, _, _, fn_ty) -> Ok(fn_ty)
     EEnvGet(_, _, ty) -> Ok(ty)
     EPanic(_, ty) -> Ok(ty)

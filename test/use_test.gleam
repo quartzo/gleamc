@@ -11,13 +11,13 @@ const pattern_source = "import gleam/io\nimport gleam/int\n\nfn pair(f: fn(#(Int
 
 pub fn use_pattern_test() {
   let _ = ffi.run("mkdir -p " <> dir)
-  let assert Ok(c_code) = pipeline.compile_to_c(pattern_source)
-  let assert Ok(_) = ffi.write_file(dir <> "/pattern.c", c_code)
+  let assert Ok(ll_code) = pipeline.compile_to_llvm(pattern_source)
+  let assert Ok(_) = ffi.write_file(dir <> "/pattern.ll", ll_code)
   let cmd =
     toolchain.build_command(
       toolchain.default_cc(),
       toolchain.Debug,
-      [dir <> "/pattern.c", "runtime/gleam_runtime.c"],
+      [dir <> "/pattern.ll", "runtime/gleam_runtime.c"],
       ["runtime"],
       dir <> "/pattern",
     )
@@ -31,13 +31,13 @@ pub fn use_pattern_test() {
 
 pub fn use_desugar_test() {
   let _ = ffi.run("mkdir -p " <> dir)
-  let assert Ok(c_code) = pipeline.compile_to_c(source)
-  let assert Ok(_) = ffi.write_file(dir <> "/main.c", c_code)
+  let assert Ok(ll_code) = pipeline.compile_to_llvm(source)
+  let assert Ok(_) = ffi.write_file(dir <> "/main.ll", ll_code)
   let cmd =
     toolchain.build_command(
       toolchain.default_cc(),
       toolchain.Debug,
-      [dir <> "/main.c", "runtime/gleam_runtime.c"],
+      [dir <> "/main.ll", "runtime/gleam_runtime.c"],
       ["runtime"],
       dir <> "/main",
     )

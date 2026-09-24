@@ -17,11 +17,11 @@ pub fn opaque_type_test() {
 
   let assert Ok(_) = ffi.write_file(dir <> "/ok.gleam", ok_source)
   let assert Ok(ok_modules) = loader.load(dir <> "/ok.gleam")
-  let assert Ok(_) = pipeline.compile_modules(ok_modules)
+  let assert Ok(_) = pipeline.compile_modules_llvm(ok_modules)
 
   let assert Ok(_) = ffi.write_file(dir <> "/bad.gleam", bad_source)
   let assert Ok(bad_modules) = loader.load(dir <> "/bad.gleam")
-  case pipeline.compile_modules(bad_modules) {
+  case pipeline.compile_modules_llvm(bad_modules) {
     Error(message) ->
       case string.contains(message, "opaque") {
         True -> Nil

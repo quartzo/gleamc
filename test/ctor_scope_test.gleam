@@ -38,7 +38,7 @@ pub fn conflicting_imports_test() {
   let assert Ok(_) = ffi.write_file(dir <> "/b.gleam", b_source)
   let assert Ok(_) = ffi.write_file(dir <> "/conflict.gleam", conflict_source)
   let assert Ok(modules) = loader.load(dir <> "/conflict.gleam")
-  case pipeline.compile_modules(modules) {
+  case pipeline.compile_modules_llvm(modules) {
     Error(message) ->
       case string.contains(message, "imported multiple times") {
         True -> Nil
@@ -54,14 +54,14 @@ fn run(name, source) {
   let assert Ok(_) = ffi.write_file(dir <> "/b.gleam", b_source)
   let assert Ok(_) = ffi.write_file(dir <> "/" <> name <> ".gleam", source)
   let assert Ok(modules) = loader.load(dir <> "/" <> name <> ".gleam")
-  let assert Ok(c_code) = pipeline.compile_modules(modules)
-  let assert Ok(_) = ffi.write_file(dir <> "/" <> name <> ".c", c_code)
+  let assert Ok(ll_code) = pipeline.compile_modules_llvm(modules)
+  let assert Ok(_) = ffi.write_file(dir <> "/" <> name <> ".ll", ll_code)
 
   let cmd =
     toolchain.build_command(
       toolchain.default_cc(),
       toolchain.Debug,
-      [dir <> "/" <> name <> ".c", "runtime/gleam_runtime.c"],
+      [dir <> "/" <> name <> ".ll", "runtime/gleam_runtime.c"],
       ["runtime"],
       dir <> "/" <> name,
     )

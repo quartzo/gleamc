@@ -1,8 +1,7 @@
 //// C toolchain driver: compiler selection, flags and invocation.
 ////
 //// Design decision: `clang -O0` in the dev loop (with `mold` for linking),
-//// `clang/gcc -O3 -march=native` on release. `tcc` stays as an option
-//// (`--cc=tcc`) for ultra-fast compilation.
+//// `clang/gcc -O3 -march=native` on release.
 
 import gleam/list
 import gleam/string
@@ -19,7 +18,7 @@ pub fn default_cc() -> String {
     Error(_) ->
       case ffi.which("gcc") {
         Ok(_) -> "gcc"
-        Error(_) -> "tcc"
+        Error(_) -> "cc"
       }
   }
 }
@@ -40,11 +39,8 @@ fn audit_flag() -> String {
   }
 }
 
-fn link_flag(cc: String) -> String {
-  case cc {
-    "tcc" -> ""
-    _ -> " -fuse-ld=mold"
-  }
+fn link_flag(_cc: String) -> String {
+  " -fuse-ld=mold"
 }
 
 fn include_flags(include_dirs: List(String)) -> String {

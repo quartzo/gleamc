@@ -3,7 +3,7 @@
 //// fresh unification variables, so generics truly work.
 ////
 //// The monomorphiser runs on the result to make every concrete instantiation
-//// explicit before codegen.
+//// explicit before lowering.
 
 import gleam/int
 

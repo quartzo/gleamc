@@ -7,13 +7,13 @@ const dir = "/tmp/gleamc-generic"
 
 fn compile_and_run(name: String, source: String) -> String {
   let _ = ffi.run("mkdir -p " <> dir)
-  let assert Ok(c_code) = pipeline.compile_to_c(source)
-  let assert Ok(_) = ffi.write_file(dir <> "/" <> name <> ".c", c_code)
+  let assert Ok(ll_code) = pipeline.compile_to_llvm(source)
+  let assert Ok(_) = ffi.write_file(dir <> "/" <> name <> ".ll", ll_code)
   let cmd =
     toolchain.build_command(
       toolchain.default_cc(),
       toolchain.Debug,
-      [dir <> "/" <> name <> ".c", "runtime/gleam_runtime.c"],
+      [dir <> "/" <> name <> ".ll", "runtime/gleam_runtime.c"],
       ["runtime"],
       dir <> "/" <> name,
     )

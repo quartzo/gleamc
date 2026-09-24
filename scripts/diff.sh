@@ -12,7 +12,7 @@ for f in "$root"/diffs/*.gleam; do
   name="$(basename "$f" .gleam)"
 
   ours="$(cd "$root" && gleam run -- --quiet "$f" --run 2>/dev/null)"
-  rm -f "$root/diffs/$name.c" "$root/diffs/$name"
+  rm -f "$root/diffs/$name.ll" "$root/diffs/$name"
 
   proj="$tmp/$name"
   mkdir -p "$proj/src"

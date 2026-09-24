@@ -25,7 +25,6 @@ pub type Options {
     mode: toolchain.Mode,
     run: Bool,
     quiet: Bool,
-    llvm: Bool,
     ir: Bool,
   )
 }
@@ -43,7 +42,6 @@ fn default_options() -> Options {
     mode: toolchain.Debug,
     run: False,
     quiet: False,
-    llvm: False,
     ir: False,
   )
 }
@@ -82,7 +80,6 @@ fn parse(
           parse(rest, Options(..options, mode: toolchain.Debug), source)
         "--run" -> parse(rest, Options(..options, run: True), source)
         "--quiet" -> parse(rest, Options(..options, quiet: True), source)
-        "--llvm" -> parse(rest, Options(..options, llvm: True), source)
         "--ir" -> parse(rest, Options(..options, ir: True), source)
         "smoke" -> parse(rest, options, source)
         _ ->
@@ -110,9 +107,9 @@ fn usage() -> Nil {
   io.println(version)
   io.println("")
   io.println(
-    "usage: gleamc <file.gleam> [--cc=clang|gcc|tcc] [--release] [--run]",
+    "usage: gleamc <file.gleam> [--cc=clang|gcc] [--release] [--run]",
   )
-  io.println("       gleamc <file.gleam> --llvm     # emit LLVM IR")
+  io.println("       gleamc <file.gleam>            # emit LLVM IR")
   io.println("       gleamc <file.gleam> --ir       # dump ownership-phase IR")
   io.println("       gleamc smoke        # end-to-end pipeline smoke test")
   io.println("       gleamc --version")
@@ -130,10 +127,9 @@ fn compile_file(source: String, options: Options) -> Nil {
 }
 
 fn compile_modules(modules, base: String, options: Options) -> Nil {
-  let result = case options.llvm, options.ir {
-    True, _ -> pipeline.compile_modules_llvm(modules)
-    False, True -> ownership_ir(modules)
-    False, False -> pipeline.compile_modules(modules)
+  let result = case options.ir {
+    True -> ownership_ir(modules)
+    False -> pipeline.compile_modules_llvm(modules)
   }
   case result {
     Error(err) -> io.println(base <> ".gleam: " <> err)
@@ -151,18 +147,17 @@ fn compile_modules(modules, base: String, options: Options) -> Nil {
           }
           // Audit builds carry extra refcount site strings, so they get their
           // own files (`_debug`) and never clobber the normal artifacts.
-          let c_path = case options.llvm, audit {
-            True, True -> base <> "_debug.ll"
-            True, False -> base <> ".ll"
-            False, _ -> base <> ".c"
+          let ll_path = case audit {
+            True -> base <> "_debug.ll"
+            False -> base <> ".ll"
           }
           let bin_path = case audit {
             True -> base <> "_debug"
             False -> base
           }
-          case ffi.write_file(c_path, output) {
-            Error(err) -> io.println("error writing " <> c_path <> ": " <> err)
-            Ok(_) -> build(c_path, bin_path, options)
+          case ffi.write_file(ll_path, output) {
+            Error(err) -> io.println("error writing " <> ll_path <> ": " <> err)
+            Ok(_) -> build(ll_path, bin_path, options)
           }
         }
       }
@@ -175,13 +170,13 @@ fn ownership_ir(modules) -> Result(String, String) {
   Ok(ir.to_text(owned))
 }
 
-fn build(c_path: String, bin_path: String, options: Options) -> Nil {
+fn build(ll_path: String, bin_path: String, options: Options) -> Nil {
   let cc = resolve_cc(options)
   let cmd =
     toolchain.build_command(
       cc,
       options.mode,
-      [c_path, runtime_dir <> "/gleam_runtime.c"],
+      [ll_path, runtime_dir <> "/gleam_runtime.c"],
       [runtime_dir],
       bin_path,
     )

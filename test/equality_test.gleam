@@ -12,14 +12,14 @@ pub fn equality_end_to_end_test() {
   let _ = ffi.run("mkdir -p " <> dir)
   let assert Ok(_) = ffi.write_file(dir <> "/main.gleam", source)
   let assert Ok(modules) = loader.load(dir <> "/main.gleam")
-  let assert Ok(c_code) = pipeline.compile_modules(modules)
-  let assert Ok(_) = ffi.write_file(dir <> "/main.c", c_code)
+  let assert Ok(ll_code) = pipeline.compile_modules_llvm(modules)
+  let assert Ok(_) = ffi.write_file(dir <> "/main.ll", ll_code)
 
   let cmd =
     toolchain.build_command(
       toolchain.default_cc(),
       toolchain.Debug,
-      [dir <> "/main.c", "runtime/gleam_runtime.c"],
+      [dir <> "/main.ll", "runtime/gleam_runtime.c"],
       ["runtime"],
       dir <> "/main",
     )

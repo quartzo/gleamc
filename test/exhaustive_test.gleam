@@ -15,5 +15,5 @@ fn expect_error(result) {
 }
 
 pub fn tuple_non_exhaustive_test() {
-  expect_error(pipeline.compile_to_c(non_exhaustive))
+  expect_error(pipeline.compile_to_llvm(non_exhaustive))
 }

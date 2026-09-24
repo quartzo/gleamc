@@ -14,10 +14,10 @@ const main_source = "import math\nimport gleam/io\n\npub fn main() {\n  io.print
 pub fn module_merge_test() {
   let assert Ok(math_module) = parser.parse(math_source)
   let assert Ok(main_module) = parser.parse(main_source)
-  let assert Ok(c_code) =
-    pipeline.compile_modules([#("", main_module), #("math", math_module)])
-  assert string.contains(c_code, "Gleamc_math_add")
-  assert string.contains(c_code, "Gleamc_main")
+  let assert Ok(ll_code) =
+    pipeline.compile_modules_llvm([#("", main_module), #("math", math_module)])
+  assert string.contains(ll_code, "Gleamc_math_add")
+  assert string.contains(ll_code, "Gleamc_main")
 }
 
 pub fn module_end_to_end_test() {
@@ -26,14 +26,14 @@ pub fn module_end_to_end_test() {
   let assert Ok(_) = ffi.write_file(dir <> "/main.gleam", main_source)
 
   let assert Ok(modules) = loader.load(dir <> "/main.gleam")
-  let assert Ok(c_code) = pipeline.compile_modules(modules)
-  let assert Ok(_) = ffi.write_file(dir <> "/main.c", c_code)
+  let assert Ok(ll_code) = pipeline.compile_modules_llvm(modules)
+  let assert Ok(_) = ffi.write_file(dir <> "/main.ll", ll_code)
 
   let cmd =
     toolchain.build_command(
       toolchain.default_cc(),
       toolchain.Debug,
-      [dir <> "/main.c", "runtime/gleam_runtime.c"],
+      [dir <> "/main.ll", "runtime/gleam_runtime.c"],
       ["runtime"],
       dir <> "/main",
     )

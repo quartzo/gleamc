@@ -1,6 +1,6 @@
-//// The compilation cascade: source(s) -> C (M2/M3/M4/M6/M8).
+//// The compilation cascade: source(s) -> LLVM IR.
 ////
-////   merge -> check -> lower -> ownership -> cps -> codegen
+////   lower -> frame -> ownership -> cps -> llvm
 ////
 //// `compile_to_ir` stops after the ownership pass (useful for dumps/tests).
 
@@ -9,7 +9,6 @@ import gleam/result
 import gleamc/aliases
 import gleamc/ast.{type CustomType, type Module, DCustomType, Module}
 import gleamc/checker
-import gleamc/codegen
 import gleamc/consts
 import gleamc/cps
 import gleamc/dce
@@ -25,12 +24,6 @@ import gleamc/plan
 import gleamc/qualify
 
 /// Single-module convenience (entry module name "").
-pub fn compile_to_c(source: String) -> Result(String, String) {
-  use module <- result.try(map_err(parser.parse(source), parser.describe_error))
-  compile_modules([#("", module)])
-}
-
-/// Planification stage: owned IR -> machine plan (pure, deterministic).
 pub fn compile_to_llvm(source: String) -> Result(String, String) {
   use module <- result.try(map_err(parser.parse(source), parser.describe_error))
   compile_modules_llvm([#("", module)])
@@ -51,14 +44,6 @@ pub fn compile_to_ir(source: String) -> Result(ir.Module, String) {
   compile_ir_modules([#("", module)])
 }
 
-pub fn compile_modules(
-  modules: List(#(String, Module)),
-) -> Result(String, String) {
-  use #(_module, owned, ctors, custom_types) <- result.try(cascade(modules))
-  Ok(codegen.emit(owned, custom_types, ctors))
-}
-
-/// LLVM IR backend (`llvm.emit`). Same cascade as `compile_modules`.
 pub fn compile_modules_llvm(
   modules: List(#(String, Module)),
 ) -> Result(String, String) {

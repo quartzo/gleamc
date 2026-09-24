@@ -55,35 +55,35 @@ pub fn which_clang_test() {
 
 pub fn build_command_flags_test() {
   let cmd =
-    toolchain.build_command("clang", toolchain.Debug, ["a.c"], ["inc"], "out")
+    toolchain.build_command("clang", toolchain.Debug, ["a.ll"], ["inc"], "out")
   assert string.contains(cmd, "clang")
   assert string.contains(cmd, "-O0")
   assert string.contains(cmd, "-Iinc")
-  assert string.contains(cmd, "a.c")
+  assert string.contains(cmd, "a.ll")
   assert string.contains(cmd, "-o out")
 }
 
 pub fn build_command_release_test() {
   let cmd =
-    toolchain.build_command("clang", toolchain.Release, ["a.c"], [], "out")
+    toolchain.build_command("clang", toolchain.Release, ["a.ll"], [], "out")
   assert string.contains(cmd, "-O3 -march=native")
 }
 
 /// End-to-end: source -> C -> compile -> run.
 pub fn pipeline_end_to_end_test() {
-  let assert Ok(c_code) = pipeline.compile_to_c(hello_source)
-  assert string.contains(c_code, "Gleamc_main")
+  let assert Ok(ll_code) = pipeline.compile_to_llvm(hello_source)
+  assert string.contains(ll_code, "Gleamc_main")
 
   let _ = ffi.run("mkdir -p /tmp/gleamc-test")
-  let c_path = "/tmp/gleamc-test/hello.c"
+  let ll_path = "/tmp/gleamc-test/hello.ll"
   let bin_path = "/tmp/gleamc-test/hello"
-  let assert Ok(_) = ffi.write_file(c_path, c_code)
+  let assert Ok(_) = ffi.write_file(ll_path, ll_code)
 
   let cmd =
     toolchain.build_command(
       toolchain.default_cc(),
       toolchain.Debug,
-      [c_path, "runtime/gleam_runtime.c"],
+      [ll_path, "runtime/gleam_runtime.c"],
       ["runtime"],
       bin_path,
     )
