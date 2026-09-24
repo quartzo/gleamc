@@ -327,6 +327,9 @@ fn extraction_views(blocks, borrow, params) -> Dict(String, String) {
         ir.OpField(dest, ir.Var(subject), _, _, _) -> #(dest, subject)
         ir.OpTupleGet(dest, ir.Var(subject), _, _) -> #(dest, subject)
         ir.OpEnvGet(dest, _, _, _) -> #(dest, "")
+        // Reading a frame field is a borrowed view: the frame owns the value
+        // (and outlives the read), exactly like an environment read.
+        ir.OpFrameGet(dest, _, _, _) -> #(dest, "")
         _ -> #("", "")
       }
       let #(dest, subject) = pair

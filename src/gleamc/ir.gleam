@@ -156,7 +156,14 @@ pub fn op_reads(op: Op) -> List(Operand) {
     OpTagIs(_, subject, _, _) -> [subject]
     OpField(_, subject, _, _, _) -> [subject]
     OpCopy(_, src, _) -> [src]
-    OpClosure(_, _, captures, _, _) -> captures
+    // A closure that captures the defining frame references it directly: the
+    // frame owns the captured values (read back with `OpEnvGet`), so the
+    // capture operands are metadata, not values the closure reads.
+    OpClosure(_, _, captures, env_ty, _) ->
+      case string.starts_with(env_ty, "__frame_") {
+        True -> []
+        False -> captures
+      }
     OpEnvGet(_, _, _, _) -> []
     OpCallIndirect(_, fval, args, _) -> [fval, ..args]
     OpRetain(src, _) -> [Var(src)]
@@ -219,7 +226,13 @@ pub fn op_owning_modes(
     OpTuple(_, elems, _) -> elems
     OpBitArray(_, elems, _) -> elems
     OpCopy(_, src, _) -> [src]
-    OpClosure(_, _, captures, _, _) -> captures
+    // The closure owns the frame, which owns the captured values; owning the
+    // capture operands as well would double-count them.
+    OpClosure(_, _, captures, env_ty, _) ->
+      case string.starts_with(env_ty, "__frame_") {
+        True -> []
+        False -> captures
+      }
     // Storing into a frame field hands the value to the frame.
     OpFrameSet(_, _, value) -> [value]
     _ -> []
