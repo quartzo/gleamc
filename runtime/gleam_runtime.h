@@ -39,11 +39,10 @@ void* gleamc_alloc0(size_t size);
 /* Like `gleamc_alloc` but records a `site` tag for the refcount audit. */
 void* gleamc_alloc_site(size_t size, const char* site);
 
-/* Call-depth probe: `enter` on function entry, `leave` before returning. When
- * the depth set by GLEAMC_CALL_DEPTH (default 100) is reached, the function
- * that went deepest is printed and the process aborts. */
-void gleamc_depth_enter(const char* fn);
-void gleamc_depth_leave(void);
+/* Call-depth probe: the generated code bumps `@__gleamc_depth` directly and
+ * calls this when the limit (GLEAMC_CALL_DEPTH) is reached, naming the
+ * function that went deepest and aborting. */
+void gleamc_depth_die(const char* fn);
 
 /* Drop to zero: frees the block (cold path). */
 void gleamc_release_slow(GleamcHdr* h);

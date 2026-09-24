@@ -334,12 +334,24 @@ pub fn emit(
       ],
       "",
     )
-  // Optional call-depth instrumentation (debug aid): every generated function
-  // announces its entry and every return pops the counter, so a runaway
-  // non-tail recursion aborts naming the function that went deepest.
+  // Optional call-depth probe (debug aid): the generated code bumps the
+  // `@__gleamc_depth` global directly on entry (load/add/store) and before each
+  // return (load/sub/store); only the limit path calls into the runtime to name
+  // the function that went deepest and abort.
   case ffi.get_env("GLEAMC_CALL_DEPTH") {
-    Ok(_) -> instrument_depth(out)
+    Ok(value) -> instrument_depth(out, depth_limit(value))
     Error(_) -> out
+  }
+}
+
+fn depth_limit(value: String) -> Int {
+  case int.parse(value) {
+    Ok(n) ->
+      case n > 0 {
+        True -> n
+        False -> 100
+      }
+    Error(_) -> 100
   }
 }
 
@@ -354,50 +366,69 @@ fn define_name(line: String) -> String {
   }
 }
 
-fn instrument_depth(ll: String) -> String {
-  let lines = string.split(ll, "\n")
-  let #(body, globals, _) =
-    list.fold(lines, #([], [], 0), fn(acc, line) {
-      let #(body, globals, index) = acc
+fn instrument_depth(ll: String, limit: Int) -> String {
+  let lim_s = int.to_string(limit)
+  let #(body, globals, _n, _k) =
+    list.fold(string.split(ll, "\n"), #([], [], 0, 0), fn(acc, line) {
+      let #(body, globals, n, k) = acc
       let trimmed = string.trim(line)
       case string.starts_with(line, "define ") {
         True -> {
           let name = define_name(line)
-          let len = string.byte_size(name) + 1
-          let len_s = int.to_string(len)
-          let g = "@__depthfn_" <> int.to_string(index)
+          let len_s = int.to_string(string.byte_size(name) + 1)
+          let ng = "@__depthfn_" <> int.to_string(n)
           let glob =
-            g
+            ng
             <> " = private unnamed_addr constant ["
             <> len_s
             <> " x i8] c\""
             <> name
             <> "\\00\""
-          let enter =
-            "  call void @gleamc_depth_enter(i8* getelementptr inbounds (["
+          let ptr =
+            "i8* getelementptr inbounds (["
             <> len_s
             <> " x i8], ["
             <> len_s
             <> " x i8]* "
-            <> g
-            <> ", i32 0, i32 0))"
-          #(list.append(body, [line, enter]), [glob, ..globals], index + 1)
+            <> ng
+            <> ", i32 0, i32 0)"
+          let a = "%__dta" <> int.to_string(n)
+          let b = "%__dtb" <> int.to_string(n)
+          let h = "%__dth" <> int.to_string(n)
+          let die = "__dtdie" <> int.to_string(n)
+          let ok = "__dtok" <> int.to_string(n)
+          let entry = [
+            "  " <> a <> " = load i64, i64* @__gleamc_depth",
+            "  " <> b <> " = add i64 " <> a <> ", 1",
+            "  store i64 " <> b <> ", i64* @__gleamc_depth",
+            "  " <> h <> " = icmp sge i64 " <> b <> ", " <> lim_s,
+            "  br i1 " <> h <> ", label %" <> die <> ", label %" <> ok,
+            die <> ":",
+            "  call void @gleamc_depth_die(" <> ptr <> ")",
+            "  unreachable",
+            ok <> ":",
+          ]
+          #(list.append(body, [line, ..entry]), [glob, ..globals], n + 1, k)
         }
         False ->
           case string.starts_with(trimmed, "ret ") {
-            True ->
-              #(
-                list.append(body, ["  call void @gleamc_depth_leave()", line]),
-                globals,
-                index,
-              )
-            False -> #(list.append(body, [line]), globals, index)
+            True -> {
+              let a = "%__dla" <> int.to_string(k)
+              let b = "%__dlb" <> int.to_string(k)
+              let leave = [
+                "  " <> a <> " = load i64, i64* @__gleamc_depth",
+                "  " <> b <> " = sub i64 " <> a <> ", 1",
+                "  store i64 " <> b <> ", i64* @__gleamc_depth",
+              ]
+              #(list.append(body, list.append(leave, [line])), globals, n, k + 1)
+            }
+            False -> #(list.append(body, [line]), globals, n, k)
           }
       }
     })
   string.join(body, "\n")
-  <> "\ndeclare void @gleamc_depth_enter(i8*)\n"
-  <> "declare void @gleamc_depth_leave()\n"
+  <> "\ndeclare void @gleamc_depth_die(i8*)\n"
+  <> "@__gleamc_depth = internal global i64 0\n"
   <> string.join(list.reverse(globals), "\n")
   <> "\n"
 }
