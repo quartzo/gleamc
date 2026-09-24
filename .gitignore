@@ -87,3 +87,4 @@ erl_crash.dump
 /src/gleamc/*.so
 /src/*.c
 /src/selfhost
+/src/selfhost_debug
