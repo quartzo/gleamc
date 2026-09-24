@@ -12,19 +12,19 @@ fn compile_and_run(name: String, source: String) -> String {
   let entry = dir <> "/" <> name <> ".gleam"
   let assert Ok(_) = ffi.write_file(entry, source)
   let assert Ok(modules) = loader.load(entry)
-  let assert Ok(c_code) = pipeline.compile_modules(modules)
-  let assert Ok(_) = ffi.write_file(dir <> "/" <> name <> ".c", c_code)
+  let assert Ok(ll) = pipeline.compile_modules_llvm(modules)
+  let assert Ok(_) = ffi.write_file(dir <> "/" <> name <> ".ll", ll)
   let cmd =
     toolchain.build_command(
       toolchain.default_cc(),
       toolchain.Debug,
-      [dir <> "/" <> name <> ".c", "runtime/gleam_runtime.c"],
+      [dir <> "/" <> name <> ".ll", "runtime/gleam_runtime.c"],
       ["runtime"],
       dir <> "/" <> name,
     )
   let #(compile_status, compile_out) = toolchain.run_shell(cmd)
   let _ = compile_out
-  assert compile_status == 0 as "generated C failed to compile"
+  assert compile_status == 0 as "generated LLVM failed to compile"
   let #(run_status, output) = toolchain.run_shell(dir <> "/" <> name)
   assert run_status == 0 as output
   output

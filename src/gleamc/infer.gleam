@@ -679,19 +679,38 @@ fn builtins() -> Dict(String, Scheme) {
   |> dict.insert("time.timer_count", Scheme(none, Fun([i], i)))
   |> dict.insert(
     "uv.fs_open",
-    Scheme(none, Fun([s, i, i], Con("Handle", []))),
+    Scheme(none, Fun([s, i, i], i)),
   )
-  |> dict.insert("uv.fs_fstat", Scheme(none, Fun([Con("Handle", [])], i)))
+  |> dict.insert("uv.fs_fstat", Scheme(none, Fun([i], i)))
   |> dict.insert(
     "uv.fs_read",
-    Scheme(none, Fun([Con("Handle", []), i], Con("BitArray", []))),
+    Scheme(none, Fun([i, i], Con("BitArray", []))),
   )
-  |> dict.insert("uv.fs_close", Scheme(none, Fun([Con("Handle", [])], n)))
+  |> dict.insert("uv.fs_close", Scheme(none, Fun([i], i)))
   |> dict.insert(
     "uv.fs_write",
-    Scheme(none, Fun([Con("Handle", []), Con("BitArray", [])], n)),
+    Scheme(none, Fun([i, Con("BitArray", [])], i)),
   )
-  |> dict.insert("uv.fs_unlink", Scheme(none, Fun([s], n)))
+  |> dict.insert("uv.fs_unlink", Scheme(none, Fun([s], i)))
+  |> dict.insert("uv.fs_mkdir", Scheme(none, Fun([s, i], i)))
+  |> dict.insert("uv.fs_rmdir", Scheme(none, Fun([s], i)))
+  |> dict.insert("uv.fs_rename", Scheme(none, Fun([s, s], i)))
+  |> dict.insert("uv.fs_symlink", Scheme(none, Fun([s, s], i)))
+  |> dict.insert("uv.fs_link", Scheme(none, Fun([s, s], i)))
+  |> dict.insert("uv.fs_chmod", Scheme(none, Fun([s, i], i)))
+  |> dict.insert(
+    "uv.fs_stat",
+    Scheme(none, Fun([s, i], Con("BitArray", []))),
+  )
+  |> dict.insert(
+    "uv.fs_realpath",
+    Scheme(none, Fun([s], Con("BitArray", []))),
+  )
+  |> dict.insert(
+    "uv.fs_readdir",
+    Scheme(none, Fun([s], Con("BitArray", []))),
+  )
+  |> dict.insert("uv.fs_cwd", Scheme(none, Fun([], Con("BitArray", []))))
   |> dict.insert("int.to_string", Scheme(none, Fun([i], s)))
   |> dict.insert("float.to_string", Scheme(none, Fun([f], s)))
   |> dict.insert("bool.to_string", Scheme(none, Fun([b], s)))
@@ -748,6 +767,10 @@ fn builtins() -> Dict(String, Scheme) {
   )
   |> dict.insert(
     "bit_array.byte",
+    Scheme(none, Fun([Con("BitArray", []), i], i)),
+  )
+  |> dict.insert(
+    "bit_array.int64_at",
     Scheme(none, Fun([Con("BitArray", []), i], i)),
   )
   |> dict.insert(

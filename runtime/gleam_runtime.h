@@ -176,6 +176,7 @@ GleamcFileResult Gleamc_fs_link_info(GleamcString path);
 
 /* Reads a little-endian int64 field from a packed info blob. */
 int64_t Gleamc_fs_int64_at(GleamcBitArray blob, int64_t index);
+int64_t Gleamc_bit_array_int64_at(GleamcBitArray blob, int64_t index);
 
 /* Host: process/env/argv (compiler ffi). */
 void Gleamc_set_args(int argc, char** argv);
@@ -319,9 +320,20 @@ GleamcFuture* Gleamc_uv_fs_fstat(int64_t fd);
 GleamcFuture* Gleamc_uv_fs_close(int64_t fd);
 GleamcFuture* Gleamc_uv_fs_write(int64_t fd, GleamcBitArray data);
 GleamcFuture* Gleamc_uv_fs_unlink(GleamcString path);
+GleamcFuture* Gleamc_uv_fs_mkdir(GleamcString path, int64_t mode);
+GleamcFuture* Gleamc_uv_fs_rmdir(GleamcString path);
+GleamcFuture* Gleamc_uv_fs_rename(GleamcString from, GleamcString to);
+GleamcFuture* Gleamc_uv_fs_symlink(GleamcString from, GleamcString to);
+GleamcFuture* Gleamc_uv_fs_link(GleamcString from, GleamcString to);
+GleamcFuture* Gleamc_uv_fs_chmod(GleamcString path, int64_t mode);
+GleamcFuture* Gleamc_uv_fs_stat(GleamcString path, int64_t follow_links);
+GleamcFuture* Gleamc_uv_fs_realpath(GleamcString path);
+GleamcFuture* Gleamc_uv_fs_readdir(GleamcString path);
+GleamcFuture* Gleamc_uv_fs_cwd(void);
 GleamcFuture* Gleamc_uv_timer(int64_t ms);
 GleamcFuture* Gleamc_time_timer_count(int64_t ms);
 int64_t Gleamc_uv_value_int(GleamcFuture* f);
+int64_t Gleamc_uv_result(GleamcFuture* f);
 int Gleamc_time_timer(int64_t ms);
 int64_t Gleamc_uv_await_int(GleamcFuture* f);
 void Gleamc_uv_await_nil(GleamcFuture* f);

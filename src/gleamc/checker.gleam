@@ -816,7 +816,7 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         ctors,
         args,
         [TString, TInt, TInt],
-        TNamed("Handle"),
+        TInt,
         "uv.fs_open",
       )
     "uv", "fs_fstat" ->
@@ -825,7 +825,7 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         signatures,
         ctors,
         args,
-        [TNamed("Handle")],
+        [TInt],
         TInt,
         "uv.fs_fstat",
       )
@@ -835,7 +835,7 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         signatures,
         ctors,
         args,
-        [TNamed("Handle"), TInt],
+        [TInt, TInt],
         TNamed("BitArray"),
         "uv.fs_read",
       )
@@ -845,8 +845,8 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         signatures,
         ctors,
         args,
-        [TNamed("Handle")],
-        TNil,
+        [TInt],
+        TInt,
         "uv.fs_close",
       )
     "uv", "fs_write" ->
@@ -855,8 +855,8 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         signatures,
         ctors,
         args,
-        [TNamed("Handle"), TNamed("BitArray")],
-        TNil,
+        [TInt, TNamed("BitArray")],
+        TInt,
         "uv.fs_write",
       )
     "uv", "fs_unlink" ->
@@ -866,8 +866,108 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         ctors,
         args,
         [TString],
-        TNil,
+        TInt,
         "uv.fs_unlink",
+      )
+    "uv", "fs_mkdir" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TInt],
+        TInt,
+        "uv.fs_mkdir",
+      )
+    "uv", "fs_rmdir" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TInt,
+        "uv.fs_rmdir",
+      )
+    "uv", "fs_rename" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TString],
+        TInt,
+        "uv.fs_rename",
+      )
+    "uv", "fs_symlink" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TString],
+        TInt,
+        "uv.fs_symlink",
+      )
+    "uv", "fs_link" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TString],
+        TInt,
+        "uv.fs_link",
+      )
+    "uv", "fs_chmod" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TInt],
+        TInt,
+        "uv.fs_chmod",
+      )
+    "uv", "fs_stat" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TInt],
+        TNamed("BitArray"),
+        "uv.fs_stat",
+      )
+    "uv", "fs_realpath" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TNamed("BitArray"),
+        "uv.fs_realpath",
+      )
+    "uv", "fs_readdir" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TNamed("BitArray"),
+        "uv.fs_readdir",
+      )
+    "uv", "fs_cwd" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [],
+        TNamed("BitArray"),
+        "uv.fs_cwd",
       )
     "int", "to_string" ->
       check_builtin(
@@ -1170,6 +1270,16 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         [TNamed("BitArray")],
         TInt,
         "bit_array.byte_size",
+      )
+    "bit_array", "int64_at" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("BitArray"), TInt],
+        TInt,
+        "bit_array.int64_at",
       )
     "bit_array", "byte" ->
       check_builtin(

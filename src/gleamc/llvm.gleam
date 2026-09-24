@@ -337,6 +337,7 @@ fn header() -> String {
   <> "declare void @Gleamc_rc_release(i8*, i8*)\n"
   <> "declare void @Gleamc_uv_await_nil(i8*)\n"
   <> "declare i64 @Gleamc_uv_value_int(i8*)\n"
+  <> "declare i64 @Gleamc_uv_result(i8*)\n"
   <> "declare %GleamcBitArray @Gleamc_uv_await_bytes(i8*)\n"
   <> "declare i1 @gleamc_sched_run(i1 (i8*)*, i8*, i8**)\n"
   <> "declare %GleamcString @gleamc_string_lit(i8*, i64)\n"
@@ -1032,7 +1033,7 @@ fn emit_wake(ctx: Ctx, fr_ty: String, fut_idx: Int, dest: String, b: Builder) ->
           let b =
             emit_line(
               b,
-              "  " <> val <> " = call i64 @Gleamc_uv_value_int(i8* " <> fv <> ")",
+              "  " <> val <> " = call i64 @Gleamc_uv_result(i8* " <> fv <> ")",
             )
           store_local(ctx, dest, "i64", val, b)
         }
@@ -1883,32 +1884,75 @@ fn emit_term(ctx: Ctx, term: ir.Terminator, b: Builder) {
       }
     }
     ir.Tailcall(fun, args) -> {
-      case dict.get(ctx.group, fun) {
-        Ok(target) -> emit_rebind(ctx, target, args, b)
-        Error(_) ->
-          case fun == ctx.fn_name {
-            True ->
-              emit_rebind(ctx, #(ctx.prefix, ctx.params, ctx.entry), args, b)
+      case ctx.frame {
+        // Inside a machine: call the target and finish the step with its
+        // result stored in the frame (the caller resumes the machine).
+        Some(FrameInfo(fr_ty, _, _, _, result_idx, _)) -> {
+          let ret_s = llvm_ty(ctx.ret, ctx.recursive)
+          let #(b, arg_list) = read_args(ctx, args, b)
+          let #(r, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> r
+                <> " = call "
+                <> ret_s
+                <> " @Gleamc_"
+                <> fun
+                <> "("
+                <> arg_list
+                <> ")",
+            )
+          case is_nil_type(ctx.ret) {
+            True -> emit_line(b, "  ret i1 true")
             False -> {
-              let ret_s = llvm_ty(ctx.ret, ctx.recursive)
-              let #(b, arg_list) = read_args(ctx, args, b)
-              let #(r, b) = fresh(b)
+              let #(result_ptr, b) = frame_gep(fr_ty, result_idx, b)
               let b =
                 emit_line(
                   b,
-                  "  "
-                    <> r
-                    <> " = call "
+                  "  store "
                     <> ret_s
-                    <> " @Gleamc_"
-                    <> fun
-                    <> "("
-                    <> arg_list
-                    <> ")",
+                    <> " "
+                    <> r
+                    <> ", "
+                    <> ret_s
+                    <> "* "
+                    <> result_ptr,
                 )
-              emit_line(b, "  ret " <> ret_s <> " " <> r)
+              emit_line(b, "  ret i1 true")
             }
           }
+        }
+        None -> {
+          case dict.get(ctx.group, fun) {
+            Ok(target) -> emit_rebind(ctx, target, args, b)
+            Error(_) ->
+              case fun == ctx.fn_name {
+                True ->
+                  emit_rebind(ctx, #(ctx.prefix, ctx.params, ctx.entry), args, b)
+                False -> {
+                  let ret_s = llvm_ty(ctx.ret, ctx.recursive)
+                  let #(b, arg_list) = read_args(ctx, args, b)
+                  let #(r, b) = fresh(b)
+                  let b =
+                    emit_line(
+                      b,
+                      "  "
+                        <> r
+                        <> " = call "
+                        <> ret_s
+                        <> " @Gleamc_"
+                        <> fun
+                        <> "("
+                        <> arg_list
+                        <> ")",
+                    )
+                  emit_line(b, "  ret " <> ret_s <> " " <> r)
+                }
+              }
+          }
+        }
       }
     }
     ir.TailcallIndirect(fval, args) -> {
@@ -1937,7 +1981,29 @@ fn emit_term(ctx: Ctx, term: ir.Terminator, b: Builder) {
             <> callargs
             <> ")",
         )
-      emit_line(b, "  ret " <> ret_s <> " " <> r)
+      case ctx.frame {
+        Some(FrameInfo(fr_ty, _, _, _, result_idx, _)) ->
+          case is_nil_type(ctx.ret) {
+            True -> emit_line(b, "  ret i1 true")
+            False -> {
+              let #(result_ptr, b) = frame_gep(fr_ty, result_idx, b)
+              let b =
+                emit_line(
+                  b,
+                  "  store "
+                    <> ret_s
+                    <> " "
+                    <> r
+                    <> ", "
+                    <> ret_s
+                    <> "* "
+                    <> result_ptr,
+                )
+              emit_line(b, "  ret i1 true")
+            }
+          }
+        None -> emit_line(b, "  ret " <> ret_s <> " " <> r)
+      }
     }
     ir.Unreachable -> emit_line(b, "  unreachable")
   }

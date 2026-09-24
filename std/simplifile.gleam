@@ -6,7 +6,7 @@ import gleam/set
 import gleam/string
 
 /// Mirrors the `simplifile` package FileError type. The compiler maps the
-/// positive errno returned by the `fs.*` builtins through `from_code`.
+/// negative errno returned by the async `uv.*` builtins through `from_code`.
 pub type FileError {
   Eacces
   Eagain
@@ -150,27 +150,25 @@ fn from_code(code: Int) -> FileError {
   }
 }
 
-fn read_result(result: FileResult) -> Result(BitArray, FileError) {
-  case fs.result_code(result) {
-    0 -> Ok(fs.result_data(result))
-    code -> Error(from_code(code))
+/// Maps a negative errno returned by the async `uv.*` surface to a FileError.
+fn error_of(code: Int) -> FileError {
+  from_code(0 - code)
+}
+
+/// A `uv.*` status call: `0` on success, negative errno on failure.
+fn code_result(code: Int) -> Result(Nil, FileError) {
+  case code < 0 {
+    True -> Error(error_of(code))
+    False -> Ok(Nil)
   }
 }
 
-fn write_result(result: FileResult) -> Result(Nil, FileError) {
-  case fs.result_code(result) {
-    0 -> Ok(Nil)
-    code -> Error(from_code(code))
-  }
-}
-
-fn bool_result(result: FileResult) -> Result(Bool, FileError) {
-  case fs.result_code(result) {
-    0 -> Ok(fs.result_size(result) == 1)
-    2 -> Ok(False)
-    code -> Error(from_code(code))
-  }
-}
+// POSIX open flags (see `fcntl.h`).
+const o_rdonly = 0
+const o_wronly = 1
+const o_creat = 64
+const o_trunc = 512
+const o_append = 1024
 
 pub fn read(from: String) -> Result(String, FileError) {
   use bits <- result.try(read_bits(from: from))
@@ -180,8 +178,42 @@ pub fn read(from: String) -> Result(String, FileError) {
   }
 }
 
+/// Reads a whole file over the async loop (open → fstat → read → close).
+/// Every step suspends the caller; the caller sees the bytes.
 pub fn read_bits(from: String) -> Result(BitArray, FileError) {
-  read_result(fs.read(from))
+  let fd = uv.fs_open(from, o_rdonly, 0)
+  case fd < 0 {
+    True -> Error(error_of(fd))
+    False -> {
+      let size = uv.fs_fstat(fd)
+      case size < 0 {
+        True -> {
+          let _ = uv.fs_close(fd)
+          Error(error_of(size))
+        }
+        False -> {
+          let bits = uv.fs_read(fd, size)
+          let _ = uv.fs_close(fd)
+          Ok(bits)
+        }
+      }
+    }
+  }
+}
+
+fn write_flags(to: String, bits: BitArray, flags: Int) -> Result(Nil, FileError) {
+  let fd = uv.fs_open(to, flags, 420)
+  case fd < 0 {
+    True -> Error(error_of(fd))
+    False -> {
+      let code = uv.fs_write(fd, bits)
+      let _ = uv.fs_close(fd)
+      case code < 0 {
+        True -> Error(error_of(code))
+        False -> Ok(Nil)
+      }
+    }
+  }
 }
 
 pub fn write(to: String, contents: String) -> Result(Nil, FileError) {
@@ -189,7 +221,7 @@ pub fn write(to: String, contents: String) -> Result(Nil, FileError) {
 }
 
 pub fn write_bits(to: String, bits: BitArray) -> Result(Nil, FileError) {
-  write_result(fs.write(to, bits))
+  write_flags(to, bits, o_wronly + o_creat + o_trunc)
 }
 
 pub fn append(to: String, contents: String) -> Result(Nil, FileError) {
@@ -197,14 +229,14 @@ pub fn append(to: String, contents: String) -> Result(Nil, FileError) {
 }
 
 pub fn append_bits(to: String, bits: BitArray) -> Result(Nil, FileError) {
-  write_result(fs.append(to, bits))
+  write_flags(to, bits, o_wronly + o_creat + o_append)
 }
 
 pub fn delete(file_or_dir_at: String) -> Result(Nil, FileError) {
   case is_directory(file_or_dir_at) {
     Error(err) -> Error(err)
     Ok(True) -> remove_tree(file_or_dir_at)
-    Ok(False) -> write_result(fs.delete(file_or_dir_at))
+    Ok(False) -> code_result(uv.fs_unlink(file_or_dir_at))
   }
 }
 
@@ -214,7 +246,7 @@ fn remove_tree(path: String) -> Result(Nil, FileError) {
     Ok(names) ->
       case remove_entries(path, names) {
         Error(err) -> Error(err)
-        Ok(Nil) -> write_result(fs.delete(path))
+        Ok(Nil) -> code_result(uv.fs_rmdir(path))
       }
   }
 }
@@ -253,7 +285,7 @@ pub fn clear_directory(at: String) -> Result(Nil, FileError) {
 }
 
 pub fn rename(at: String, to: String) -> Result(Nil, FileError) {
-  write_result(fs.rename(at, to))
+  code_result(uv.fs_rename(at, to))
 }
 
 pub fn rename_file(at: String, to: String) -> Result(Nil, FileError) {
@@ -272,20 +304,23 @@ pub fn copy_file(at: String, to: String) -> Result(Nil, FileError) {
 }
 
 pub fn create_symlink(to: String, from: String) -> Result(Nil, FileError) {
-  write_result(fs.symlink(to, from))
+  code_result(uv.fs_symlink(to, from))
 }
 
 pub fn create_link(to: String, from: String) -> Result(Nil, FileError) {
-  write_result(fs.link(to, from))
+  code_result(uv.fs_link(to, from))
 }
 
 pub fn touch(at: String) -> Result(Nil, FileError) {
-  write_result(fs.touch(at))
+  code_result(touch_file(at))
 }
 
 pub fn resolve(path: String) -> Result(String, FileError) {
-  use bits <- result.try(read_result(fs.realpath(path)))
-  Ok(bit_array.raw_to_string(bits))
+  let bits = uv.fs_realpath(path)
+  case bit_array.byte_size(bits) {
+    0 -> Error(Enoent)
+    _ -> Ok(bit_array.raw_to_string(bits))
+  }
 }
 
 pub fn copy(src: String, dest: String) -> Result(Nil, FileError) {
@@ -339,11 +374,26 @@ fn copy_entries(
 }
 
 pub fn delete_file(at: String) -> Result(Nil, FileError) {
-  write_result(fs.delete(at))
+  code_result(uv.fs_unlink(at))
 }
 
 pub fn create_directory(filepath: String) -> Result(Nil, FileError) {
-  write_result(fs.create_directory(filepath))
+  code_result(uv.fs_mkdir(filepath, 493))
+}
+
+/// Creates the file if missing, without truncating an existing one.
+fn create_empty_file(at: String) -> Int {
+  let fd = uv.fs_open(at, o_wronly + o_creat, 420)
+  case fd < 0 {
+    True -> fd
+    False -> uv.fs_close(fd)
+  }
+}
+
+/// Updates the timestamp (or creates the file); opening is enough for the
+/// operations `simplifile` needs.
+fn touch_file(at: String) -> Int {
+  create_empty_file(at)
 }
 
 pub fn create_directory_all(dirpath: String) -> Result(Nil, FileError) {
@@ -388,59 +438,74 @@ fn mkdir_ignore_exists(path: String) -> Result(Nil, FileError) {
 }
 
 pub fn create_file(at: String) -> Result(Nil, FileError) {
-  write_result(fs.create_file(at))
+  code_result(create_empty_file(at))
+}
+
+/// `stat` (follow) or `lstat` (no follow) over the async loop; the blob is
+/// empty when the path does not exist / the call failed.
+fn stat_blob(filepath: String, follow_links: Bool) -> BitArray {
+  uv.fs_stat(filepath, case follow_links {
+    True -> 1
+    False -> 0
+  })
 }
 
 pub fn exists(filepath: String, follow_links: Bool) -> Result(Bool, FileError) {
-  let code = case follow_links {
-    True -> fs.result_code(fs.exists(filepath))
-    False -> fs.result_code(fs.link_info(filepath))
-  }
-  case code {
-    0 -> Ok(True)
-    2 -> Ok(False)
-    code -> Error(from_code(code))
-  }
+  Ok(bit_array.byte_size(stat_blob(filepath, follow_links)) > 0)
 }
 
 pub fn is_file(filepath: String) -> Result(Bool, FileError) {
-  bool_result(fs.is_file(filepath))
+  let blob = stat_blob(filepath, True)
+  case bit_array.byte_size(blob) > 0 {
+    True -> Ok(file_info_type(decode_file_info(blob)) == File)
+    False -> Ok(False)
+  }
 }
 
 pub fn is_directory(filepath: String) -> Result(Bool, FileError) {
-  bool_result(fs.is_directory(filepath))
+  let blob = stat_blob(filepath, True)
+  case bit_array.byte_size(blob) > 0 {
+    True -> Ok(file_info_type(decode_file_info(blob)) == Directory)
+    False -> Ok(False)
+  }
 }
 
 pub fn is_symlink(filepath: String) -> Result(Bool, FileError) {
-  case link_info(filepath) {
-    Error(Enoent) -> Ok(False)
-    Error(err) -> Error(err)
-    Ok(info) -> Ok(file_info_type(info) == Symlink)
+  let blob = stat_blob(filepath, False)
+  case bit_array.byte_size(blob) > 0 {
+    True -> Ok(file_info_type(decode_file_info(blob)) == Symlink)
+    False -> Ok(False)
   }
 }
 
 pub fn file_info(filepath: String) -> Result(FileInfo, FileError) {
-  use blob <- result.try(read_result(fs.file_info(filepath)))
-  Ok(decode_file_info(blob))
+  let blob = stat_blob(filepath, True)
+  case bit_array.byte_size(blob) {
+    0 -> Error(Enoent)
+    _ -> Ok(decode_file_info(blob))
+  }
 }
 
 pub fn link_info(filepath: String) -> Result(FileInfo, FileError) {
-  use blob <- result.try(read_result(fs.link_info(filepath)))
-  Ok(decode_file_info(blob))
+  let blob = stat_blob(filepath, False)
+  case bit_array.byte_size(blob) {
+    0 -> Error(Enoent)
+    _ -> Ok(decode_file_info(blob))
+  }
 }
 
 fn decode_file_info(blob: BitArray) -> FileInfo {
   FileInfo(
-    size: fs.int64_at(blob, 0),
-    mode: fs.int64_at(blob, 1),
-    nlinks: fs.int64_at(blob, 2),
-    inode: fs.int64_at(blob, 3),
-    user_id: fs.int64_at(blob, 4),
-    group_id: fs.int64_at(blob, 5),
-    dev: fs.int64_at(blob, 6),
-    atime_seconds: fs.int64_at(blob, 7),
-    mtime_seconds: fs.int64_at(blob, 8),
-    ctime_seconds: fs.int64_at(blob, 9),
+    size: bit_array.int64_at(blob, 0),
+    mode: bit_array.int64_at(blob, 1),
+    nlinks: bit_array.int64_at(blob, 2),
+    inode: bit_array.int64_at(blob, 3),
+    user_id: bit_array.int64_at(blob, 4),
+    group_id: bit_array.int64_at(blob, 5),
+    dev: bit_array.int64_at(blob, 6),
+    atime_seconds: bit_array.int64_at(blob, 7),
+    mtime_seconds: bit_array.int64_at(blob, 8),
+    ctime_seconds: bit_array.int64_at(blob, 9),
   )
 }
 
@@ -526,11 +591,11 @@ pub fn set_permissions_octal(
   for_file_at: String,
   to: Int,
 ) -> Result(Nil, FileError) {
-  write_result(fs.chmod(for_file_at, to))
+  code_result(uv.fs_chmod(for_file_at, to))
 }
 
 pub fn read_directory(at: String) -> Result(List(String), FileError) {
-  use blob <- result.try(read_result(fs.read_directory(at)))
+  let blob = uv.fs_readdir(at)
   case bit_array.raw_to_string(blob) {
     "" -> Ok([])
     text -> Ok(string.split(text, "/"))
@@ -571,7 +636,7 @@ fn join(directory: String, name: String) -> String {
 }
 
 pub fn current_directory() -> Result(String, FileError) {
-  use bits <- result.try(read_result(fs.current_directory()))
+  let bits = uv.fs_cwd()
   Ok(bit_array.raw_to_string(bits))
 }
 
