@@ -270,21 +270,36 @@ fn callback_edges(functions: List(ir.Function)) -> List(Edge) {
     })
   list.flat_map(dict.to_list(callback_indices), fn(entry) {
     let #(name, indices) = entry
-    list.filter_map(indices, fn(index) {
+    list.flat_map(indices, fn(index) {
       case dict.get(sites, #(name, index)) {
-        Ok(code) -> Ok(Edge(name, code_to_name(code)))
-        Error(_) -> Error(Nil)
+        Ok(codes) ->
+          list.map(codes, fn(code) { Edge(name, code_to_name(code)) })
+        Error(_) -> []
       }
     })
   })
 }
 
+/// Records every distinct continuation code passed at a call site, keyed by
+/// `(callee, arg index)`. A combinator like `result.try` can be called with
+/// several different continuations; all of them must join the dispatcher, or
+/// the unlisted ones fall back to nested calls (growing the native stack).
 fn record_sites(acc, closures, callee, args) {
   list.index_fold(args, acc, fn(a, arg, index) {
     case arg {
       ir.Var(v) ->
         case dict.get(closures, v) {
-          Ok(code) -> dict.insert(a, #(callee, index), code)
+          Ok(code) -> {
+            let key = #(callee, index)
+            let existing = case dict.get(a, key) {
+              Ok(codes) -> codes
+              Error(_) -> []
+            }
+            case list.contains(existing, code) {
+              True -> a
+              False -> dict.insert(a, key, [code, ..existing])
+            }
+          }
           Error(_) -> a
         }
       ir.Lit(_) -> a

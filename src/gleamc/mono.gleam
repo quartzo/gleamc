@@ -13,8 +13,9 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import gleamc/util
 import gleamc/ast.{
-  type CustomType, type Expr, type Function, type Module, type Pattern,
-  type Type, Arm, CustomType, DCustomType, DFunction, EBinop, EBitArray, EBlock,
+  type Arm, type CustomType, type Expr, type Function, type Module, type Pattern,
+  type Type, type Variant, Arm, CustomType, DCustomType, DFunction, EBinop,
+  EBitArray, EBlock,
   EBool, ECall, ECase, EClosure, ECtor, EEnvGet, EField, EFloat, EInt, ELabelled,
   ELambda, ENil, EPanic, EString, ETuple, EUnop, EUpdate, EVar, Function, Let,
   Module, PAs, PBitArray, PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString,
@@ -337,7 +338,7 @@ fn mono_params(state: State, surface_map, params) {
   mono_params_acc(state, surface_map, params, [])
 }
 
-fn mono_params_acc(state, surface_map, params, acc) {
+fn mono_params_acc(state, surface_map, params, acc) -> Result(#(List(#(String, Type)), State), String) {
   case params {
     [] -> Ok(#(list.reverse(acc), state))
     [#(name, ty), ..rest] -> {
@@ -413,7 +414,7 @@ fn mono_variants(state: State, type_name, type_args, surface_map, variants) {
   mono_variants_acc(state, type_name, type_args, surface_map, variants, [])
 }
 
-fn mono_variants_acc(state, type_name, type_args, surface_map, variants, acc) {
+fn mono_variants_acc(state, type_name, type_args, surface_map, variants, acc) -> Result(#(List(Variant), State), String) {
   case variants {
     [] -> Ok(#(list.reverse(acc), state))
     [Variant(ctor, fields), ..rest] -> {
@@ -440,7 +441,7 @@ fn mono_fields(state: State, surface_map, fields) {
   mono_fields_acc(state, surface_map, fields, [])
 }
 
-fn mono_fields_acc(state, surface_map, fields, acc) {
+fn mono_fields_acc(state, surface_map, fields, acc) -> Result(#(List(#(String, Type)), State), String) {
   case fields {
     [] -> Ok(#(list.reverse(acc), state))
     [#(name, ty), ..rest] -> {
@@ -491,7 +492,7 @@ fn mono_types(
   mono_types_acc(state, surface_map, types_list, [])
 }
 
-fn mono_types_acc(state, surface_map, types_list, acc) {
+fn mono_types_acc(state, surface_map, types_list, acc) -> Result(#(List(Type), State), String) {
   case types_list {
     [] -> Ok(#(list.reverse(acc), state))
     [ty, ..rest] -> {
@@ -644,7 +645,13 @@ fn mono_exprs_ex(
   mono_exprs_ex_acc(state, locals, expected_list, exprs, [])
 }
 
-fn mono_exprs_ex_acc(state, locals, expected_list, exprs, acc) {
+fn mono_exprs_ex_acc(
+  state: State,
+  locals: Dict(String, Scheme),
+  expected_list: List(types.Ty),
+  exprs: List(Expr),
+  acc: List(Expr),
+) -> Result(#(List(Expr), State), String) {
   case exprs, expected_list {
     [], _ -> Ok(#(list.reverse(acc), state))
     [expr, ..rest_exprs], [expected, ..rest_expected] -> {
@@ -1110,7 +1117,7 @@ fn mono_arms_ex(state, locals, subject_ty, result_expected, arms) {
   mono_arms_ex_acc(state, locals, subject_ty, result_expected, arms, [])
 }
 
-fn mono_arms_ex_acc(state, locals, subject_ty, result_expected, arms, acc) {
+fn mono_arms_ex_acc(state, locals, subject_ty, result_expected, arms, acc) -> Result(#(List(Arm), State), String) {
   case arms {
     [] -> Ok(#(list.reverse(acc), state))
     [Arm(pattern, guard, body), ..rest] -> {
@@ -1147,7 +1154,7 @@ fn mono_block_ex(state, locals, expected, statements) {
 /// Tail-recursive: each statement is monomorphised in tail position and pushed
 /// onto the accumulator, so a long block runs in constant stack (the last
 /// statement keeps using the block's expected type).
-fn mono_block_ex_acc(state, locals, expected, statements, acc) {
+fn mono_block_ex_acc(state, locals, expected, statements, acc) -> Result(#(Expr, State), String) {
   case statements {
     [] -> Ok(#(EBlock(list.reverse(acc)), state))
     [Stmt(expr)] -> {
@@ -1196,7 +1203,7 @@ fn mono_exprs(state: State, locals: Dict(String, Scheme), exprs: List(Expr)) {
 
 /// Tail-recursive (`list.reverse` at the end) so monomorphising a long list of
 /// expressions runs in constant stack.
-fn mono_exprs_acc(state, locals, exprs, acc) {
+fn mono_exprs_acc(state, locals, exprs, acc) -> Result(#(List(Expr), State), String) {
   case exprs {
     [] -> Ok(#(list.reverse(acc), state))
     [expr, ..rest] -> {
@@ -1414,7 +1421,7 @@ fn mono_ctor_args(state, locals, param_tys, args, subst) {
   mono_ctor_args_acc(state, locals, param_tys, args, subst, [])
 }
 
-fn mono_ctor_args_acc(state, locals, param_tys, args, subst, acc) {
+fn mono_ctor_args_acc(state, locals, param_tys, args, subst, acc) -> Result(#(List(Expr), State, types.Subst), String) {
   case args, param_tys {
     [], _ -> Ok(#(list.reverse(acc), state, subst))
     [arg, ..rest_args], [param_ty, ..rest_params] -> {
@@ -1551,16 +1558,19 @@ fn unify_seq(a, b, subst) {
 }
 
 fn mono_block(state: State, locals: Dict(String, Scheme), statements) {
+  mono_block_acc(state, locals, statements, [])
+}
+
+fn mono_block_acc(state, locals, statements, acc) -> Result(#(Expr, State), String) {
   case statements {
-    [] -> Ok(#(EBlock([]), state))
+    [] -> Ok(#(EBlock(list.reverse(acc)), state))
     [Stmt(expr)] -> {
       use #(expr2, state) <- result_try(mono_expr(state, locals, expr))
-      Ok(#(EBlock([Stmt(expr2)]), state))
+      Ok(#(EBlock(list.reverse([Stmt(expr2), ..acc])), state))
     }
     [Stmt(expr), ..rest] -> {
       use #(expr2, state) <- result_try(mono_expr(state, locals, expr))
-      use #(rest2, state) <- result_try(mono_block(state, locals, rest))
-      Ok(#(EBlock([Stmt(expr2), ..block_statements(rest2)]), state))
+      mono_block_acc(state, locals, rest, [Stmt(expr2), ..acc])
     }
     [Let(pattern, value), ..rest] -> {
       let #(declared_ty, state) = type_of(state, locals, value)
@@ -1578,16 +1588,8 @@ fn mono_block(state: State, locals: Dict(String, Scheme), statements) {
         value_ty,
       ))
       let locals = merge_dicts(locals, bindings)
-      use #(rest2, state) <- result_try(mono_block(state, locals, rest))
-      Ok(#(EBlock([Let(pattern2, value2), ..block_statements(rest2)]), state))
+      mono_block_acc(state, locals, rest, [Let(pattern2, value2), ..acc])
     }
-  }
-}
-
-fn block_statements(block) {
-  case block {
-    EBlock(statements) -> statements
-    _ -> []
   }
 }
 
@@ -1602,7 +1604,7 @@ fn mono_arms(state: State, locals: Dict(String, Scheme), subject_ty, arms) {
   mono_arms_acc(state, locals, subject_ty, arms, [])
 }
 
-fn mono_arms_acc(state, locals, subject_ty, arms, acc) {
+fn mono_arms_acc(state, locals, subject_ty, arms, acc) -> Result(#(List(Arm), State), String) {
   case arms {
     [] -> Ok(#(list.reverse(acc), state))
     [Arm(pattern, guard, body), ..rest] -> {
@@ -1736,7 +1738,14 @@ fn mono_patterns(
   mono_patterns_acc(state, locals, patterns, tys, [], dict.new())
 }
 
-fn mono_patterns_acc(state, locals, patterns, tys, acc, bindings_acc) {
+fn mono_patterns_acc(
+  state: State,
+  locals: Dict(String, Scheme),
+  patterns: List(Pattern),
+  tys: List(types.Ty),
+  acc: List(Pattern),
+  bindings_acc: Dict(String, Scheme),
+) -> Result(#(List(Pattern), Dict(String, Scheme), State), String) {
   case patterns, tys {
     [], _ -> Ok(#(list.reverse(acc), bindings_acc, state))
     [pattern, ..rest_patterns], [ty, ..rest_tys] -> {
