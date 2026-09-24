@@ -805,6 +805,8 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
     // scheduler loop, never exposed to Gleam).
     "time", "timer" ->
       check_builtin(env, signatures, ctors, args, [TInt], TNil, "time.timer")
+    "time", "timer_count" ->
+      check_builtin(env, signatures, ctors, args, [TInt], TInt, "time.timer_count")
     "int", "to_string" ->
       check_builtin(
         env,

@@ -320,6 +320,8 @@ GleamcFuture* Gleamc_uv_fs_close(int64_t fd);
 GleamcFuture* Gleamc_uv_fs_write(int64_t fd, GleamcBitArray data);
 GleamcFuture* Gleamc_uv_fs_unlink(GleamcString path);
 GleamcFuture* Gleamc_uv_timer(int64_t ms);
+GleamcFuture* Gleamc_time_timer_count(int64_t ms);
+int64_t Gleamc_uv_value_int(GleamcFuture* f);
 int Gleamc_time_timer(int64_t ms);
 int64_t Gleamc_uv_await_int(GleamcFuture* f);
 void Gleamc_uv_await_nil(GleamcFuture* f);

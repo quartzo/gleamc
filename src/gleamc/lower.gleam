@@ -783,16 +783,8 @@ fn lower_call(b, fun, args) -> Result(#(ir.Operand, Builder), LowerError) {
         // Async base: `timer(ms)` starts a `Future(())` (internal handle)
         // and suspends; the scheduler loop resumes when it completes. The
         // Gleam-visible value stays `Nil`.
-        "time", "timer" -> {
-          use #(operands, b1) <- result.try(lower_args(b, args))
-          let future_ty = TNamed("Future")
-          let #(fut, b2) = fresh_local(b1, "future", future_ty)
-          let b3 =
-            emit(b2, ir.OpBuiltin(fut, "time.timer", operands, future_ty))
-          let b4 = emit(b3, ir.OpSuspend(ir.Var(fut), ""))
-          let #(unit, b5) = fresh_local(b4, "unit", TNil)
-          Ok(#(ir.Var(unit), emit(b5, ir.OpConst(unit, ir.LUnit))))
-        }
+        "time", "timer" -> lower_suspend(b, args, "time.timer", TNil)
+        "time", "timer_count" -> lower_suspend(b, args, "time.timer_count", TInt)
         _, _ -> {
           use #(operands, b1) <- result.try(lower_args(b, args))
           let #(dest, b2) = fresh_local(b1, "call", ret_ty)
@@ -812,6 +804,19 @@ fn lower_call(b, fun, args) -> Result(#(ir.Operand, Builder), LowerError) {
       ))
     }
   }
+}
+
+/// Suspending host call (`time.timer`, `time.timer_count`): starts the future
+/// (internal handle) and suspends, binding the awaited value to a fresh local.
+/// The Gleam-visible result is that local (unwrapped from the future).
+fn lower_suspend(b, args, builtin, dest_ty) {
+  use #(operands, b1) <- result.try(lower_args(b, args))
+  let future_ty = TNamed("Future")
+  let #(fut, b2) = fresh_local(b1, "future", future_ty)
+  let b3 = emit(b2, ir.OpBuiltin(fut, builtin, operands, future_ty))
+  let #(dest, b4) = fresh_local(b3, "awaited", dest_ty)
+  let b5 = emit(b4, ir.OpSuspend(dest, ir.Var(fut), ""))
+  Ok(#(ir.Var(dest), b5))
 }
 
 /// A top-level function used as a value becomes a function pointer.

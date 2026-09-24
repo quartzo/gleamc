@@ -336,6 +336,7 @@ fn header() -> String {
   <> "declare void @Gleamc_rc_retain(i8*, i8*)\n"
   <> "declare void @Gleamc_rc_release(i8*, i8*)\n"
   <> "declare void @Gleamc_uv_await_nil(i8*)\n"
+  <> "declare i64 @Gleamc_uv_value_int(i8*)\n"
   <> "declare i1 @gleamc_sched_run(i1 (i8*)*, i8*, i8**)\n"
   <> "declare %GleamcString @gleamc_string_lit(i8*, i64)\n"
   <> "declare %GleamcString @Gleamc_show_concat(%GleamcString, %GleamcString)\n"
@@ -831,7 +832,7 @@ fn has_suspend(function: ir.Function) -> Bool {
     let ir.Block(_, ops, _) = block
     list.any(ops, fn(op) {
       case op {
-        ir.OpSuspend(_, _) -> True
+        ir.OpSuspend(_, _, _) -> True
         _ -> False
       }
     })
@@ -922,7 +923,21 @@ fn emit_machine_function(
 ) -> String {
   let ir.Function(name, params, ret, blocks, locals) = function
   let info = frame_info(function, recursive)
-  let FrameInfo(fr_ty, _fields, state_idx, _fut_idx, _result_idx, _block_index) = info
+  let FrameInfo(fr_ty, _fields, state_idx, fut_idx, _result_idx, _block_index) = info
+  let wake =
+    list.fold(blocks, dict.new(), fn(acc, block) {
+      let ir.Block(_, ops, _) = block
+      list.fold(ops, acc, fn(acc2, op) {
+        case op {
+          ir.OpSuspend(dest, _, resume) ->
+            case resume {
+              "" -> acc2
+              _ -> dict.insert(acc2, resume, dest)
+            }
+          _ -> acc2
+        }
+      })
+    })
   let ctx =
     Ctx(
       recursive: recursive,
@@ -968,11 +983,46 @@ fn emit_machine_function(
     )
   let b = emit_line(b, "\n__bad:")
   let b = emit_line(b, "  unreachable")
-  let #(b, _) = emit_block_list(ctx, blocks, b)
+  let b =
+    list.fold(blocks, b, fn(b, block) {
+      let ir.Block(label, ops, term) = block
+      let b = emit_line(b, "\n" <> block_name(ctx, label) <> ":")
+      let b = case dict.get(wake, label) {
+        Ok(dest) -> emit_wake(ctx, fr_ty, fut_idx, dest, b)
+        Error(_) -> b
+      }
+      let #(b, _) = emit_ops(ctx, ops, b)
+      emit_term(ctx, term, b)
+    })
   let step = string.join(list.reverse(b.lines), "\n") <> "\n}\n"
   // wrapper with the original signature
   let wrapper = emit_machine_wrapper(function, info, recursive)
   step <> "\n" <> wrapper
+}
+
+/// Wake code at the head of a resume block: read the completed future's value
+/// into `dest`, then release the future (single owner).
+fn emit_wake(ctx: Ctx, fr_ty: String, fut_idx: Int, dest: String, b: Builder) -> Builder {
+  let #(fut_ptr, b) = frame_gep(fr_ty, fut_idx, b)
+  let #(fv, b) = fresh(b)
+  let b = emit_line(b, "  " <> fv <> " = load i8*, i8** " <> fut_ptr)
+  let dest_ty = local_type(ctx.by_name, dest)
+  let b = case is_nil_type(dest_ty) {
+    True -> b
+    False -> {
+      let #(val, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> val <> " = call i64 @Gleamc_uv_value_int(i8* " <> fv <> ")",
+        )
+      store_local(ctx, dest, "i64", val, b)
+    }
+  }
+  emit_line(
+    b,
+    "  call void @Gleamc_rc_release(i8* " <> fv <> ", i8* null)",
+  )
 }
 
 fn emit_machine_wrapper(function: ir.Function, info: FrameInfo, recursive) -> String {
@@ -1729,7 +1779,7 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
     // Async suspension. The scheduler (`gleamc_sched_run`) owns the loop:
     // until the machine lowering lands, await the future inline so the
     // program still runs correctly.
-    ir.OpSuspend(fut, resume) -> {
+    ir.OpSuspend(_dest, fut, resume) -> {
       case ctx.frame {
         // Inside a machine: hand the future to the scheduler and yield.
         Some(FrameInfo(fr_ty, _, state_idx, fut_idx, _, block_index)) -> {

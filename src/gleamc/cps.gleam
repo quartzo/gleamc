@@ -84,7 +84,7 @@ fn segment_loop(ops, current, done) {
     [op, ..rest] -> {
       let current = [op, ..current]
       case op {
-        ir.OpSuspend(_, _) ->
+        ir.OpSuspend(_, _, _) ->
           segment_loop(rest, [], [list.reverse(current), ..done])
         _ -> segment_loop(rest, current, done)
       }
@@ -96,7 +96,7 @@ fn segment_loop(ops, current, done) {
 fn set_resumes(ops, resume) {
   list.map(ops, fn(op) {
     case op {
-      ir.OpSuspend(fut, _) -> ir.OpSuspend(fut, resume)
+      ir.OpSuspend(dest, fut, _) -> ir.OpSuspend(dest, fut, resume)
       _ -> op
     }
   })

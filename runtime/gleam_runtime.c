@@ -951,6 +951,28 @@ GleamcFuture* Gleamc_uv_timer(int64_t ms) {
     return gleamc_uv_timer_start(gleamc_uv_timer_init(gleamc_uv_loop()), ms);
 }
 
+/* Timer whose future carries a value (the scheduled `ms`). Used to exercise
+ * value-carrying suspensions: `time.timer_count(ms): Int`. */
+static void gleamc_timer_keep_cb(uv_timer_t* t) {
+    GleamcFuture* f = (GleamcFuture*)t->data;
+    if (f != NULL) f->done = true;
+    uv_close((uv_handle_t*)t, gleamc_timer_close_cb);
+}
+
+GleamcFuture* Gleamc_time_timer_count(int64_t ms) {
+    uv_timer_t* t = (uv_timer_t*)gleamc_uv_timer_init(gleamc_uv_loop());
+    GleamcFuture* f = gleamc_alloc(sizeof(GleamcFuture));
+    f->done = false; f->has_error = false; f->error_code = 0;
+    f->value_i = ms; f->value_p = NULL; f->deadline = 0; f->uv_armed = true;
+    t->data = f;
+    uv_timer_start(t, gleamc_timer_keep_cb, (uint64_t)(ms > 0 ? ms : 0), 0);
+    return f;
+}
+
+int64_t Gleamc_uv_value_int(GleamcFuture* f) {
+    return f == NULL ? 0 : f->value_i;
+}
+
 /* `time.timer(ms)`: the Future is internal — this is the builtin the Gleam
  * caller sees, returning `Nil` once the timeout fired on the libuv loop. */
 int Gleamc_time_timer(int64_t ms) {

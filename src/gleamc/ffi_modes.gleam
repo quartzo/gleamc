@@ -52,6 +52,7 @@ pub fn table() -> Dict(String, FfiSig) {
   // Async base: `time.timer(ms)` reads `ms` and its `Future(())` stays
   // internal; the builtin itself has no user-visible result.
   |> dict.insert("time.timer", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("time.timer_count", FfiSig([Borrow], OwnedResult))
   |> dict.insert("int.to_string", FfiSig([Borrow], OwnedResult))
   |> dict.insert("float.to_string", FfiSig([Borrow], OwnedResult))
   |> dict.insert("bool.to_string", FfiSig([Borrow], OwnedResult))
