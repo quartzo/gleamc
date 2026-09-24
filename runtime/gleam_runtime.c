@@ -885,7 +885,12 @@ bool gleamc_sched_run(bool (*step)(void* frame), void* frame,
                       GleamcFuture** fut_slot) {
     void* loop = gleamc_uv_loop();
     for (;;) {
-        if (step(frame)) return true;
+        if (step(frame)) {
+            /* Drain pending libuv close callbacks so handles (timers, ...) are
+             * released before the machine returns. */
+            uv_run((uv_loop_t*)loop, UV_RUN_NOWAIT);
+            return true;
+        }
         GleamcFuture* fut = *fut_slot;
         while (fut != NULL && !fut->done) {
             /* Only scheduler-deadline futures sleep; libuv-armed ones are
@@ -982,11 +987,11 @@ int64_t Gleamc_uv_result(GleamcFuture* f) {
     return f->has_error ? -(int64_t)f->error_code : f->value_i;
 }
 
-/* `time.timer(ms)`: the Future is internal — this is the builtin the Gleam
- * caller sees, returning `Nil` once the timeout fired on the libuv loop. */
-int Gleamc_time_timer(int64_t ms) {
-    Gleamc_uv_await_nil(Gleamc_uv_timer(ms));
-    return 0;
+/* `time.timer(ms)`: the builtin the Gleam caller sees returns the Future, which
+ * the caller awaits (suspends on) and releases on wake — same shape as
+ * `time.timer_count`. */
+GleamcFuture* Gleamc_time_timer(int64_t ms) {
+    return Gleamc_uv_timer(ms);
 }
 
 #define GLEAMC_FS_MAX 64
@@ -1976,20 +1981,27 @@ static void gleamc_fs_readdir_cb(uv_fs_t* req) {
         f->has_error = true;
         f->error_code = (int32_t)(-n);
     } else {
+        /* Build in a scratch buffer, then copy into a refcounted block: the
+         * awaited BitArray owns the block and releases it through the rc
+         * kernel (`Gleamc_bit_array_release`), so it must come from
+         * `gleamc_alloc`, not `malloc`. */
         size_t cap = 64, len = 0;
-        uint8_t* buf = (uint8_t*)malloc(cap);
+        uint8_t* scratch = (uint8_t*)malloc(cap);
         uv_dirent_t ent;
         int first = 1;
         while (uv_fs_scandir_next(req, &ent) == 0) {
             size_t l = strlen(ent.name);
             size_t need = len + l + 1;
-            while (need > cap) { cap *= 2; buf = realloc(buf, cap); }
-            if (!first) buf[len++] = '/';
-            memcpy(buf + len, ent.name, l);
+            while (need > cap) { cap *= 2; scratch = realloc(scratch, cap); }
+            if (!first) scratch[len++] = '/';
+            memcpy(scratch + len, ent.name, l);
             len += l;
             first = 0;
         }
-        f->value_p = buf;
+        uint8_t* out = (uint8_t*)gleamc_alloc(len > 0 ? len : 1);
+        if (len > 0) memcpy(out, scratch, len);
+        free(scratch);
+        f->value_p = out;
         f->value_i = (int64_t)len;
     }
     uv_fs_req_cleanup(req);

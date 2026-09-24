@@ -334,7 +334,7 @@ GleamcFuture* Gleamc_uv_timer(int64_t ms);
 GleamcFuture* Gleamc_time_timer_count(int64_t ms);
 int64_t Gleamc_uv_value_int(GleamcFuture* f);
 int64_t Gleamc_uv_result(GleamcFuture* f);
-int Gleamc_time_timer(int64_t ms);
+GleamcFuture* Gleamc_time_timer(int64_t ms);
 int64_t Gleamc_uv_await_int(GleamcFuture* f);
 void Gleamc_uv_await_nil(GleamcFuture* f);
 GleamcBitArray Gleamc_uv_await_bytes(GleamcFuture* f);
