@@ -40,8 +40,9 @@ void* gleamc_alloc0(size_t size);
 void* gleamc_alloc_site(size_t size, const char* site);
 
 /* Call-depth probe: the generated code bumps `@__gleamc_depth` directly and
- * calls this when the limit (GLEAMC_CALL_DEPTH) is reached, naming the
- * function that went deepest and aborting. */
+ * calls this when `gleamc_depth_max` (GLEAMC_CALL_DEPTH, default 100) is
+ * reached, naming the function that went deepest and aborting. */
+extern int64_t gleamc_depth_max;
 void gleamc_depth_die(const char* fn);
 
 /* Drop to zero: frees the block (cold path). */

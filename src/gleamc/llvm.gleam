@@ -339,19 +339,8 @@ pub fn emit(
   // return (load/sub/store); only the limit path calls into the runtime to name
   // the function that went deepest and abort.
   case ffi.get_env("GLEAMC_CALL_DEPTH") {
-    Ok(value) -> instrument_depth(out, depth_limit(value))
+    Ok(_) -> instrument_depth(out)
     Error(_) -> out
-  }
-}
-
-fn depth_limit(value: String) -> Int {
-  case int.parse(value) {
-    Ok(n) ->
-      case n > 0 {
-        True -> n
-        False -> 100
-      }
-    Error(_) -> 100
   }
 }
 
@@ -386,15 +375,14 @@ fn depth_leave(k: Int) -> #(List(String), Int) {
   )
 }
 
-fn instrument_depth(ll: String, limit: Int) -> String {
-  let lim_s = int.to_string(limit)
+fn instrument_depth(ll: String) -> String {
   // The entry bump is inserted just before the entry block's terminator, not
   // right after `define`: a branch at the very top would move the function's
   // `alloca`s out of the entry block and turn them into dynamic stack
   // adjustments on every call.
-  let #(body, globals, _n, _k, _entry) =
+  let #(rev, globals, _n, _k, _entry) =
     list.fold(string.split(ll, "\n"), #([], [], 0, 0, []), fn(acc, line) {
-      let #(body, globals, n, k, entry) = acc
+      let #(rev, globals, n, k, entry) = acc
       let trimmed = string.trim(line)
       case string.starts_with(line, "define ") {
         True -> {
@@ -418,6 +406,7 @@ fn instrument_depth(ll: String, limit: Int) -> String {
             <> ", i32 0, i32 0)"
           let a = "%__dta" <> int.to_string(n)
           let b = "%__dtb" <> int.to_string(n)
+          let m = "%__dtm" <> int.to_string(n)
           let h = "%__dth" <> int.to_string(n)
           let die = "__dtdie" <> int.to_string(n)
           let ok = "__dtok" <> int.to_string(n)
@@ -425,14 +414,15 @@ fn instrument_depth(ll: String, limit: Int) -> String {
             "  " <> a <> " = load i64, i64* @__gleamc_depth",
             "  " <> b <> " = add i64 " <> a <> ", 1",
             "  store i64 " <> b <> ", i64* @__gleamc_depth",
-            "  " <> h <> " = icmp sge i64 " <> b <> ", " <> lim_s,
+            "  " <> m <> " = load i64, i64* @gleamc_depth_max",
+            "  " <> h <> " = icmp sge i64 " <> b <> ", " <> m,
             "  br i1 " <> h <> ", label %" <> die <> ", label %" <> ok,
             die <> ":",
             "  call void @gleamc_depth_die(" <> ptr <> ")",
             "  unreachable",
             ok <> ":",
           ]
-          #(list.append(body, [line]), [glob, ..globals], n + 1, k, entry)
+          #(push(rev, [line]), [glob, ..globals], n + 1, k, entry)
         }
         False ->
           case entry {
@@ -440,9 +430,9 @@ fn instrument_depth(ll: String, limit: Int) -> String {
               case string.starts_with(trimmed, "ret ") {
                 True -> {
                   let #(leave, k) = depth_leave(k)
-                  #(list.append(body, list.append(leave, [line])), globals, n, k, [])
+                  #(push(rev, list.append(leave, [line])), globals, n, k, [])
                 }
-                False -> #(list.append(body, [line]), globals, n, k, [])
+                False -> #(push(rev, [line]), globals, n, k, [])
               }
             _ ->
               case is_terminator(trimmed) {
@@ -454,18 +444,23 @@ fn instrument_depth(ll: String, limit: Int) -> String {
                     }
                     False -> #(entry, k)
                   }
-                  #(list.append(body, list.append(entry, [line])), globals, n, k, [])
+                  #(push(rev, list.append(entry, [line])), globals, n, k, [])
                 }
-                False -> #(list.append(body, [line]), globals, n, k, entry)
+                False -> #(push(rev, [line]), globals, n, k, entry)
               }
           }
       }
     })
-  string.join(body, "\n")
+  string.join(list.reverse(rev), "\n")
   <> "\ndeclare void @gleamc_depth_die(i8*)\n"
+  <> "@gleamc_depth_max = external global i64\n"
   <> "@__gleamc_depth = internal global i64 0\n"
   <> string.join(list.reverse(globals), "\n")
   <> "\n"
+}
+
+fn push(rev: List(String), chunk: List(String)) -> List(String) {
+  list.fold(chunk, rev, fn(acc, line) { [line, ..acc] })
 }
 
 fn header() -> String {

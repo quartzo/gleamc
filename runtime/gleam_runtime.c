@@ -127,11 +127,14 @@ static size_t _gleamc_live = 0;
 /* Call-depth probe (emitted only when the backend is asked to instrument with
  * GLEAMC_CALL_DEPTH). The generated code bumps the `@__gleamc_depth` global
  * directly (load/add/store) on entry and (load/sub/store) before each return;
- * when the limit is reached it calls this to name the function that went
- * deepest and abort. */
+ * when the depth reaches `gleamc_depth_max` (settable at run time through
+ * GLEAMC_CALL_DEPTH) it calls this to name the function that went deepest and
+ * abort. */
+int64_t gleamc_depth_max = 100;
+
 void gleamc_depth_die(const char* fn) {
-    fprintf(stderr, "gleamc: call depth limit reached in %s\n",
-            fn != NULL ? fn : "?");
+    fprintf(stderr, "gleamc: call depth %lld reached in %s\n",
+            (long long)gleamc_depth_max, fn != NULL ? fn : "?");
     fflush(stderr);
     abort();
 }
@@ -159,6 +162,13 @@ static void _gleamc_report_leaks(void) {
 
 __attribute__((constructor)) static void _gleamc_init(void) {
     atexit(_gleamc_report_leaks);
+    {
+        const char* depth = getenv("GLEAMC_CALL_DEPTH");
+        if (depth != NULL) {
+            long v = atol(depth);
+            if (v > 0) gleamc_depth_max = (int64_t)v;
+        }
+    }
 }
 
 void* gleamc_alloc(size_t size) {
