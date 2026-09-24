@@ -106,6 +106,52 @@ pub fn machines(module: ir.Module) -> List(String) {
   |> list.sort(fn(a, b) { string.compare(a, b) })
 }
 
+/// The members of every eligible dispatcher group, keyed by name. A mutual
+/// tail-call group is eligible when it has more than one member, all with the
+/// same return type, and does not contain `main`. These functions' indirect
+/// tail calls become a jump in the dispatcher; every other indirect tail call
+/// is an ordinary call.
+pub fn dispatched_members(
+  planned: Plan,
+  functions: List(ir.Function),
+) -> Dict(String, Bool) {
+  let by_name =
+    dict.from_list(list.map(functions, fn(function) {
+      #(function.name, function)
+    }))
+  let groups = case planned {
+    Plan(_, _, groups, _, _, _, _) -> groups
+  }
+  list.fold(groups, dict.new(), fn(acc, group) {
+    let Group(members, _) = group
+    let found = list.filter_map(members, fn(name) { dict.get(by_name, name) })
+    case
+      !list.contains(members, "main")
+      && list.length(members) > 1
+      && list.length(found) == list.length(members)
+      && returns_equal(found)
+    {
+      True ->
+        list.fold(members, acc, fn(acc, name) { dict.insert(acc, name, True) })
+      False -> acc
+    }
+  })
+}
+
+fn returns_equal(functions: List(ir.Function)) -> Bool {
+  case functions {
+    [] -> True
+    [first, ..rest] -> {
+      let ir.Function(_, _, ret, _, _) = first
+      let expected = ir.describe_type(ret)
+      list.all(rest, fn(function) {
+        let ir.Function(_, _, ret, _, _) = function
+        ir.describe_type(ret) == expected
+      })
+    }
+  }
+}
+
 /// A function that creates a closure capturing at least one variable: its frame
 /// can be referenced by that closure, so it needs a heap frame.
 fn has_capture(function: ir.Function) -> Bool {

@@ -4211,25 +4211,21 @@ fn eligible_groups(
   functions: List(ir.Function),
   ctors: Dict(String, checker.CtorInfo),
 ) -> List(List(ir.Function)) {
+  let _ = ctors
   let by_name =
     dict.from_list(list.map(functions, fn(function) {
       let ir.Function(name, _, _, _, _) = function
       #(name, function)
     }))
+  let dispatched = plan.dispatched_members(planned, functions)
   let groups = case planned {
     plan.Plan(_, _, groups, _, _, _, _) -> groups
   }
   list.filter_map(groups, fn(group) {
     let plan.Group(members, _) = group
-    case lookup_all(by_name, members) {
-      Ok(fns) ->
-        case
-          list.any(fns, fn(f) { f.name == "main" }) || !group_ok(fns, ctors)
-        {
-          True -> Error(Nil)
-          False -> Ok(fns)
-        }
-      Error(_) -> Error(Nil)
+    case list.all(members, fn(name) { dict.has_key(dispatched, name) }) {
+      True -> lookup_all(by_name, members)
+      False -> Error(Nil)
     }
   })
 }
@@ -4255,26 +4251,6 @@ fn lookup_all(
 /// A mutual group is eligible when every member has the same return type and
 /// only scalar locals (no handle), so the frame rebind can never dangle a
 /// borrowed reference. Handle groups await the frame-claim ownership stage.
-fn group_ok(
-  fns: List(ir.Function),
-  ctors: Dict(String, checker.CtorInfo),
-) -> Bool {
-  let _ = ctors
-  let rets =
-    list.map(fns, fn(f) {
-      let ir.Function(_, _, ret, _, _) = f
-      ir.describe_type(ret)
-    })
-  all_equal(rets) && list.length(fns) > 1
-}
-
-fn all_equal(items: List(String)) -> Bool {
-  case items {
-    [] -> True
-    [first, ..rest] -> list.all(rest, fn(item) { item == first })
-  }
-}
-
 fn group_type_decls(
   groups: List(List(ir.Function)),
   recursive: Dict(String, Bool),

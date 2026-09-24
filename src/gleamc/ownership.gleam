@@ -38,9 +38,14 @@ pub fn insert(
   let #(module, modes) = owned_clone.apply(module, modes, is_handle)
   let ir.Module(functions) = module
   let machines = plan.machines(module)
+  // Only an eligible dispatcher jumps on an indirect tail call. Everywhere else
+  // it is an ordinary call, so make it one: then the function value is handled
+  // by the ownership flow (dropped after the call) instead of at the exit.
+  let dispatched = plan.dispatched_members(plan.plan(module), functions)
   let ffi = ffi_modes.table()
   ir.Module(
     list.map(functions, fn(function) {
+      let function = lower_indirect_tails(function, dispatched)
       let owned = insert_fn(function, fields_of, recursive, modes, ffi)
       case list.contains(machines, function.name) {
         True -> add_frame_lifecycle(owned)
@@ -48,6 +53,40 @@ pub fn insert(
       }
     }),
   )
+}
+
+/// Turns `TailcallIndirect` into `CallIndirect` + `Ret` for every function that
+/// is not a dispatcher member, so the value it calls is released through the
+/// normal ownership flow. Dispatchers keep the tail call (the target takes over).
+fn lower_indirect_tails(function: ir.Function, dispatched) -> ir.Function {
+  let ir.Function(name, params, ret, blocks, locals) = function
+  case dict.get(dispatched, name) {
+    Ok(_) -> function
+    Error(_) -> {
+      let #(blocks, added) =
+        list.fold(blocks, #([], []), fn(state, block) {
+          let #(acc, added) = state
+          let ir.Block(label, ops, term) = block
+          case term {
+            ir.TailcallIndirect(fval, args) -> {
+              let dest = label <> "_tail"
+              #(
+                list.append(acc, [
+                  ir.Block(
+                    label,
+                    list.append(ops, [ir.OpCallIndirect(dest, fval, args, ret)]),
+                    ir.Ret(ir.Var(dest)),
+                  ),
+                ]),
+                [ir.Local(dest, ret), ..added],
+              )
+            }
+            _ -> #(list.append(acc, [block]), added)
+          }
+        })
+      ir.Function(name, params, ret, blocks, list.append(locals, added))
+    }
+  }
 }
 
 /// The frame is an ownership-managed value. A closure that captures it takes a

@@ -121,3 +121,14 @@ pub fn memory_uppercase_literal_test() {
   assert string.contains(output, "ABC")
   assert live_blocks(output) == 0
 }
+
+/// Regression: a closure held in a local and called in tail position must not
+/// be released before the call. It used to be dropped first, freeing its frame
+/// and returning garbage (a use-after-free).
+pub fn memory_tail_indirect_local_closure_test() {
+  let source =
+    "import gleam/io\n\nfn adder(n: Int) -> fn(Int) -> Int {\n  fn(x) { x + n }\n}\n\nfn run() -> Int {\n  let g = adder(41)\n  g(1)\n}\n\npub fn main() {\n  io.debug(run())\n}\n"
+  let output = compile_and_run("tail_local", source)
+  assert string.contains(output, "42")
+  assert live_blocks(output) == 0
+}
