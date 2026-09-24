@@ -2271,10 +2271,11 @@ fn emit_term(ctx: Ctx, term: ir.Terminator, b: Builder) {
       case dict.get(ctx.group, fun) {
         Ok(target) -> emit_rebind(ctx, target, args, b)
         Error(_) ->
-          case ctx.frame {
-            // Inside a machine: call the target and finish the step with its
-            // result stored in the frame (the caller resumes the machine).
-            Some(FrameInfo(fr_ty, fr_reg, _fields, _, _, result_idx, _)) -> {
+          case dict.is_empty(ctx.group) {
+            // A dispatcher member tail-calls a function outside the group: an
+            // ordinary call, then the dispatcher returns (releasing every
+            // member frame). Not a step return.
+            False -> {
               let ret_s = llvm_ty(ctx.ret, ctx.recursive)
               let #(b, arg_list) = read_args(ctx, args, b)
               let #(r, b) = fresh(b)
@@ -2291,36 +2292,14 @@ fn emit_term(ctx: Ctx, term: ir.Terminator, b: Builder) {
                     <> arg_list
                     <> ")",
                 )
-              case is_nil_type(ctx.ret) {
-                True -> emit_line(b, "  ret i1 true")
-                False -> {
-                  let #(result_ptr, b) = frame_gep(fr_reg, fr_ty, result_idx, b)
-                  let b =
-                    emit_line(
-                      b,
-                      "  store "
-                        <> ret_s
-                        <> " "
-                        <> r
-                        <> ", "
-                        <> ret_s
-                        <> "* "
-                        <> result_ptr,
-                    )
-                  emit_line(b, "  ret i1 true")
-                }
-              }
+              let b = emit_group_frame_release(ctx, b)
+              emit_line(b, "  ret " <> ret_s <> " " <> r)
             }
-            None ->
-              case fun == ctx.fn_name {
-                True ->
-                  emit_rebind(
-                    ctx,
-                    #(ctx.prefix, ctx.params, ctx.entry, None),
-                    args,
-                    b,
-                  )
-                False -> {
+            True ->
+              case ctx.frame {
+                // Inside a machine: call the target and finish the step with its
+                // result stored in the frame (the caller resumes the machine).
+                Some(FrameInfo(fr_ty, fr_reg, _fields, _, _, result_idx, _)) -> {
                   let ret_s = llvm_ty(ctx.ret, ctx.recursive)
                   let #(b, arg_list) = read_args(ctx, args, b)
                   let #(r, b) = fresh(b)
@@ -2337,8 +2316,55 @@ fn emit_term(ctx: Ctx, term: ir.Terminator, b: Builder) {
                         <> arg_list
                         <> ")",
                     )
-                  emit_line(b, "  ret " <> ret_s <> " " <> r)
+                  case is_nil_type(ctx.ret) {
+                    True -> emit_line(b, "  ret i1 true")
+                    False -> {
+                      let #(result_ptr, b) = frame_gep(fr_reg, fr_ty, result_idx, b)
+                      let b =
+                        emit_line(
+                          b,
+                          "  store "
+                            <> ret_s
+                            <> " "
+                            <> r
+                            <> ", "
+                            <> ret_s
+                            <> "* "
+                            <> result_ptr,
+                        )
+                      emit_line(b, "  ret i1 true")
+                    }
+                  }
                 }
+                None ->
+                  case fun == ctx.fn_name {
+                    True ->
+                      emit_rebind(
+                        ctx,
+                        #(ctx.prefix, ctx.params, ctx.entry, None),
+                        args,
+                        b,
+                      )
+                    False -> {
+                      let ret_s = llvm_ty(ctx.ret, ctx.recursive)
+                      let #(b, arg_list) = read_args(ctx, args, b)
+                      let #(r, b) = fresh(b)
+                      let b =
+                        emit_line(
+                          b,
+                          "  "
+                            <> r
+                            <> " = call "
+                            <> ret_s
+                            <> " @Gleamc_"
+                            <> fun
+                            <> "("
+                            <> arg_list
+                            <> ")",
+                        )
+                      emit_line(b, "  ret " <> ret_s <> " " <> r)
+                    }
+                  }
               }
           }
       }
