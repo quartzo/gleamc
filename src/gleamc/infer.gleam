@@ -794,48 +794,6 @@ fn builtins() -> Dict(String, Scheme) {
     "bit_array.is_utf8",
     Scheme(none, Fun([Con("BitArray", [])], b)),
   )
-  |> dict.insert("fs.read", Scheme(none, Fun([s], Con("FileResult", []))))
-  |> dict.insert(
-    "fs.write",
-    Scheme(none, Fun([s, Con("BitArray", [])], Con("FileResult", []))),
-  )
-  |> dict.insert(
-    "fs.append",
-    Scheme(none, Fun([s, Con("BitArray", [])], Con("FileResult", []))),
-  )
-  |> dict.insert("fs.delete", Scheme(none, Fun([s], Con("FileResult", []))))
-  |> dict.insert(
-    "fs.create_directory",
-    Scheme(none, Fun([s], Con("FileResult", []))),
-  )
-  |> dict.insert(
-    "fs.create_file",
-    Scheme(none, Fun([s], Con("FileResult", []))),
-  )
-  |> dict.insert("fs.exists", Scheme(none, Fun([s], Con("FileResult", []))))
-  |> dict.insert("fs.is_file", Scheme(none, Fun([s], Con("FileResult", []))))
-  |> dict.insert(
-    "fs.is_directory",
-    Scheme(none, Fun([s], Con("FileResult", []))),
-  )
-  |> dict.insert("fs.file_size", Scheme(none, Fun([s], Con("FileResult", []))))
-  |> dict.insert(
-    "fs.current_directory",
-    Scheme(none, Fun([], Con("FileResult", []))),
-  )
-  |> dict.insert(
-    "fs.read_directory",
-    Scheme(none, Fun([s], Con("FileResult", []))),
-  )
-  |> dict.insert("fs.file_info", Scheme(none, Fun([s], Con("FileResult", []))))
-  |> dict.insert("fs.link_info", Scheme(none, Fun([s], Con("FileResult", []))))
-  |> dict.insert("fs.int64_at", Scheme(none, Fun([Con("BitArray", []), i], i)))
-  |> dict.insert("fs.rename", Scheme(none, Fun([s, s], Con("FileResult", []))))
-  |> dict.insert("fs.symlink", Scheme(none, Fun([s, s], Con("FileResult", []))))
-  |> dict.insert("fs.link", Scheme(none, Fun([s, s], Con("FileResult", []))))
-  |> dict.insert("fs.touch", Scheme(none, Fun([s], Con("FileResult", []))))
-  |> dict.insert("fs.realpath", Scheme(none, Fun([s], Con("FileResult", []))))
-  |> dict.insert("fs.chmod", Scheme(none, Fun([s, i], Con("FileResult", []))))
   |> dict.insert("host.run", Scheme(none, Fun([s], Con("BitArray", []))))
   |> dict.insert(
     "host.char_code_at",
@@ -859,18 +817,6 @@ fn builtins() -> Dict(String, Scheme) {
   |> dict.insert(
     "host.int64_at",
     Scheme(none, Fun([Con("BitArray", []), i], i)),
-  )
-  |> dict.insert(
-    "fs.result_code",
-    Scheme(none, Fun([Con("FileResult", [])], i)),
-  )
-  |> dict.insert(
-    "fs.result_size",
-    Scheme(none, Fun([Con("FileResult", [])], i)),
-  )
-  |> dict.insert(
-    "fs.result_data",
-    Scheme(none, Fun([Con("FileResult", [])], Con("BitArray", []))),
   )
 }
 
