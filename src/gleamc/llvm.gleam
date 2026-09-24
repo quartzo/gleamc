@@ -4906,6 +4906,40 @@ fn rc_expr(
   }
 }
 
+fn self_type(ty, type_name) -> Bool {
+  case ty {
+    TNamed(name) -> name == type_name
+    _ -> False
+  }
+}
+
+/// The cons of a singly-linked list: a variant with exactly two fields whose
+/// second is the type itself and whose first is not. Returns its variant and
+/// self-field indices.
+fn list_tail_field(variants, type_name) -> Option(#(Int, Int)) {
+  list.fold(
+    list.index_map(variants, fn(variant, index) { #(variant, index) }),
+    None,
+    fn(acc, entry) {
+      case acc {
+        Some(_) -> acc
+        None -> {
+          let #(variant, index) = entry
+          let #(_, fields) = variant
+          case fields {
+            [head_ty, tail_ty] ->
+              case self_type(tail_ty, type_name), self_type(head_ty, type_name) {
+                True, False -> Some(#(index, 1))
+                _, _ -> None
+              }
+            _ -> None
+          }
+        }
+      }
+    },
+  )
+}
+
 fn emit_rc_glue(
   lits: Dict(String, Int),
   recursive,
@@ -4950,17 +4984,52 @@ fn emit_rc_glue(
     TNamed(type_name) ->
       case is_recursive(recursive, type_name) {
         True ->
-          rc_glue_recursive(
-            lits,
-            recursive,
-            custom_types,
-            fields_of,
-            which,
-            type_name,
-            ty_s,
-            name,
-            b,
-          )
+          case which == "drop" {
+            True ->
+              // A singly-linked list (a variant with a self tail) drops
+              // iteratively, so a long list costs constant stack.
+              case
+                list_tail_field(variant_fields_of(custom_types, type_name), type_name)
+              {
+                Some(#(cons, tail)) ->
+                  rc_glue_list(
+                    lits,
+                    recursive,
+                    custom_types,
+                    fields_of,
+                    type_name,
+                    ty_s,
+                    name,
+                    b,
+                    cons,
+                    tail,
+                  )
+                None ->
+                  rc_glue_recursive(
+                    lits,
+                    recursive,
+                    custom_types,
+                    fields_of,
+                    which,
+                    type_name,
+                    ty_s,
+                    name,
+                    b,
+                  )
+              }
+            False ->
+              rc_glue_recursive(
+                lits,
+                recursive,
+                custom_types,
+                fields_of,
+                which,
+                type_name,
+                ty_s,
+                name,
+                b,
+              )
+          }
         False ->
           rc_glue_byvalue(
             lits,
@@ -5143,6 +5212,118 @@ fn rc_glue_recursive(
     }
   }
   let b = emit_line(b, "\ndone:")
+  emit_line(b, "  ret void")
+}
+
+/// Iterative drop for a singly-linked list (`Cons(head, tail=self)`): walk the
+/// spine in a loop, dropping the head and freeing each node, so the native
+/// stack does not grow with the list length.
+fn rc_glue_list(
+  lits: Dict(String, Int),
+  recursive,
+  custom_types,
+  fields_of,
+  type_name,
+  ty_s,
+  name,
+  b,
+  cons: Int,
+  tail: Int,
+) -> Builder {
+  let variants = variant_fields_of(custom_types, type_name)
+  let struct_ty = "%" <> type_name
+  let b = emit_line(b, "define void @" <> name <> "(" <> ty_s <> " %v) {")
+  let b = emit_line(b, "  %sp = alloca " <> ty_s)
+  let b = emit_line(b, "  store " <> ty_s <> " %v, " <> ty_s <> "* %sp")
+  let b = emit_line(b, "  br label %loop")
+  let b = emit_line(b, "\nloop:")
+  let b = emit_line(b, "  %cur = load " <> ty_s <> ", " <> ty_s <> "* %sp")
+  let b = emit_line(b, "  %isnull = icmp eq " <> ty_s <> " %cur, null")
+  let b = emit_line(b, "  br i1 %isnull, label %ldone, label %lnotnull")
+  let b = emit_line(b, "\nlnotnull:")
+  let b = emit_line(b, "  %vp = bitcast " <> ty_s <> " %cur to i8*")
+  let b = emit_line(b, "  %hp = getelementptr i8, i8* %vp, i64 -8")
+  let b = emit_line(b, "  %h = bitcast i8* %hp to i64*")
+  let b = emit_line(b, "  %rc = load i64, i64* %h")
+  let b = emit_line(b, "  %last = icmp eq i64 %rc, 1")
+  let b = emit_line(b, "  br i1 %last, label %lfrees, label %lrel")
+  let b = emit_line(b, "\nlfrees:")
+  let b = emit_line(b, "  %av = load " <> struct_ty <> ", " <> ty_s <> " %cur")
+  let b = emit_line(b, "  %ftag = extractvalue " <> struct_ty <> " %av, 0")
+  let arms =
+    list.index_map(variants, fn(_, index) {
+      " i8 " <> int.to_string(index) <> ", label %vf" <> int.to_string(index)
+    })
+  let b =
+    emit_line(
+      b,
+      "  switch i8 %ftag, label %lrel [" <> string.join(arms, "") <> " ]",
+    )
+  let b =
+    list.fold(
+      list.index_map(variants, fn(variant, index) { #(variant, index) }),
+      b,
+      fn(b, entry) {
+        let #(variant, index) = entry
+        let #(_, fields) = variant
+        let b = emit_line(b, "\nvf" <> int.to_string(index) <> ":")
+        let b =
+          list.fold(
+            list.index_map(fields, fn(inner, i) { #(inner, i) }),
+            b,
+            fn(b, fp) {
+              let #(inner, i) = fp
+              case index == cons && i == tail {
+                // The tail is followed by the loop, not dropped recursively.
+                True -> b
+                False ->
+                  case ownership.needs_drop_in(inner, fields_of, recursive) {
+                    True -> {
+                      let #(fv, b) =
+                        extract_value(struct_ty, "%av", [index + 1, i], b)
+                      rc_expr(
+                        lits,
+                        recursive,
+                        fields_of,
+                        "drop",
+                        inner,
+                        llvm_ty(inner, recursive),
+                        fv,
+                        name,
+                        b,
+                      )
+                    }
+                    False -> b
+                  }
+              }
+            },
+          )
+        let b =
+          emit_line(
+            b,
+            "  call void @Gleamc_rc_release(i8* %vp, "
+              <> cstring_arg(lits, name)
+              <> ")",
+          )
+        case index == cons {
+          True -> {
+            let #(cur, b) =
+              extract_value(struct_ty, "%av", [index + 1, tail], b)
+            let b = emit_line(b, "  store " <> ty_s <> " " <> cur <> ", " <> ty_s <> "* %sp")
+            emit_line(b, "  br label %loop")
+          }
+          False -> emit_line(b, "  br label %ldone")
+        }
+      },
+    )
+  let b = emit_line(b, "\nlrel:")
+  let b =
+    emit_line(
+      b,
+      "  call void @Gleamc_rc_release(i8* %vp, " <> cstring_arg(lits, name) <> ")",
+    )
+  let b = emit_line(b, "  br label %ldone")
+  let b = emit_line(b, "\nldone:")
   emit_line(b, "  ret void")
 }
 
