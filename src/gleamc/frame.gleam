@@ -33,16 +33,10 @@ pub fn machine_functions(module: ir.Module) -> List(String) {
 /// defining frame instead of copying its captures. The frame's allocation is
 /// rendered by the backend (a heap cell); `ownership` schedules its release.
 pub fn materialize(module: ir.Module) -> ir.Module {
-  let ir.Module(functions) = module
-  let machines = plan.machines(module)
-  let functions =
-    list.map(functions, fn(function) {
-      case list.contains(machines, function.name) {
-        True -> materialize_function(function)
-        False -> function
-      }
-    })
-  demote_module(link_closures(ir.Module(functions)))
+  // `link_closures` rewires every capturing closure to its defining frame;
+  // `demote_module` then adds `OpFrameNew` and lowers each frame field of the
+  // machine functions to explicit stores/loads.
+  demote_module(link_closures(module))
 }
 
 /// Keyed by lifted-lambda name: (defining frame type, capture slots).
@@ -156,20 +150,6 @@ fn code_to_name(code: String) -> String {
         False -> code
       }
   }
-}
-
-fn materialize_function(function: ir.Function) -> ir.Function {
-  let ir.Function(name, params, ret, blocks, locals) = function
-  let frame_ty = frame_type_name(name)
-  let blocks = case blocks {
-    [] -> []
-    [ir.Block(label, ops, term), ..rest] ->
-      [
-        ir.Block(label, [ir.OpFrameNew(frame_local, frame_ty), ..ops], term),
-        ..rest
-      ]
-  }
-  ir.Function(name, params, ret, blocks, locals)
 }
 
 /// Demotes the frame fields of every machine function to explicit stores/loads
