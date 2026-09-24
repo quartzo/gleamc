@@ -18,6 +18,7 @@ import gleam/string
 import gleamc/ast.{type Type, TNamed, TString}
 import gleamc/checker
 import gleamc/ffi
+import gleamc/frame
 import gleamc/ir
 import gleamc/ownership
 import gleamc/plan
@@ -37,10 +38,20 @@ type Ctx {
     entry: String,
     params: List(String),
     prefix: String,
-    group: Dict(String, #(String, List(String), String)),
+    /// A rebind target: `#(prefix, params, entry, frame)` where `frame` is
+    /// `Some(#(fr_ty, fr_reg, fields))` for a function whose locals live in a
+    /// heap frame (dispatcher members), or `None` for a plain function whose
+    /// locals are entry allocas (a self tail call).
+    group: Dict(
+      String,
+      #(String, List(String), String, Option(#(String, String, Dict(String, Int)))),
+    ),
     /// Set while emitting a state-machine `step`: locals live in the frame,
     /// not in entry allocas.
     frame: Option(FrameInfo),
+    /// Frame registers of every member of a dispatcher (`#(reg, fr_ty)`), so a
+    /// member can release them all when the dispatcher returns.
+    group_frames: List(#(String, String)),
   )
 }
 
@@ -48,6 +59,9 @@ type Ctx {
 type FrameInfo {
   FrameInfo(
     ty: String,
+    /// SSA register holding the frame pointer (`%__fr` for a state machine,
+    /// `%__frN` for a member of a group dispatcher).
+    reg: String,
     fields: Dict(String, Int),
     state: Int,
     fut: Int,
@@ -84,17 +98,16 @@ pub fn emit(
   let tuples =
     collect_tuple_types(custom_types, functions)
     |> list.sort(fn(a, b) { string.compare(tuple_key(a), tuple_key(b)) })
-  let all_groups = eligible_groups(ir_module, ctors)
+  let planned = plan.plan(ir_module)
+  let machines = plan_machines(planned)
+  let all_groups = eligible_groups(planned, functions, ctors)
+  let member_names =
+    list.flat_map(all_groups, fn(group) { list.map(group, fn(f) { f.name }) })
+  let member_set =
+    list.fold(member_names, dict.new(), fn(acc, n) { dict.insert(acc, n, True) })
   let fn_types =
     collect_fn_types(custom_types, functions)
     |> list.sort(fn(a, b) { string.compare(mangle_type(a), mangle_type(b)) })
-  let env_structs =
-    collect_env_structs(functions)
-    |> list.sort(fn(a, b) {
-      let #(an, _) = a
-      let #(bn, _) = b
-      string.compare(an, bn)
-    })
   // Refcount audit site tags ("fn:local", "alloc:T", glue names) are only
   // meaningful when the runtime is built with -DGLEAMC_RC_AUDIT. Otherwise the
   // site argument degrades to `null` (see `cstring_arg`), so it is not worth
@@ -146,17 +159,15 @@ pub fn emit(
       "\n",
     )
     <> "\n"
-    <> string.join(
-      list.map(env_structs, fn(entry) { env_type_decl(entry, recursive) }),
-      "\n",
-    )
-    <> "\n"
     <> group_type_decls(all_groups, recursive)
     <> "\n"
     <> string.join(
-      list.map(list.filter(functions, has_suspend), fn(f) {
-        frame_type_decl(f, recursive)
-      }),
+      list.map(
+        list.filter(functions, fn(f) {
+          dict.has_key(machines, f.name) || dict.has_key(member_set, f.name)
+        }),
+        fn(f) { frame_type_decl(f, recursive) },
+      ),
       "\n",
     )
 
@@ -171,10 +182,6 @@ pub fn emit(
     )
 
   let group_fns = all_groups
-  let member_names =
-    list.flat_map(group_fns, fn(group) { list.map(group, fn(f) { f.name }) })
-  let member_set =
-    list.fold(member_names, dict.new(), fn(acc, n) { dict.insert(acc, n, True) })
   let group_defs =
     string.join(
       list.flat_map(group_fns, fn(group) {
@@ -199,7 +206,7 @@ pub fn emit(
     }
     <> string.join(
       list.map(normal_fns, fn(function) {
-        case has_suspend(function) {
+        case dict.has_key(machines, function.name) {
           True ->
             emit_machine_function(
               function,
@@ -249,13 +256,6 @@ pub fn emit(
       ),
       "\n\n",
     )
-  let env_drops =
-    string.join(
-      list.map(env_structs, fn(entry) {
-        emit_env_drop(entry, recursive, fields_of, lits)
-      }),
-      "\n\n",
-    )
   let rc_glue =
     string.join(
       list.flat_map(seeds, fn(ty) {
@@ -294,6 +294,18 @@ pub fn emit(
     False -> ""
   }
 
+  // Frame teardowns (the frame owns its kept-alive fields).
+  let frame_fns =
+    list.filter(functions, fn(f) {
+      dict.has_key(machines, f.name) || dict.has_key(member_set, f.name)
+    })
+  let frame_drops =
+    string.join(
+      list.map(frame_fns, fn(f) {
+        emit_frame_drop(f, recursive, fields_of, lits)
+      }),
+      "\n\n",
+    )
   let out =
     string.join(
       [
@@ -306,11 +318,11 @@ pub fn emit(
         "\n\n",
         defs,
         "\n\n",
+        frame_drops,
+        "\n\n",
         wrappers,
         "\n\n",
         eq_glue,
-        "\n\n",
-        env_drops,
         "\n\n",
         rc_glue,
         "\n\n",
@@ -332,6 +344,7 @@ fn header() -> String {
   <> "%GleamcFileResult = type { i64, %GleamcBitArray, i64 }\n\n"
   <> "declare void @Gleamc_set_args(i32, i8**)\n"
   <> "declare i8* @gleamc_alloc(i64)\n"
+  <> "declare i8* @gleamc_alloc0(i64)\n"
   <> "declare i8* @gleamc_alloc_site(i64, i8*)\n"
   <> "declare void @Gleamc_rc_retain(i8*, i8*)\n"
   <> "declare void @Gleamc_rc_release(i8*, i8*)\n"
@@ -660,8 +673,16 @@ fn op_types(op: ir.Op) -> List(Type) {
     ir.OpCopy(_, _, ty) -> [ty]
     ir.OpEnvGet(_, _, _, ty) -> [ty]
     ir.OpCallIndirect(_, _, _, ret_ty) -> [ret_ty]
-    ir.OpRetain(_, ty) -> [ty]
-    ir.OpDrop(_, ty) -> [ty]
+    ir.OpRetain(src, ty) ->
+      case src == frame.frame_local {
+        True -> []
+        False -> [ty]
+      }
+    ir.OpDrop(src, ty) ->
+      case src == frame.frame_local {
+        True -> []
+        False -> [ty]
+      }
     _ -> []
   }
 }
@@ -796,6 +817,7 @@ fn emit_function(
       prefix: "",
       group: dict.new(),
       frame: None,
+      group_frames: [],
     )
   let b = Builder(next: 0, lines: [])
   let b = emit_allocas(ctx, params, locals, b)
@@ -828,19 +850,6 @@ fn emit_function(
 fn function_name(function: ir.Function) -> String {
   let ir.Function(name, _, _, _, _) = function
   name
-}
-
-fn has_suspend(function: ir.Function) -> Bool {
-  let ir.Function(_, _, _, blocks, _) = function
-  list.any(blocks, fn(block) {
-    let ir.Block(_, ops, _) = block
-    list.any(ops, fn(op) {
-      case op {
-        ir.OpSuspend(_, _, _) -> True
-        _ -> False
-      }
-    })
-  })
 }
 
 fn unique_locals(locals: List(ir.Local)) -> List(ir.Local) {
@@ -888,12 +897,133 @@ fn frame_info(function: ir.Function, _recursive) -> FrameInfo {
   }
   FrameInfo(
     "%__frame_" <> safe(name),
+    "%__fr",
     fields,
     state,
     fut,
     result,
     block_index_of(blocks),
   )
+}
+
+/// The same frame layout with a different frame-pointer register (a dispatcher
+/// member uses `%__fr_m<index>`).
+fn with_reg(info: FrameInfo, reg: String) -> FrameInfo {
+  let FrameInfo(ty, _, fields, state, fut, result, block_index) = info
+  FrameInfo(ty, reg, fields, state, fut, result, block_index)
+}
+
+/// Releases the invocation reference of every member frame when a dispatcher
+/// returns. Closures that captured a frame hold their own reference.
+fn emit_group_frame_release(ctx: Ctx, b: Builder) -> Builder {
+  list.fold(ctx.group_frames, b, fn(b, pair) {
+    let #(reg, fr_ty) = pair
+    let #(p, b) = fresh(b)
+    let b =
+      emit_line(b, "  " <> p <> " = bitcast " <> fr_ty <> "* " <> reg <> " to i8*")
+    emit_line(
+      b,
+      "  call void @" <> frame_drop_sym(fr_ty) <> "(i8* " <> p <> ")",
+    )
+  })
+}
+
+/// The teardown of a frame type `%__frame_<fn>`: at refcount 1->0 it drops the
+/// frame-owned fields (the ones `ownership` keeps live), then frees the cell.
+fn frame_drop_sym(fr_ty: String) -> String {
+  string.drop_start(fr_ty, 1) <> "_drop"
+}
+
+fn emit_frame_drop(function, recursive, fields_of, lits) -> String {
+  let ir.Function(name, _, _, _, locals) = function
+  let info = frame_info(function, recursive)
+  let FrameInfo(fr_ty, _, _fields, _, _, _, _) = info
+  let by_name = locals_map(locals)
+  // The frame's owned fields are exactly the values stored into it (the demote
+  // emits an `OpFrameSet` per field).
+  let owned =
+    list.fold(op_list(function), dict.new(), fn(acc, op) {
+      case op {
+        ir.OpFrameSet(_, slot, value) -> {
+          let ty = operand_type(by_name, value)
+          case ownership.needs_drop_in(ty, fields_of, recursive) {
+            True -> dict.insert(acc, slot, ty)
+            False -> acc
+          }
+        }
+        _ -> acc
+      }
+    })
+    |> dict.to_list
+  let done = "fd_" <> safe(name) <> "_done"
+  let body = "fd_" <> safe(name) <> "_body"
+  let teardown = "fd_" <> safe(name) <> "_teardown"
+  let rel = "fd_" <> safe(name) <> "_rel"
+  let b = Builder(next: 0, lines: [])
+  let b = emit_line(b, "define void @" <> frame_drop_sym(fr_ty) <> "(i8* %env) {")
+  let b = emit_line(b, "  %isnull = icmp eq i8* %env, null")
+  let b = emit_line(b, "  br i1 %isnull, label %" <> done <> ", label %" <> body)
+  let b = emit_line(b, "\n" <> body <> ":")
+  let #(hp, b) = fresh(b)
+  let #(hh, b) = fresh(b)
+  let #(rc, b) = fresh(b)
+  let #(last, b) = fresh(b)
+  let b = emit_line(b, "  " <> hp <> " = getelementptr i8, i8* %env, i64 -8")
+  let b = emit_line(b, "  " <> hh <> " = bitcast i8* " <> hp <> " to i64*")
+  let b = emit_line(b, "  " <> rc <> " = load i64, i64* " <> hh)
+  let b = emit_line(b, "  " <> last <> " = icmp eq i64 " <> rc <> ", 1")
+  let b =
+    emit_line(
+      b,
+      "  br i1 " <> last <> ", label %" <> teardown <> ", label %" <> rel,
+    )
+  let b = emit_line(b, "\n" <> teardown <> ":")
+  let #(e, b) = fresh(b)
+  let b = emit_line(b, "  " <> e <> " = bitcast i8* %env to " <> fr_ty <> "*")
+  let b =
+    list.fold(owned, b, fn(b, pair) {
+      let #(slot, ty) = pair
+      let #(gp, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> gp
+            <> " = getelementptr "
+            <> fr_ty
+            <> ", "
+            <> fr_ty
+            <> "* "
+            <> e
+            <> ", i32 0, i32 "
+            <> int.to_string(slot),
+        )
+      let ty_s = llvm_ty(ty, recursive)
+      let #(fv, b) = fresh(b)
+      let b =
+        emit_line(b, "  " <> fv <> " = load " <> ty_s <> ", " <> ty_s <> "* " <> gp)
+      rc_expr(lits, recursive, fields_of, "drop", ty, ty_s, fv, "frame", b)
+    })
+  let b =
+    emit_line(
+      b,
+      "  call void @Gleamc_rc_release(i8* %env, "
+        <> cstring_arg(lits, "frame")
+        <> ")",
+    )
+  let b = emit_line(b, "  br label %" <> done)
+  let b = emit_line(b, "\n" <> rel <> ":")
+  let b =
+    emit_line(
+      b,
+      "  call void @Gleamc_rc_release(i8* %env, "
+        <> cstring_arg(lits, "frame")
+        <> ")",
+    )
+  let b = emit_line(b, "  br label %" <> done)
+  let b = emit_line(b, "\n" <> done <> ":")
+  let b = emit_line(b, "  ret void")
+  string.join(list.reverse(b.lines), "\n") <> "\n}\n"
 }
 
 fn frame_type_decl(function: ir.Function, recursive) -> String {
@@ -927,7 +1057,7 @@ fn emit_machine_function(
 ) -> String {
   let ir.Function(name, params, ret, blocks, locals) = function
   let info = frame_info(function, recursive)
-  let FrameInfo(fr_ty, _fields, state_idx, fut_idx, _result_idx, _block_index) = info
+  let FrameInfo(fr_ty, fr_reg, _fields, state_idx, fut_idx, _result_idx, _block_index) = info
   let wake =
     list.fold(blocks, dict.new(), fn(acc, block) {
       let ir.Block(_, ops, _) = block
@@ -962,13 +1092,14 @@ fn emit_machine_function(
       prefix: "",
       group: dict.new(),
       frame: Some(info),
+      group_frames: [],
     )
   // step
   let b = Builder(next: 0, lines: [])
   let b =
     emit_line(b, "define i1 @Gleamc_" <> name <> "_step(" <> fr_ty <> "* %__fr) {")
   let b = emit_frame_locals(ctx, fr_ty, locals, b)
-  let #(sp, b) = frame_gep(fr_ty, state_idx, b)
+  let #(sp, b) = frame_gep(fr_reg, fr_ty, state_idx, b)
   let #(sv, b) = fresh(b)
   let b = emit_line(b, "  " <> sv <> " = load i32, i32* " <> sp)
   let arms =
@@ -992,7 +1123,7 @@ fn emit_machine_function(
       let ir.Block(label, ops, term) = block
       let b = emit_line(b, "\n" <> block_name(ctx, label) <> ":")
       let b = case dict.get(wake, label) {
-        Ok(dest) -> emit_wake(ctx, fr_ty, fut_idx, dest, b)
+        Ok(dest) -> emit_wake(ctx, fr_reg, fr_ty, fut_idx, dest, b)
         Error(_) -> b
       }
       let #(b, _) = emit_ops(ctx, ops, b)
@@ -1006,8 +1137,15 @@ fn emit_machine_function(
 
 /// Wake code at the head of a resume block: read the completed future's value
 /// into `dest`, then release the future (single owner).
-fn emit_wake(ctx: Ctx, fr_ty: String, fut_idx: Int, dest: String, b: Builder) -> Builder {
-  let #(fut_ptr, b) = frame_gep(fr_ty, fut_idx, b)
+fn emit_wake(
+  ctx: Ctx,
+  fr_reg: String,
+  fr_ty: String,
+  fut_idx: Int,
+  dest: String,
+  b: Builder,
+) -> Builder {
+  let #(fut_ptr, b) = frame_gep(fr_reg, fr_ty, fut_idx, b)
   let #(fv, b) = fresh(b)
   let b = emit_line(b, "  " <> fv <> " = load i8*, i8** " <> fut_ptr)
   let dest_ty = local_type(ctx.by_name, dest)
@@ -1047,7 +1185,7 @@ fn emit_wake(ctx: Ctx, fr_ty: String, fut_idx: Int, dest: String, b: Builder) ->
 
 fn emit_machine_wrapper(function: ir.Function, info: FrameInfo, recursive) -> String {
   let ir.Function(name, params, ret, _, locals) = function
-  let FrameInfo(fr_ty, fields, state_idx, fut_idx, result_idx, _) = info
+  let FrameInfo(fr_ty, _reg, fields, state_idx, fut_idx, result_idx, _) = info
   let by_name = locals_map(locals)
   let ret_ty = llvm_ty(ret, recursive)
   let args =
@@ -1057,7 +1195,21 @@ fn emit_machine_wrapper(function: ir.Function, info: FrameInfo, recursive) -> St
   let b = Builder(next: 0, lines: [])
   let b =
     emit_line(b, "define " <> ret_ty <> " @Gleamc_" <> name <> "(" <> string.join(args, ", ") <> ") {")
-  let b = emit_line(b, "  %__fr = alloca " <> fr_ty)
+  // The frame is a heap, reference-counted cell (the environment). The active
+  // invocation owns one reference; `ownership` schedules its release as the
+  // `OpDrop` in the step. A closure that captures the frame would retain it.
+  let b =
+    emit_line(
+      b,
+      "  %__fr_raw = call i8* @gleamc_alloc0(i64 ptrtoint ("
+        <> fr_ty
+        <> "* getelementptr ("
+        <> fr_ty
+        <> ", "
+        <> fr_ty
+        <> "* null, i32 1) to i64))",
+    )
+  let b = emit_line(b, "  %__fr = bitcast i8* %__fr_raw to " <> fr_ty <> "*")
   let b =
     list.fold(params, b, fn(b, param) {
       let pty = llvm_ty(local_type(by_name, param), recursive)
@@ -1065,17 +1217,17 @@ fn emit_machine_wrapper(function: ir.Function, info: FrameInfo, recursive) -> St
         Ok(found) -> found
         Error(_) -> 0
       }
-      let #(ptr, b) = frame_gep(fr_ty, index, b)
+      let #(ptr, b) = frame_gep("%__fr", fr_ty, index, b)
       emit_line(
         b,
         "  store " <> pty <> " %arg." <> safe(param) <> ", " <> pty <> "* " <> ptr,
       )
     })
-  let #(state_ptr, b) = frame_gep(fr_ty, state_idx, b)
+  let #(state_ptr, b) = frame_gep("%__fr", fr_ty, state_idx, b)
   let b = emit_line(b, "  store i32 0, i32* " <> state_ptr)
-  let #(fut_ptr, b) = frame_gep(fr_ty, fut_idx, b)
+  let #(fut_ptr, b) = frame_gep("%__fr", fr_ty, fut_idx, b)
   let b = emit_line(b, "  store i8* null, i8** " <> fut_ptr)
-  let #(fut_ptr2, b) = frame_gep(fr_ty, fut_idx, b)
+  let #(fut_ptr2, b) = frame_gep("%__fr", fr_ty, fut_idx, b)
   let b = emit_line(b, "  %__frp = bitcast " <> fr_ty <> "* %__fr to i8*")
   let b =
     emit_line(
@@ -1088,10 +1240,13 @@ fn emit_machine_wrapper(function: ir.Function, info: FrameInfo, recursive) -> St
         <> fut_ptr2
         <> ")",
     )
-  let b = case is_nil_type(ret) {
-    True -> emit_line(b, "  ret i32 0")
+  // Read the result out of the frame first, then place the release that
+  // `ownership` scheduled for the frame (the machine boundary is where the
+  // active invocation releases its reference).
+  let #(b, result) = case is_nil_type(ret) {
+    True -> #(b, "")
     False -> {
-      let #(result_ptr, b) = frame_gep(fr_ty, result_idx, b)
+      let #(result_ptr, b) = frame_gep("%__fr", fr_ty, result_idx, b)
       let #(rv, b) = fresh(b)
       let b =
         emit_line(
@@ -1105,8 +1260,17 @@ fn emit_machine_wrapper(function: ir.Function, info: FrameInfo, recursive) -> St
             <> "* "
             <> result_ptr,
         )
-      emit_line(b, "  ret " <> ret_ty <> " " <> rv)
+      #(b, rv)
     }
+  }
+  let b =
+    emit_line(
+      b,
+      "  call void @" <> frame_drop_sym(fr_ty) <> "(i8* %__frp)",
+    )
+  let b = case result {
+    "" -> emit_line(b, "  ret i32 0")
+    _ -> emit_line(b, "  ret " <> ret_ty <> " " <> result)
   }
   string.join(list.reverse(b.lines), "\n") <> "\n}\n"
 }
@@ -1163,29 +1327,167 @@ fn emit_block_list(ctx: Ctx, blocks: List(ir.Block), b: Builder) {
 }
 
 fn emit_rebind(ctx: Ctx, target, args, b: Builder) -> Builder {
-  let #(prefix, params, entry) = target
-  let #(b, vals) = read_typed_args(ctx, args, b)
+  let #(prefix, params, entry, frame) = target
+  let indexed = list.index_map(args, fn(arg, index) { #(arg, index) })
   let b =
-    list.index_fold(vals, b, fn(b, pair, index) {
-      let #(ty, v) = pair
+    list.fold(indexed, b, fn(b, pair) {
+      let #(arg, index) = pair
+      let #(ty, v, b) = read_val(ctx, arg, b)
       case list_at(params, index) {
         Ok(pname) ->
-          emit_line(
-            b,
-            "  store "
-              <> ty
-              <> " "
-              <> v
-              <> ", "
-              <> ty
-              <> "* %l."
-              <> prefix
-              <> safe(pname),
-          )
+          case frame {
+            Some(#(fr_ty, fr_reg, fields)) ->
+              case dict.get(fields, pname) {
+                Ok(slot) -> {
+                  let #(ptr, b) = frame_gep(fr_reg, fr_ty, slot, b)
+                  emit_line(
+                    b,
+                    "  store " <> ty <> " " <> v <> ", " <> ty <> "* " <> ptr,
+                  )
+                }
+                Error(_) -> b
+              }
+            None ->
+              emit_line(
+                b,
+                "  store "
+                  <> ty
+                  <> " "
+                  <> v
+                  <> ", "
+                  <> ty
+                  <> "* %l."
+                  <> prefix
+                  <> safe(pname),
+              )
+          }
         Error(_) -> b
       }
     })
   emit_line(b, "  br label %" <> entry)
+}
+
+/// Rebinds an indirect tail call inside a dispatcher: the closure's code names
+/// a member of the same machine, so control moves there by storing the captured
+/// environment and the arguments into that member's frame and branching to its
+/// entry — constant stack, no `callindirect`.
+fn emit_indirect_rebind(ctx: Ctx, target, env, args, b: Builder) -> Builder {
+  let #(prefix, params, entry, frame) = target
+  let #(b, rest_params) = case params {
+    ["__env", ..rest] ->
+      case frame {
+        Some(#(fr_ty, fr_reg, fields)) ->
+          case dict.get(fields, "__env") {
+            Ok(slot) -> {
+              let #(ptr, b) = frame_gep(fr_reg, fr_ty, slot, b)
+              #(emit_line(b, "  store i8* " <> env <> ", i8** " <> ptr), rest)
+            }
+            Error(_) -> #(b, rest)
+          }
+        None ->
+          #(
+            emit_line(
+              b,
+              "  store i8* " <> env <> ", i8** %l." <> prefix <> safe("__env"),
+            ),
+            rest,
+          )
+      }
+    _ -> #(b, params)
+  }
+  emit_rebind(ctx, #(prefix, rest_params, entry, frame), args, b)
+}
+
+/// Runtime dispatch for an indirect tail call inside a dispatcher: compare the
+/// closure's code pointer against every member and jump to the matching state;
+/// anything else falls back to a normal indirect call.
+fn emit_indirect_switch(
+  ctx: Ctx,
+  code: String,
+  env: String,
+  args,
+  ret_s: String,
+  b: Builder,
+) -> Builder {
+  let members =
+    dict.to_list(ctx.group)
+    |> list.sort(fn(a, b) {
+      let #(an, _) = a
+      let #(bn, _) = b
+      string.compare(an, bn)
+    })
+  // Each member: compare the code, jump to its rebind on a match, else fall
+  // through to the next comparison. The last `next` label is the fallback.
+  let b =
+    list.fold(members, b, fn(b, entry) {
+      let #(name, target) = entry
+      let #(cmp, b) = fresh(b)
+      let #(hit, b) = fresh(b)
+      let #(next, b) = fresh(b)
+      let hit_l = string.replace(hit, "%", "")
+      let next_l = string.replace(next, "%", "")
+      let b =
+        emit_line(
+          b,
+          "  " <> cmp <> " = icmp eq ptr " <> code <> ", @Gleamc_" <> name,
+        )
+      let b =
+        emit_line(
+          b,
+          "  br i1 " <> cmp <> ", label %" <> hit_l <> ", label %" <> next_l,
+        )
+      let b = emit_line(b, "\n" <> hit_l <> ":")
+      let b = emit_indirect_rebind(ctx, target, env, args, b)
+      emit_line(b, "\n" <> next_l <> ":")
+    })
+  emit_indirect_call(ctx, code, env, args, ret_s, b)
+}
+
+/// The fallback when a dispatcher's indirect callee is not a member: a normal
+/// indirect call (machine-aware result/return).
+fn emit_indirect_call(ctx: Ctx, code: String, env: String, args, ret_s: String, b: Builder) -> Builder {
+  let #(b, arg_list) = read_args(ctx, args, b)
+  let callargs = case arg_list {
+    "" -> "i8* " <> env
+    _ -> "i8* " <> env <> ", " <> arg_list
+  }
+  let #(r, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  " <> r <> " = call " <> ret_s <> " " <> code <> "(" <> callargs <> ")",
+    )
+  case dict.is_empty(ctx.group) {
+    // Inside a dispatcher: return the value (releasing the member frames).
+    False -> {
+      let b = emit_group_frame_release(ctx, b)
+      emit_line(b, "  ret " <> ret_s <> " " <> r)
+    }
+    True ->
+      case ctx.frame {
+        Some(FrameInfo(fr_ty, fr_reg, _, _, _, result_idx, _)) ->
+          case is_nil_type(ctx.ret) {
+            True -> emit_line(b, "  ret i1 true")
+            False -> {
+              let #(result_ptr, b) = frame_gep(fr_reg, fr_ty, result_idx, b)
+              let b =
+                emit_line(
+                  b,
+                  "  store "
+                    <> ret_s
+                    <> " "
+                    <> r
+                    <> ", "
+                    <> ret_s
+                    <> "* "
+                    <> result_ptr,
+                )
+              emit_line(b, "  ret i1 true")
+            }
+          }
+        None -> emit_line(b, "  ret " <> ret_s <> " " <> r)
+      }
+  }
 }
 
 fn local_ptr(ctx: Ctx, name: String) -> String {
@@ -1194,7 +1496,12 @@ fn local_ptr(ctx: Ctx, name: String) -> String {
 
 /// Emits a frame field `getelementptr` as an instruction and returns its SSA
 /// name (an inline GEP with a local base is not a valid LLVM operand).
-fn frame_gep(fr_ty: String, index: Int, b: Builder) -> #(String, Builder) {
+fn frame_gep(
+  base: String,
+  fr_ty: String,
+  index: Int,
+  b: Builder,
+) -> #(String, Builder) {
   let #(reg, b) = fresh(b)
   let b =
     emit_line(
@@ -1205,7 +1512,9 @@ fn frame_gep(fr_ty: String, index: Int, b: Builder) -> #(String, Builder) {
         <> fr_ty
         <> ", "
         <> fr_ty
-        <> "* %__fr, i32 0, i32 "
+        <> "* "
+        <> base
+        <> ", i32 0, i32 "
         <> int.to_string(index),
     )
   #(reg, b)
@@ -1217,7 +1526,7 @@ fn emit_frame_locals(ctx: Ctx, fr_ty: String, locals: List(ir.Local), b: Builder
   list.fold(unique_locals(locals), b, fn(b, local) {
     let ir.Local(name, _) = local
     case ctx.frame {
-      Some(FrameInfo(_, fields, _, _, _, _)) ->
+      Some(FrameInfo(_, fr_reg, fields, _, _, _, _)) ->
         case dict.get(fields, name) {
           Ok(index) ->
             emit_line(
@@ -1228,7 +1537,9 @@ fn emit_frame_locals(ctx: Ctx, fr_ty: String, locals: List(ir.Local), b: Builder
                 <> fr_ty
                 <> ", "
                 <> fr_ty
-                <> "* %__fr, i32 0, i32 "
+                <> "* "
+                <> fr_reg
+                <> ", i32 0, i32 "
                 <> int.to_string(index),
             )
           Error(_) -> b
@@ -1449,38 +1760,72 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
       #(b, Nil)
     }
     ir.OpRetain(src, ty) -> {
-      let #(ty_s, v, b) = read_val(ctx, ir.Var(src), b)
-      #(
-        rc_expr(
-          ctx.lits,
-          ctx.recursive,
-          records_ctors(ctx),
-          "retain",
-          ty,
-          ty_s,
-          v,
-          ctx.fn_name <> ":" <> src,
-          b,
-        ),
-        Nil,
-      )
+      case src == frame.frame_local {
+        // The frame handle lives in the machine frame; retaining it for a
+        // capturing closure bumps the frame cell itself.
+        True ->
+          case ctx.frame {
+            Some(FrameInfo(fr_ty, fr_reg, _, _, _, _, _)) -> {
+              let #(p, b) = fresh(b)
+              let b =
+                emit_line(
+                  b,
+                  "  " <> p <> " = bitcast " <> fr_ty <> "* " <> fr_reg <> " to i8*",
+                )
+              #(
+                emit_line(
+                  b,
+                  "  call void @Gleamc_rc_retain(i8* " <> p <> ", i8* null)",
+                ),
+                Nil,
+              )
+            }
+            None -> #(b, Nil)
+          }
+        False -> {
+          let #(ty_s, v, b) = read_val(ctx, ir.Var(src), b)
+          #(
+            rc_expr(
+              ctx.lits,
+              ctx.recursive,
+              records_ctors(ctx),
+              "retain",
+              ty,
+              ty_s,
+              v,
+              ctx.fn_name <> ":" <> src,
+              b,
+            ),
+            Nil,
+          )
+        }
+      }
     }
     ir.OpDrop(src, ty) -> {
-      let #(ty_s, v, b) = read_val(ctx, ir.Var(src), b)
-      #(
-        rc_expr(
-          ctx.lits,
-          ctx.recursive,
-          records_ctors(ctx),
-          "drop",
-          ty,
-          ty_s,
-          v,
-          ctx.fn_name <> ":" <> src,
-          b,
-        ),
-        Nil,
-      )
+      case src == frame.frame_local {
+        // The frame handle is a machine-level value: the backend places its
+        // alloc and release at the call boundary (the wrapper), because the
+        // step returns before the wrapper reads the result. Nothing to emit in
+        // the step.
+        True -> #(b, Nil)
+        False -> {
+          let #(ty_s, v, b) = read_val(ctx, ir.Var(src), b)
+          #(
+            rc_expr(
+              ctx.lits,
+              ctx.recursive,
+              records_ctors(ctx),
+              "drop",
+              ty,
+              ty_s,
+              v,
+              ctx.fn_name <> ":" <> src,
+              b,
+            ),
+            Nil,
+          )
+        }
+      }
     }
     ir.OpTuple(dest, elems, ty) -> {
       let ty_s = llvm_ty(ty, ctx.recursive)
@@ -1585,35 +1930,30 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
       let b = store_local(ctx, dest, llvm_ty(ty, ctx.recursive), tmp, b)
       #(b, Nil)
     }
-    ir.OpClosure(dest, code, captures, env_ty, fn_ty) -> {
+    ir.OpClosure(dest, code, _captures, env_ty, fn_ty) -> {
       let fn_s = llvm_ty(fn_ty, ctx.recursive)
       let cty = code_ty(fn_ty, ctx.recursive)
-      let #(env_reg, b) = case captures {
-        [] -> #("null", b)
-        _ -> {
-          let #(b, fields) = read_typed_args(ctx, captures, b)
-          let #(sz, b) = sizeof_reg(env_ty, b)
-          let #(p, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  "
-                <> p
-                <> " = call i8* @gleamc_alloc_site(i64 "
-                <> sz
-                <> ", "
-                <> cstring_arg(ctx.lits, "alloc:env")
-                <> ")",
-            )
-          let #(ep, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  " <> ep <> " = bitcast i8* " <> p <> " to %" <> env_ty <> "*",
-            )
-          let b = store_env_fields(env_ty, ep, fields, 0, b)
-          #(p, b)
-        }
+      // A closure that captures the defining frame references it directly (the
+      // frame is the environment); no environment cell is allocated, and the
+      // frame's release is a plain rc release, so there is no `env_drop`.
+      let frame_bound = string.starts_with(env_ty, "__frame_")
+      let #(env_reg, env_drop, b) = case frame_bound {
+        True ->
+          case ctx.frame {
+            Some(FrameInfo(fr_ty, fr_reg, _, _, _, _, _)) -> {
+              let #(frp, b) = fresh(b)
+              let b =
+                emit_line(
+                  b,
+                  "  " <> frp <> " = bitcast " <> fr_ty <> "* " <> fr_reg <> " to i8*",
+                )
+              // Dropping the closure runs the frame's teardown.
+              #(frp, "@" <> env_ty <> "_drop", b)
+            }
+            None -> #("null", "null", b)
+          }
+        // No captures: a bare function value with no environment.
+        False -> #("null", "null", b)
       }
       let #(c0, b) = fresh(b)
       let b =
@@ -1654,7 +1994,7 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
             <> " "
             <> c1
             <> ", void (i8*)* "
-            <> env_drop_ptr(env_ty)
+            <> env_drop
             <> ", 2",
         )
       let b = store_local(ctx, dest, fn_s, c2, b)
@@ -1802,9 +2142,9 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
     ir.OpSuspend(_dest, fut, resume) -> {
       case ctx.frame {
         // Inside a machine: hand the future to the scheduler and yield.
-        Some(FrameInfo(fr_ty, _, state_idx, fut_idx, _, block_index)) -> {
+        Some(FrameInfo(fr_ty, fr_reg, _, state_idx, fut_idx, _, block_index)) -> {
           let #(fty, v, b) = read_val(ctx, fut, b)
-          let #(fut_ptr, b) = frame_gep(fr_ty, fut_idx, b)
+          let #(fut_ptr, b) = frame_gep(fr_reg, fr_ty, fut_idx, b)
           let b =
             emit_line(
               b,
@@ -1814,7 +2154,7 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
             Ok(found) -> found
             Error(_) -> 0
           }
-          let #(state_ptr, b) = frame_gep(fr_ty, state_idx, b)
+          let #(state_ptr, b) = frame_gep(fr_reg, fr_ty, state_idx, b)
           let b =
             emit_line(
               b,
@@ -1834,6 +2174,38 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
         }
       }
     }
+    ir.OpFrameNew(_, _) -> #(b, Nil)
+    ir.OpFrameGet(dest, _frame, index, ty) ->
+      case ctx.frame {
+        Some(FrameInfo(fr_ty, fr_reg, _, _, _, _, _)) -> {
+          let ty_s = llvm_ty(ty, ctx.recursive)
+          let #(ptr, b) = frame_gep(fr_reg, fr_ty, index, b)
+          let #(v, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  " <> v <> " = load " <> ty_s <> ", " <> ty_s <> "* " <> ptr,
+            )
+          let b = store_local(ctx, dest, ty_s, v, b)
+          #(b, Nil)
+        }
+        None -> #(b, Nil)
+      }
+    ir.OpFrameSet(_frame, index, value) ->
+      case ctx.frame {
+        Some(FrameInfo(fr_ty, fr_reg, _, _, _, _, _)) -> {
+          let #(ty_s, v, b) = read_val(ctx, value, b)
+          let #(ptr, b) = frame_gep(fr_reg, fr_ty, index, b)
+          #(
+            emit_line(
+              b,
+              "  store " <> ty_s <> " " <> v <> ", " <> ty_s <> "* " <> ptr,
+            ),
+            Nil,
+          )
+        }
+        None -> #(b, Nil)
+      }
   }
 }
 
@@ -1853,84 +2225,101 @@ fn emit_term(ctx: Ctx, term: ir.Terminator, b: Builder) {
       )
     }
     ir.Ret(value) -> {
-      case ctx.frame {
-        Some(FrameInfo(fr_ty, _, _, _, result_idx, _)) ->
-          case is_nil_type(ctx.ret) {
-            True -> emit_line(b, "  ret i1 true")
-            False -> {
-              let ret_ty = llvm_ty(ctx.ret, ctx.recursive)
-              let #(_, v, b) = read_val(ctx, value, b)
-              let #(result_ptr, b) = frame_gep(fr_ty, result_idx, b)
-              let b =
-                emit_line(
-                  b,
-                  "  store "
-                    <> ret_ty
-                    <> " "
-                    <> v
-                    <> ", "
-                    <> ret_ty
-                    <> "* "
-                    <> result_ptr,
-                )
-              emit_line(b, "  ret i1 true")
-            }
-          }
-        None -> {
+      case dict.is_empty(ctx.group) {
+        // A dispatcher member: release the member frames, then return the value.
+        False -> {
           let ret_ty = llvm_ty(ctx.ret, ctx.recursive)
           let #(_, v, b) = read_val(ctx, value, b)
+          let b = emit_group_frame_release(ctx, b)
           emit_line(b, "  ret " <> ret_ty <> " " <> v)
         }
+        True ->
+          case ctx.frame {
+            Some(FrameInfo(fr_ty, fr_reg, _, _, _, result_idx, _)) ->
+              case is_nil_type(ctx.ret) {
+                True -> emit_line(b, "  ret i1 true")
+                False -> {
+                  let ret_ty = llvm_ty(ctx.ret, ctx.recursive)
+                  let #(_, v, b) = read_val(ctx, value, b)
+                  let #(result_ptr, b) = frame_gep(fr_reg, fr_ty, result_idx, b)
+                  let b =
+                    emit_line(
+                      b,
+                      "  store "
+                        <> ret_ty
+                        <> " "
+                        <> v
+                        <> ", "
+                        <> ret_ty
+                        <> "* "
+                        <> result_ptr,
+                    )
+                  emit_line(b, "  ret i1 true")
+                }
+              }
+            None -> {
+              let ret_ty = llvm_ty(ctx.ret, ctx.recursive)
+              let #(_, v, b) = read_val(ctx, value, b)
+              emit_line(b, "  ret " <> ret_ty <> " " <> v)
+            }
+          }
       }
     }
     ir.Tailcall(fun, args) -> {
-      case ctx.frame {
-        // Inside a machine: call the target and finish the step with its
-        // result stored in the frame (the caller resumes the machine).
-        Some(FrameInfo(fr_ty, _, _, _, result_idx, _)) -> {
-          let ret_s = llvm_ty(ctx.ret, ctx.recursive)
-          let #(b, arg_list) = read_args(ctx, args, b)
-          let #(r, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  "
-                <> r
-                <> " = call "
-                <> ret_s
-                <> " @Gleamc_"
-                <> fun
-                <> "("
-                <> arg_list
-                <> ")",
-            )
-          case is_nil_type(ctx.ret) {
-            True -> emit_line(b, "  ret i1 true")
-            False -> {
-              let #(result_ptr, b) = frame_gep(fr_ty, result_idx, b)
+      // A tail call to a dispatcher member (including the current one) is a
+      // rebind, not a call: constant stack.
+      case dict.get(ctx.group, fun) {
+        Ok(target) -> emit_rebind(ctx, target, args, b)
+        Error(_) ->
+          case ctx.frame {
+            // Inside a machine: call the target and finish the step with its
+            // result stored in the frame (the caller resumes the machine).
+            Some(FrameInfo(fr_ty, fr_reg, _fields, _, _, result_idx, _)) -> {
+              let ret_s = llvm_ty(ctx.ret, ctx.recursive)
+              let #(b, arg_list) = read_args(ctx, args, b)
+              let #(r, b) = fresh(b)
               let b =
                 emit_line(
                   b,
-                  "  store "
-                    <> ret_s
-                    <> " "
+                  "  "
                     <> r
-                    <> ", "
+                    <> " = call "
                     <> ret_s
-                    <> "* "
-                    <> result_ptr,
+                    <> " @Gleamc_"
+                    <> fun
+                    <> "("
+                    <> arg_list
+                    <> ")",
                 )
-              emit_line(b, "  ret i1 true")
+              case is_nil_type(ctx.ret) {
+                True -> emit_line(b, "  ret i1 true")
+                False -> {
+                  let #(result_ptr, b) = frame_gep(fr_reg, fr_ty, result_idx, b)
+                  let b =
+                    emit_line(
+                      b,
+                      "  store "
+                        <> ret_s
+                        <> " "
+                        <> r
+                        <> ", "
+                        <> ret_s
+                        <> "* "
+                        <> result_ptr,
+                    )
+                  emit_line(b, "  ret i1 true")
+                }
+              }
             }
-          }
-        }
-        None -> {
-          case dict.get(ctx.group, fun) {
-            Ok(target) -> emit_rebind(ctx, target, args, b)
-            Error(_) ->
+            None ->
               case fun == ctx.fn_name {
                 True ->
-                  emit_rebind(ctx, #(ctx.prefix, ctx.params, ctx.entry), args, b)
+                  emit_rebind(
+                    ctx,
+                    #(ctx.prefix, ctx.params, ctx.entry, None),
+                    args,
+                    b,
+                  )
                 False -> {
                   let ret_s = llvm_ty(ctx.ret, ctx.recursive)
                   let #(b, arg_list) = read_args(ctx, args, b)
@@ -1952,7 +2341,6 @@ fn emit_term(ctx: Ctx, term: ir.Terminator, b: Builder) {
                 }
               }
           }
-        }
       }
     }
     ir.TailcallIndirect(fval, args) -> {
@@ -1961,48 +2349,11 @@ fn emit_term(ctx: Ctx, term: ir.Terminator, b: Builder) {
       let #(_, fv, b) = read_val(ctx, fval, b)
       let #(code, b) = extract_value(fn_s, fv, [0], b)
       let #(env, b) = extract_value(fn_s, fv, [1], b)
-      let #(b, arg_list) = read_args(ctx, args, b)
       let ret_s = llvm_ty(ctx.ret, ctx.recursive)
-      let callargs = case arg_list {
-        "" -> "i8* " <> env
-        _ -> "i8* " <> env <> ", " <> arg_list
-      }
-      let #(r, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  "
-            <> r
-            <> " = call "
-            <> ret_s
-            <> " "
-            <> code
-            <> "("
-            <> callargs
-            <> ")",
-        )
-      case ctx.frame {
-        Some(FrameInfo(fr_ty, _, _, _, result_idx, _)) ->
-          case is_nil_type(ctx.ret) {
-            True -> emit_line(b, "  ret i1 true")
-            False -> {
-              let #(result_ptr, b) = frame_gep(fr_ty, result_idx, b)
-              let b =
-                emit_line(
-                  b,
-                  "  store "
-                    <> ret_s
-                    <> " "
-                    <> r
-                    <> ", "
-                    <> ret_s
-                    <> "* "
-                    <> result_ptr,
-                )
-              emit_line(b, "  ret i1 true")
-            }
-          }
-        None -> emit_line(b, "  ret " <> ret_s <> " " <> r)
+      case dict.is_empty(ctx.group) {
+        // Inside a dispatcher the callee is a member: jump instead of calling.
+        False -> emit_indirect_switch(ctx, code, env, args, ret_s, b)
+        True -> emit_indirect_call(ctx, code, env, args, ret_s, b)
       }
     }
     ir.Unreachable -> emit_line(b, "  unreachable")
@@ -2251,38 +2602,6 @@ fn sizeof_reg(ty_name: String, b: Builder) {
       "  " <> sz <> " = ptrtoint %" <> ty_name <> "* " <> p <> " to i64",
     )
   #(sz, b)
-}
-
-fn store_env_fields(
-  env_ty: String,
-  ep: String,
-  fields,
-  index: Int,
-  b: Builder,
-) -> Builder {
-  case fields {
-    [] -> b
-    [#(ty, v), ..rest] -> {
-      let #(fp, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  "
-            <> fp
-            <> " = getelementptr %"
-            <> env_ty
-            <> ", %"
-            <> env_ty
-            <> "* "
-            <> ep
-            <> ", i32 0, i32 "
-            <> int.to_string(index),
-        )
-      let b =
-        emit_line(b, "  store " <> ty <> " " <> v <> ", " <> ty <> "* " <> fp)
-      store_env_fields(env_ty, ep, rest, index + 1, b)
-    }
-  }
 }
 
 fn list_at(items: List(String), index: Int) -> Result(String, Nil) {
@@ -2547,39 +2866,6 @@ fn fn_type_decl(fn_ty: Type, recursive: Dict(String, Bool)) -> String {
   }
 }
 
-fn env_type_decl(entry, recursive: Dict(String, Bool)) -> String {
-  let #(name, field_types) = entry
-  let fields = list.map(field_types, fn(ty) { llvm_ty(ty, recursive) })
-  "%" <> name <> " = type { " <> string.join(fields, ", ") <> " }"
-}
-
-fn collect_env_structs(
-  functions: List(ir.Function),
-) -> List(#(String, List(Type))) {
-  let entries =
-    list.fold(functions, dict.new(), fn(acc: Dict(String, List(Type)), function) {
-      let by_name = locals_map(local_list(function))
-      list.fold(op_list(function), acc, fn(acc, op) {
-        case op {
-          ir.OpClosure(_, _, captures, env_ty, _) ->
-            case env_ty {
-              "" -> acc
-              _ ->
-                case dict.get(acc, env_ty) {
-                  Ok(_) -> acc
-                  Error(_) ->
-                    dict.insert(acc, env_ty, list.map(captures, fn(cap) {
-                      operand_type(by_name, cap)
-                    }))
-                }
-            }
-          _ -> acc
-        }
-      })
-    })
-  dict.to_list(entries)
-}
-
 fn collect_fn_types(
   custom_types: List(ast.CustomType),
   functions: List(ir.Function),
@@ -2623,11 +2909,6 @@ fn fn_types_in(ty: Type) -> List(Type) {
     ast.TApp(_, args) -> list.flat_map(args, fn_types_in)
     _ -> []
   }
-}
-
-fn local_list(function: ir.Function) -> List(ir.Local) {
-  let ir.Function(_, _, _, _, locals) = function
-  locals
 }
 
 fn op_list(function: ir.Function) -> List(ir.Op) {
@@ -3912,19 +4193,31 @@ fn cmp_named(recursive, custom_types, type_name, ty_s, b) {
 // mutual tail-call groups (single dispatcher, the trampoline)
 // ---------------------------------------------------------------------------
 
+/// The functions the plan marked as state machines.
+fn plan_machines(planned: plan.Plan) -> Dict(String, Bool) {
+  case planned {
+    plan.Plan(_, _, _, _, _, _, machines) ->
+      list.fold(machines, dict.new(), fn(acc, name) {
+        dict.insert(acc, name, True)
+      })
+  }
+}
+
+/// The mutual groups a backend can collapse into a dispatcher, taken from the
+/// plan (planning owns membership; the backend only applies emission
+/// constraints such as matching return types).
 fn eligible_groups(
-  module: ir.Module,
+  planned: plan.Plan,
+  functions: List(ir.Function),
   ctors: Dict(String, checker.CtorInfo),
 ) -> List(List(ir.Function)) {
-  let ir.Module(functions) = module
   let by_name =
     dict.from_list(list.map(functions, fn(function) {
       let ir.Function(name, _, _, _, _) = function
       #(name, function)
     }))
-  let planned = plan.plan(module)
   let groups = case planned {
-    plan.Plan(_, _, groups, _, _, _) -> groups
+    plan.Plan(_, _, groups, _, _, _, _) -> groups
   }
   list.filter_map(groups, fn(group) {
     let plan.Group(members, _) = group
@@ -4050,15 +4343,32 @@ fn emit_group(
     list.index_map(group, fn(function, index) {
       let prefix = "m" <> int.to_string(index) <> "_"
       let ir.Function(name, params, _, blocks, _) = function
-      #(function, index, prefix, entry_name(blocks, prefix), name, params)
+      let info = frame_info(function, recursive)
+      let fr_reg = "%__fr_m" <> int.to_string(index)
+      #(
+        function,
+        index,
+        prefix,
+        entry_name(blocks, prefix),
+        name,
+        params,
+        with_reg(info, fr_reg),
+      )
     })
   let group_map =
     indexed
     |> list.map(fn(entry) {
-      let #(_, _, prefix, entry_label, name, params) = entry
-      #(name, #(prefix, params, entry_label))
+      let #(_, _, prefix, entry_label, name, params, info) = entry
+      let FrameInfo(fr_ty, fr_reg, fields, _, _, _, _) = info
+      #(name, #(prefix, params, entry_label, Some(#(fr_ty, fr_reg, fields))))
     })
     |> dict.from_list
+  let group_frames =
+    list.map(indexed, fn(entry) {
+      let #(_, _, _, _, _, _, info) = entry
+      let FrameInfo(fr_ty, fr_reg, _, _, _, _, _) = info
+      #(fr_reg, fr_ty)
+    })
 
   // dispatcher
   let b = Builder(next: 0, lines: [])
@@ -4067,21 +4377,59 @@ fn emit_group(
       b,
       "define " <> ret_s <> " @" <> disp <> "(i32 %__fn, i8* %__args) {",
     )
+  // Every member's locals live in its own heap frame (the unified machine).
   let b =
     list.fold(indexed, b, fn(b, entry) {
-      let #(function, _, prefix, _, _, _) = entry
-      let ir.Function(_, _, _, _, locals) = function
-      list.fold(locals, b, fn(b, local) {
-        let ir.Local(name, ty) = local
+      let #(_, _, _, _, _, _, info) = entry
+      let FrameInfo(fr_ty, fr_reg, _, _, _, _, _) = info
+      let #(raw, b) = fresh(b)
+      let b =
         emit_line(
           b,
-          "  %l."
-            <> prefix
-            <> safe(name)
-            <> " = alloca "
-            <> llvm_ty(ty, recursive),
+          "  "
+            <> raw
+            <> " = call i8* @gleamc_alloc0(i64 ptrtoint ("
+            <> fr_ty
+            <> "* getelementptr ("
+            <> fr_ty
+            <> ", "
+            <> fr_ty
+            <> "* null, i32 1) to i64))",
         )
-      })
+      emit_line(
+        b,
+        "  " <> fr_reg <> " = bitcast i8* " <> raw <> " to " <> fr_ty <> "*",
+      )
+    })
+  let member_ctxs =
+    list.map(indexed, fn(entry) {
+      let #(function, _, prefix, entry_label, name, params, info) = entry
+      let ir.Function(_, _, member_ret, blocks, locals) = function
+      Ctx(
+        recursive: recursive,
+        by_name: locals_map(locals),
+        lits: lits,
+        blocks: block_names_prefixed(blocks, prefix),
+        ret: member_ret,
+        custom_types: custom_types,
+        custom_by_name: custom_by_name,
+        ctors: ctors,
+        tuples: tuples,
+        fn_name: name,
+        entry: entry_label,
+        params: params,
+        prefix: prefix,
+        group: group_map,
+        frame: Some(info),
+        group_frames: group_frames,
+      )
+    })
+  let b =
+    list.fold(list.zip(indexed, member_ctxs), b, fn(b, pair) {
+      let #(#(function, _, _, _, _, _, info), ctx) = pair
+      let ir.Function(_, _, _, _, locals) = function
+      let FrameInfo(fr_ty, _, _, _, _, _, _) = info
+      emit_frame_locals(ctx, fr_ty, locals, b)
     })
   let switch_arms =
     list.index_map(group, fn(_, index) {
@@ -4102,10 +4450,11 @@ fn emit_group(
   // prologues
   let b =
     list.fold(indexed, b, fn(b, entry) {
-      let #(function, index, prefix, entry_label, _, _) = entry
+      let #(function, index, _, entry_label, _, _, info) = entry
       let ir.Function(_, params, _, _, locals) = function
       let by_name = locals_map(locals)
       let struct_ty = "%__" <> gid <> ".m" <> int.to_string(index)
+      let FrameInfo(fr_ty, fr_reg, fields, _, _, _, _) = info
       let b = emit_line(b, "\n__pro" <> int.to_string(index) <> ":")
       let #(p, b) = fresh(b)
       let b =
@@ -4141,52 +4490,32 @@ fn emit_group(
                 b,
                 "  " <> v <> " = load " <> pty_s <> ", " <> pty_s <> "* " <> gp,
               )
-            emit_line(
-              b,
-              "  store "
-                <> pty_s
-                <> " "
-                <> v
-                <> ", "
-                <> pty_s
-                <> "* %l."
-                <> prefix
-                <> safe(param),
-            )
+            case dict.get(fields, param) {
+              Ok(slot) -> {
+                let #(ptr, b) = frame_gep(fr_reg, fr_ty, slot, b)
+                emit_line(
+                  b,
+                  "  store " <> pty_s <> " " <> v <> ", " <> pty_s <> "* " <> ptr,
+                )
+              }
+              Error(_) -> b
+            }
           },
         )
       emit_line(b, "  br label %" <> entry_label)
     })
   // member bodies
   let b =
-    list.fold(indexed, b, fn(b, entry) {
-      let #(function, _, prefix, entry_label, name, params) = entry
-      let ir.Function(_, _, member_ret, blocks, locals) = function
-      let ctx =
-        Ctx(
-          recursive: recursive,
-          by_name: locals_map(locals),
-          lits: lits,
-          blocks: block_names_prefixed(blocks, prefix),
-          ret: member_ret,
-          custom_types: custom_types,
-          custom_by_name: custom_by_name,
-          ctors: ctors,
-          tuples: tuples,
-          fn_name: name,
-          entry: entry_label,
-          params: params,
-          prefix: prefix,
-          group: group_map,
-          frame: None,
-        )
+    list.fold(list.zip(indexed, member_ctxs), b, fn(b, pair) {
+      let #(#(function, _, _, _, _, _, _), ctx) = pair
+      let ir.Function(_, _, _, blocks, _) = function
       let #(b, _) = emit_block_list(ctx, blocks, b)
       b
     })
   let dispatcher = string.join(list.reverse(b.lines), "\n") <> "\n}\n"
   let wrappers =
     list.map(indexed, fn(entry) {
-      let #(function, index, _, _, _, _) = entry
+      let #(function, index, _, _, _, _, _) = entry
       wrapper_for_group(function, index, gid, ret_s, recursive, disp)
     })
   #(dispatcher, wrappers)
@@ -4326,109 +4655,6 @@ fn collect_rc_sites(functions, custom_types, tuples, ctors) -> List(String) {
     list.append(list.append(from_ops, from_glue), alloc_sites),
     env_sites,
   )
-}
-
-fn env_drop_ptr(env_ty: String) -> String {
-  case env_ty {
-    "" -> "null"
-    _ -> "@" <> env_ty <> "_drop"
-  }
-}
-
-fn emit_env_drop(entry, recursive, fields_of, lits) -> String {
-  let #(env_ty, field_types) = entry
-  let safe_ty = safe(env_ty)
-  let done = "ed_" <> safe_ty <> "_done"
-  let body = "ed_" <> safe_ty <> "_body"
-  let teardown = "ed_" <> safe_ty <> "_teardown"
-  let rel = "ed_" <> safe_ty <> "_rel"
-  let b = Builder(next: 0, lines: [])
-  let b = emit_line(b, "define void @" <> env_ty <> "_drop(i8* %env) {")
-  let b = emit_line(b, "  %isnull = icmp eq i8* %env, null")
-  let b =
-    emit_line(b, "  br i1 %isnull, label %" <> done <> ", label %" <> body)
-  let b = emit_line(b, "\n" <> body <> ":")
-  // The environment is a refcounted cell: only the final reference tears the
-  // captured fields down; earlier drops just release. Mirrors Vesper's
-  // generated `env_release` (teardown on 1->0).
-  let #(hp, b) = fresh(b)
-  let #(hh, b) = fresh(b)
-  let #(rc, b) = fresh(b)
-  let #(last, b) = fresh(b)
-  let b =
-    emit_line(b, "  " <> hp <> " = getelementptr i8, i8* %env, i64 -8")
-  let b = emit_line(b, "  " <> hh <> " = bitcast i8* " <> hp <> " to i64*")
-  let b = emit_line(b, "  " <> rc <> " = load i64, i64* " <> hh)
-  let b = emit_line(b, "  " <> last <> " = icmp eq i64 " <> rc <> ", 1")
-  let b =
-    emit_line(
-      b,
-      "  br i1 "
-        <> last
-        <> ", label %"
-        <> teardown
-        <> ", label %"
-        <> rel,
-    )
-  let b = emit_line(b, "\n" <> teardown <> ":")
-  let #(e, b) = fresh(b)
-  let b = emit_line(b, "  " <> e <> " = bitcast i8* %env to %" <> env_ty <> "*")
-  let b =
-    list.fold(
-      list.index_map(field_types, fn(fty, index) { #(fty, index) }),
-      b,
-      fn(b, pair) {
-        let #(fty, index) = pair
-        case ownership.needs_drop_in(fty, fields_of, recursive) {
-          True -> {
-            let #(gp, b) = fresh(b)
-            let b =
-              emit_line(
-                b,
-                "  "
-                  <> gp
-                  <> " = getelementptr %"
-                  <> env_ty
-                  <> ", %"
-                  <> env_ty
-                  <> "* "
-                  <> e
-                  <> ", i32 0, i32 "
-                  <> int.to_string(index),
-              )
-            let #(fv, b) = fresh(b)
-            let fty_s = llvm_ty(fty, recursive)
-            let b =
-              emit_line(
-                b,
-                "  " <> fv <> " = load " <> fty_s <> ", " <> fty_s <> "* " <> gp,
-              )
-            rc_expr(lits, recursive, fields_of, "drop", fty, fty_s, fv, "env", b)
-          }
-          False -> b
-        }
-      },
-    )
-  let b =
-    emit_line(
-      b,
-      "  call void @Gleamc_rc_release(i8* %env, "
-        <> cstring_arg(lits, "env")
-        <> ")",
-    )
-  let b = emit_line(b, "  br label %" <> done)
-  let b = emit_line(b, "\n" <> rel <> ":")
-  let b =
-    emit_line(
-      b,
-      "  call void @Gleamc_rc_release(i8* %env, "
-        <> cstring_arg(lits, "env")
-        <> ")",
-    )
-  let b = emit_line(b, "  br label %" <> done)
-  let b = emit_line(b, "\n" <> done <> ":")
-  let b = emit_line(b, "  ret void")
-  string.join(list.reverse(b.lines), "\n") <> "\n}\n"
 }
 
 fn rc_runtime(which: String) -> String {

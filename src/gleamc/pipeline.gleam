@@ -12,6 +12,7 @@ import gleamc/checker
 import gleamc/consts
 import gleamc/cps
 import gleamc/dce
+import gleamc/frame
 import gleamc/ir
 import gleamc/llvm
 import gleamc/lower
@@ -77,6 +78,9 @@ fn cascade(modules: List(#(String, Module))) {
     lower.lower_module(checked.module, checked.signatures, checked.ctors),
     lower.describe_error,
   ))
+  // Materialize each machine function's frame as an explicit IR value before
+  // ownership, so ownership can schedule its release (see docs/frame-environment.md).
+  let ir_module = frame.materialize(ir_module)
   let owned = ownership.insert(ir_module, checked.ctors)
   let owned = cps.normalize(owned)
   Ok(#(checked.module, owned, checked.ctors, custom_types_of(checked.module)))

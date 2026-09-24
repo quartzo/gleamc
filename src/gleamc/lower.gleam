@@ -248,6 +248,7 @@ fn lower_tail(b: Builder, expr: Expr) -> Result(Builder, LowerError) {
   case expr {
     ECall(EVar(name), args) ->
       case env_lookup(b.env, name) {
+        // Direct call to a top-level function.
         Error(_) -> {
           use #(operands, b1) <- result.try(lower_args(
             b,
@@ -255,12 +256,28 @@ fn lower_tail(b: Builder, expr: Expr) -> Result(Builder, LowerError) {
           ))
           Ok(end_block(b1, ir.Tailcall(name, operands)))
         }
-        Ok(_) -> lower_tail_ret(b, expr)
+        // Local function value: tail call through it.
+        Ok(_) -> lower_tail_indirect(b, EVar(name), args)
       }
+    // A module function (`int.to_string`, ...) is a builtin, not a value.
+    ECall(EField(EVar(_), _), _) -> lower_tail_ret(b, expr)
+    // Any other callee is a function value: tail call it directly in the IR.
+    ECall(fun, args) -> lower_tail_indirect(b, fun, args)
     EBlock(statements) -> lower_tail_block(b, statements)
     ECase(subject, arms) -> lower_tail_case(b, subject, arms)
     _ -> lower_tail_ret(b, expr)
   }
+}
+
+/// Tail call through a function value: the callee and arguments are evaluated,
+/// then control leaves the function as an `ir.TailcallIndirect`. Creating this
+/// here (where the tail position is known) keeps the tail call a first-class
+/// terminator; it is never a generic `call; ret` that the ownership pass can
+/// perturb.
+fn lower_tail_indirect(b: Builder, fun, args) {
+  use #(fval, b1) <- result.try(lower_expr(b, fun))
+  use #(operands, b2) <- result.try(lower_args(b1, args))
+  Ok(end_block(b2, ir.TailcallIndirect(fval, operands)))
 }
 
 fn lower_tail_ret(b: Builder, expr: Expr) -> Result(Builder, LowerError) {

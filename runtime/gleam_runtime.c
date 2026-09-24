@@ -163,6 +163,14 @@ void* gleamc_alloc(size_t size) {
     return (uint8_t*)h + sizeof(GleamcHdr);
 }
 
+/* Like `gleamc_alloc` but zeroes the payload (used for frames, whose fields
+ * may be released before they are ever assigned). */
+void* gleamc_alloc0(size_t size) {
+    void* p = gleamc_alloc(size);
+    memset(p, 0, size);
+    return p;
+}
+
 void* gleamc_alloc_site(size_t size, const char* site) {
     void* p = gleamc_alloc(size);
 #ifdef GLEAMC_RC_AUDIT

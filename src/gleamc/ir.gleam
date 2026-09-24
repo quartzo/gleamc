@@ -66,6 +66,15 @@ pub type Op {
   /// future's value to `dest`. `resume` is filled in by the `cps` pass, which
   /// also splits the block there.
   OpSuspend(dest: String, fut: Operand, resume: String)
+  /// Defines the function's frame: a composite, reference-counted heap cell
+  /// holding the variables that must survive a jump (captured by a closure or
+  /// live across a suspension). Fields are read/written with `OpFrameGet` and
+  /// `OpFrameSet`.
+  OpFrameNew(dest: String, frame_ty: String)
+  /// Reads field `index` of a frame value into `dest`.
+  OpFrameGet(dest: String, frame: Operand, index: Int, ty: Type)
+  /// Writes `value` into field `index` of a frame value.
+  OpFrameSet(frame: Operand, index: Int, value: Operand)
 }
 
 pub type Terminator {
@@ -126,6 +135,9 @@ pub fn op_dest(op: Op) -> Result(String, Nil) {
     OpRetain(_, _) -> Error(Nil)
     OpDrop(_, _) -> Error(Nil)
     OpSuspend(dest, _, _) -> Ok(dest)
+    OpFrameNew(dest, _) -> Ok(dest)
+    OpFrameGet(dest, _, _, _) -> Ok(dest)
+    OpFrameSet(_, _, _) -> Error(Nil)
   }
 }
 
@@ -150,6 +162,9 @@ pub fn op_reads(op: Op) -> List(Operand) {
     OpRetain(src, _) -> [Var(src)]
     OpDrop(src, _) -> [Var(src)]
     OpSuspend(_, fut, _) -> [fut]
+    OpFrameNew(_, _) -> []
+    OpFrameGet(_, frame, _, _) -> [frame]
+    OpFrameSet(frame, _, value) -> [frame, value]
   }
 }
 
@@ -205,6 +220,8 @@ pub fn op_owning_modes(
     OpBitArray(_, elems, _) -> elems
     OpCopy(_, src, _) -> [src]
     OpClosure(_, _, captures, _, _) -> captures
+    // Storing into a frame field hands the value to the frame.
+    OpFrameSet(_, _, value) -> [value]
     _ -> []
   }
 }
@@ -436,6 +453,24 @@ fn op_text(op: Op) -> String {
       <> dest
       <> " @"
       <> resume
+    OpFrameNew(dest, frame_ty) ->
+      "    " <> dest <> " = framenew " <> frame_ty
+    OpFrameGet(dest, frame, index, ty) ->
+      "    "
+      <> dest
+      <> " = frameget "
+      <> operand_text(frame)
+      <> "."
+      <> int.to_string(index)
+      <> " : "
+      <> describe_type(ty)
+    OpFrameSet(frame, index, value) ->
+      "    frameset "
+      <> operand_text(frame)
+      <> "."
+      <> int.to_string(index)
+      <> " = "
+      <> operand_text(value)
   }
 }
 

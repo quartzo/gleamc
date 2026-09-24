@@ -33,6 +33,9 @@ typedef struct {
 /* Allocates `size` payload bytes; the header refcount starts at 1. */
 void* gleamc_alloc(size_t size);
 
+/* Like `gleamc_alloc`, but zeroes the payload. */
+void* gleamc_alloc0(size_t size);
+
 /* Like `gleamc_alloc` but records a `site` tag for the refcount audit. */
 void* gleamc_alloc_site(size_t size, const char* site);
 

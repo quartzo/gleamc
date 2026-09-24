@@ -8,6 +8,7 @@
 
 import gleam/dict.{type Dict}
 import gleam/list
+import gleam/string
 import gleamc/ast.{
   type Type, TApp, TBool, TFloat, TFun, TInt, TNamed, TNil, TString, TTuple,
   TVar,
@@ -15,24 +16,77 @@ import gleamc/ast.{
 import gleamc/borrow
 import gleamc/checker
 import gleamc/ffi_modes
+import gleamc/frame
 import gleamc/ir
+import gleamc/owned_clone
+import gleamc/plan
 
 pub fn insert(
   module: ir.Module,
   ctors: Dict(String, checker.CtorInfo),
 ) -> ir.Module {
-  let ir.Module(functions) = module
   let modes = borrow.analyze(module)
   // `type_fields`/`recursive_types` are module-wide; compute them once instead
   // of rebuilding them on every `needs_drop` call (once per local per function).
   let fields_of = type_fields(ctors)
   let recursive = recursive_types(ctors)
+  // Tail/indirect call sites use the `Owned` ABI; give those functions an
+  // all-`Owned` clone so ordinary calls keep the natural modes. Only handle
+  // parameters make the distinction observable, so scalar-only functions are
+  // left alone.
+  let is_handle = fn(ty) { needs_drop_in(ty, fields_of, recursive) }
+  let #(module, modes) = owned_clone.apply(module, modes, is_handle)
+  let ir.Module(functions) = module
+  let machines = plan.machines(module)
   let ffi = ffi_modes.table()
   ir.Module(
     list.map(functions, fn(function) {
-      insert_fn(function, fields_of, recursive, modes, ffi)
+      let owned = insert_fn(function, fields_of, recursive, modes, ffi)
+      case list.contains(machines, function.name) {
+        True -> add_frame_lifecycle(owned)
+        False -> owned
+      }
     }),
   )
+}
+
+/// The frame is an ownership-managed value. A closure that captures it takes a
+/// reference (`OpRetain`); the machine releases its own reference at every exit
+/// (`OpDrop`). `OpFrameNew` (rendered by the backend) is the allocation.
+fn add_frame_lifecycle(function: ir.Function) -> ir.Function {
+  let ir.Function(name, params, ret, blocks, locals) = function
+  let ty = TNamed(frame.frame_type_name(name))
+  let blocks =
+    list.map(blocks, fn(block) {
+      let ir.Block(label, ops, term) = block
+      let ops =
+        list.flat_map(ops, fn(op) {
+          case is_frame_capture_op(op) {
+            True -> [ir.OpRetain(frame.frame_local, ty), op]
+            False -> [op]
+          }
+        })
+      let ops = case is_exit(term) {
+        True -> list.append(ops, [ir.OpDrop(frame.frame_local, ty)])
+        False -> ops
+      }
+      ir.Block(label, ops, term)
+    })
+  ir.Function(name, params, ret, blocks, locals)
+}
+
+fn is_frame_capture_op(op: ir.Op) -> Bool {
+  case op {
+    ir.OpClosure(_, _, _, env_ty, _) -> string.starts_with(env_ty, "__frame_")
+    _ -> False
+  }
+}
+
+fn is_exit(term: ir.Terminator) -> Bool {
+  case term {
+    ir.Ret(_) | ir.Tailcall(_, _) | ir.TailcallIndirect(_, _) -> True
+    _ -> False
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -329,7 +383,6 @@ fn insert_blocks(
         successors_live(block.term, succ_map, live_in),
       )
     })
-
   let backward =
     list.fold(blocks, dict.new(), fn(acc, block) {
       let base_live = case dict.get(live_out, block.label) {
@@ -457,6 +510,7 @@ fn add_extract_retains(ops, handles) {
       ir.OpField(dest, _, _, _, ty) -> extract_pair(op, dest, ty, handles)
       ir.OpTupleGet(dest, _, _, ty) -> extract_pair(op, dest, ty, handles)
       ir.OpEnvGet(dest, _, _, ty) -> extract_pair(op, dest, ty, handles)
+      ir.OpFrameGet(dest, _, _, ty) -> extract_pair(op, dest, ty, handles)
       _ -> [op]
     }
   })
@@ -870,7 +924,10 @@ fn transferred_set(term: ir.Terminator, handles, modes, ffi) {
         ir.tailcall_owning_modes(fun, args, modes, ffi),
         handles,
       ))
-    ir.TailcallIndirect(_, args) -> sets_from(handle_names(args, handles))
+    // The target state receives the closure's environment (the frame), not the
+    // function value itself, so the function value is released by its owner.
+    ir.TailcallIndirect(_, args) ->
+      sets_from(handle_names(args, handles))
     _ -> dict.new()
   }
 }

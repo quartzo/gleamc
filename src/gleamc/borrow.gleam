@@ -20,48 +20,14 @@ import gleamc/ir
 pub fn analyze(module: ir.Module) -> Dict(String, List(ffi_modes.ParamMode)) {
   let ir.Module(functions) = module
   let ffi = ffi_modes.table()
-  let optimistic =
+  // Natural modes only: a parameter is `Owned` iff the function's own body
+  // consumes it. The `Owned` ABI needed by tail/indirect call sites is
+  // provided by a separate clone (`owned_clone`), so ordinary calls keep the
+  // cheaper `Borrow` ABI.
+  let initial =
     list.fold(functions, dict.new(), fn(acc, function) {
       let ir.Function(name, params, _, _, _) = function
       dict.insert(acc, name, list.map(params, fn(_) { ffi_modes.Borrow }))
-    })
-  let address_taken = address_taken_names(module)
-  let initial =
-    list.fold(functions, optimistic, fn(acc, function) {
-      let ir.Function(name, params, _, _, _) = function
-      case list.contains(address_taken, name) {
-        True ->
-          dict.insert(acc, name, list.map(params, fn(_) { ffi_modes.Owned }))
-        False -> acc
-      }
-    })
-  // A tail call moves its arguments, so the callee's corresponding parameters
-  // must be `Owned` (the callee releases them at their last use).
-  let targets = tail_targets(functions)
-  let initial =
-    list.fold(functions, initial, fn(acc, function) {
-      let ir.Function(name, params, _, _, _) = function
-      case dict.get(targets, name) {
-        Error(_) -> acc
-        Ok(targets) ->
-          dict.insert(
-            acc,
-            name,
-            list.index_map(params, fn(param, index) {
-              case tail_target_name(targets, param, index) {
-                True -> ffi_modes.Owned
-                False ->
-                  ffi_modes.mode_at(
-                    case dict.get(acc, name) {
-                      Ok(modes) -> modes
-                      Error(_) -> list.map(params, fn(_) { ffi_modes.Borrow })
-                    },
-                    index,
-                  )
-              }
-            }),
-          )
-      }
     })
   let callers = callers_map(functions)
   let by_name =
@@ -133,8 +99,17 @@ fn tail_targets(functions) -> Dict(String, List(String)) {
   })
 }
 
-fn tail_target_name(targets, param, _index) -> Bool {
-  list.contains(targets, param)
+/// Names of functions reachable through the owned ABI: used as a value (its
+/// closure can be called indirectly with unknown modes) or the target of a
+/// direct tail call (whose arguments are transferred). These are the functions
+/// that need an all-`Owned` clone when a parameter could otherwise be `Borrow`.
+pub fn owned_target_names(module: ir.Module) -> List(String) {
+  let ir.Module(functions) = module
+  let taken = address_taken_names(module)
+  let tail = dict.keys(tail_targets(functions))
+  list.append(taken, tail)
+  |> list.fold(dict.new(), fn(acc, name) { dict.insert(acc, name, True) })
+  |> dict.keys
 }
 
 fn iterate(by_name, ffi, callers, state, queue) {

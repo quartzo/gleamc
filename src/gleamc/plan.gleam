@@ -55,6 +55,7 @@ pub type Plan {
     edges: List(Edge),
     states: List(State),
     entries: List(#(String, Int)),
+    machines: List(String),
   )
 }
 
@@ -67,7 +68,11 @@ pub fn plan(module: ir.Module) -> Plan {
   let names =
     list.map(functions, fn(function) { function.name })
     |> list.sort(fn(a, b) { string.compare(a, b) })
-  let edges = list.flat_map(functions, fn(function) { tail_edges(function) })
+  let edges =
+    list.append(
+      list.flat_map(functions, fn(function) { tail_edges(function) }),
+      callback_edges(functions),
+    )
   let groups = mutual_groups(names, edges)
   let #(states, entries) = number_states(functions)
   let frames =
@@ -75,6 +80,10 @@ pub fn plan(module: ir.Module) -> Plan {
       let ir.Function(name, _, _, _, locals) = function
       Frame(name, locals)
     })
+  // Machine membership is a planning decision: a function that can suspend is
+  // emitted as a state machine. The backend consumes this list instead of
+  // re-deriving it from the IR.
+  let machines = machines(module)
   Plan(
     functions: names,
     frames: frames,
@@ -82,7 +91,51 @@ pub fn plan(module: ir.Module) -> Plan {
     edges: edges,
     states: states,
     entries: entries,
+    machines: machines,
   )
+}
+
+/// The functions that must be emitted as state machines (they can suspend),
+/// in deterministic order. This is the single membership rule, shared by the
+/// planner and by any earlier layer that needs it.
+pub fn machines(module: ir.Module) -> List(String) {
+  let ir.Module(functions) = module
+  functions
+  |> list.filter(fn(function) { has_suspend(function) || has_capture(function) })
+  |> list.map(fn(function) { function.name })
+  |> list.sort(fn(a, b) { string.compare(a, b) })
+}
+
+/// A function that creates a closure capturing at least one variable: its frame
+/// can be referenced by that closure, so it needs a heap frame.
+fn has_capture(function: ir.Function) -> Bool {
+  list.any(op_list(function), fn(op) {
+    case op {
+      ir.OpClosure(_, _, captures, _, _) -> !list.is_empty(captures)
+      _ -> False
+    }
+  })
+}
+
+fn op_list(function: ir.Function) -> List(ir.Op) {
+  let ir.Function(_, _, _, blocks, _) = function
+  list.flat_map(blocks, fn(block) {
+    let ir.Block(_, ops, _) = block
+    ops
+  })
+}
+
+fn has_suspend(function: ir.Function) -> Bool {
+  let ir.Function(_, _, _, blocks, _) = function
+  list.any(blocks, fn(block) {
+    let ir.Block(_, ops, _) = block
+    list.any(ops, fn(op) {
+      case op {
+        ir.OpSuspend(_, _, _) -> True
+        _ -> False
+      }
+    })
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +178,114 @@ fn tail_edges(function: ir.Function) -> List(Edge) {
       _ -> Error(Nil)
     }
   })
+}
+
+/// Interprocedural callback edges. When a function `h` tail-calls one of its
+/// function-typed parameters and a call site of `h` passes a closure whose code
+/// is statically known, `h` can transfer control to that code. This links a CPS
+/// combinator such as `result.try` back to the continuation lambda its caller
+/// supplied, closing the tail-call cycle so the mutual dispatcher collapses it
+/// into `br`s.
+fn callback_edges(functions: List(ir.Function)) -> List(Edge) {
+  let callback_indices =
+    list.fold(functions, dict.new(), fn(acc, function) {
+      let ir.Function(name, params, _, blocks, _) = function
+      let indices =
+        params
+        |> list.index_map(fn(param, index) { #(param, index) })
+        |> list.filter_map(fn(pair) {
+          let #(param, index) = pair
+          case called_indirectly(blocks, param) {
+            True -> Ok(index)
+            False -> Error(Nil)
+          }
+        })
+      dict.insert(acc, name, indices)
+    })
+  let sites =
+    list.fold(functions, dict.new(), fn(acc, function) {
+      let ir.Function(_, _, _, blocks, _) = function
+      let closures = closure_codes(blocks)
+      list.fold(blocks, acc, fn(acc2, block) {
+        let ir.Block(_, ops, term) = block
+        let acc3 =
+          list.fold(ops, acc2, fn(a, op) {
+            case op {
+              ir.OpCall(_, callee, args, _) ->
+                record_sites(a, closures, callee, args)
+              _ -> a
+            }
+          })
+        case term {
+          ir.Tailcall(callee, args) -> record_sites(acc3, closures, callee, args)
+          _ -> acc3
+        }
+      })
+    })
+  list.flat_map(dict.to_list(callback_indices), fn(entry) {
+    let #(name, indices) = entry
+    list.filter_map(indices, fn(index) {
+      case dict.get(sites, #(name, index)) {
+        Ok(code) -> Ok(Edge(name, code_to_name(code)))
+        Error(_) -> Error(Nil)
+      }
+    })
+  })
+}
+
+fn record_sites(acc, closures, callee, args) {
+  list.index_fold(args, acc, fn(a, arg, index) {
+    case arg {
+      ir.Var(v) ->
+        case dict.get(closures, v) {
+          Ok(code) -> dict.insert(a, #(callee, index), code)
+          Error(_) -> a
+        }
+      ir.Lit(_) -> a
+    }
+  })
+}
+
+fn called_indirectly(blocks: List(ir.Block), param: String) -> Bool {
+  list.any(blocks, fn(block) {
+    let ir.Block(_, ops, term) = block
+    let in_ops =
+      list.any(ops, fn(op) {
+        case op {
+          ir.OpCallIndirect(_, ir.Var(name), _, _) -> name == param
+          _ -> False
+        }
+      })
+    case term {
+      ir.TailcallIndirect(ir.Var(name), _) -> name == param || in_ops
+      _ -> in_ops
+    }
+  })
+}
+
+fn closure_codes(blocks: List(ir.Block)) -> Dict(String, String) {
+  list.fold(blocks, dict.new(), fn(acc, block) {
+    let ir.Block(_, ops, _) = block
+    list.fold(ops, acc, fn(acc2, op) {
+      case op {
+        ir.OpClosure(dest, code, _, _, _) -> dict.insert(acc2, dest, code)
+        _ -> acc2
+      }
+    })
+  })
+}
+
+/// The IR function a closure code pointer denotes: lambdas carry the
+/// `Gleamc_` prefix, top-level function values the `__gv_` prefix.
+fn code_to_name(code: String) -> String {
+  case string.starts_with(code, "Gleamc_") {
+    True -> string.drop_start(code, 7)
+    False ->
+      case string.starts_with(code, "__gv_") {
+        True -> string.drop_start(code, 5)
+        False -> code
+      }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -244,7 +405,7 @@ fn kind_at(label, offset) -> StateKind {
 // ---------------------------------------------------------------------------
 
 pub fn to_text(plan: Plan) -> String {
-  let Plan(_functions, frames, groups, edges, states, entries) = plan
+  let Plan(_functions, frames, groups, edges, states, entries, machines) = plan
   let header = "plan {\n"
   let frames_text =
     "  frames:\n"
@@ -301,11 +462,18 @@ pub fn to_text(plan: Plan) -> String {
       }),
       "\n",
     )
+  let machines_text =
+    "\n  machines:\n"
+    <> string.join(
+      list.map(machines, fn(name) { "    " <> name }),
+      "\n",
+    )
   header
   <> frames_text
   <> groups_text
   <> edges_text
   <> entries_text
   <> states_text
+  <> machines_text
   <> "\n}\n"
 }
