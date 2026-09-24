@@ -299,6 +299,7 @@ fn header() -> String {
   <> "declare i8* @gleamc_alloc_site(i64, i8*)\n"
   <> "declare void @Gleamc_rc_retain(i8*, i8*)\n"
   <> "declare void @Gleamc_rc_release(i8*, i8*)\n"
+  <> "declare void @Gleamc_uv_await_nil(i8*)\n"
   <> "declare %GleamcString @gleamc_string_lit(i8*, i64)\n"
   <> "declare %GleamcString @Gleamc_show_concat(%GleamcString, %GleamcString)\n"
   <> "declare %GleamcString @Gleamc_int_to_string(i64)\n"
@@ -400,6 +401,8 @@ fn llvm_ty(ty: Type, recursive: Dict(String, Bool)) -> String {
     TNamed("void*") -> "i8*"
     TNamed("BitArray") -> "%GleamcBitArray"
     TNamed("FileResult") -> "%GleamcFileResult"
+    // Internal async handle (`GleamcFuture*`); never visible to Gleam.
+    TNamed("Future") -> "i8*"
     ast.TNil -> "i32"
     ast.TVar(name) -> name
     TNamed("Nil") -> "i32"
@@ -1412,6 +1415,15 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
           store_local(ctx, dest, "%GleamcBitArray", r, b)
         }
       }
+      #(b, Nil)
+    }
+    // Async suspension. The scheduler (`gleamc_sched_run`) owns the loop:
+    // until the machine lowering lands, await the future inline so the
+    // program still runs correctly.
+    ir.OpSuspend(fut, _) -> {
+      let #(_, v, b) = read_val(ctx, fut, b)
+      let b =
+        emit_line(b, "  call void @Gleamc_uv_await_nil(i8* " <> v <> ")")
       #(b, Nil)
     }
   }

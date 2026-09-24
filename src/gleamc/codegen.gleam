@@ -1470,6 +1470,10 @@ fn emit_op(by_name, recursive) {
         <> ");"
       ir.OpRetain(src, ty) -> "    " <> retain_stmt(ty, c_safe(src), recursive)
       ir.OpDrop(src, ty) -> "    " <> drop_stmt(ty, c_safe(src), recursive)
+      // Async suspension belongs to the state-machine backend; the frozen C
+      // oracle awaits inline so the program still runs.
+      ir.OpSuspend(fut, _) ->
+        "    Gleamc_uv_await_nil(" <> operand_c(by_name, fut) <> ");"
     }
   }
 }

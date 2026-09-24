@@ -778,14 +778,30 @@ fn lower_call(b, fun, args) -> Result(#(ir.Operand, Builder), LowerError) {
           Ok(#(ir.Var(dest), emit(b2, ir.OpCall(dest, name, operands, ret_ty))))
         }
       }
-    EField(EVar(module), name) -> {
-      use #(operands, b1) <- result.try(lower_args(b, args))
-      let #(dest, b2) = fresh_local(b1, "call", ret_ty)
-      Ok(#(
-        ir.Var(dest),
-        emit(b2, ir.OpBuiltin(dest, module <> "." <> name, operands, ret_ty)),
-      ))
-    }
+    EField(EVar(module), name) ->
+      case module, name {
+        // Async base: `timer(ms)` starts a `Future(())` (internal handle)
+        // and suspends; the scheduler loop resumes when it completes. The
+        // Gleam-visible value stays `Nil`.
+        "time", "timer" -> {
+          use #(operands, b1) <- result.try(lower_args(b, args))
+          let future_ty = TNamed("Future")
+          let #(fut, b2) = fresh_local(b1, "future", future_ty)
+          let b3 =
+            emit(b2, ir.OpBuiltin(fut, "time.timer", operands, future_ty))
+          let b4 = emit(b3, ir.OpSuspend(ir.Var(fut), ""))
+          let #(unit, b5) = fresh_local(b4, "unit", TNil)
+          Ok(#(ir.Var(unit), emit(b5, ir.OpConst(unit, ir.LUnit))))
+        }
+        _, _ -> {
+          use #(operands, b1) <- result.try(lower_args(b, args))
+          let #(dest, b2) = fresh_local(b1, "call", ret_ty)
+          Ok(#(
+            ir.Var(dest),
+            emit(b2, ir.OpBuiltin(dest, module <> "." <> name, operands, ret_ty)),
+          ))
+        }
+      }
     _ -> {
       use #(fval, b1) <- result.try(lower_expr(b, fun))
       use #(operands, b2) <- result.try(lower_args(b1, args))

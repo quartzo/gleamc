@@ -61,6 +61,10 @@ pub type Op {
   OpRetain(src: String, ty: Type)
   /// -1 on the local at its death.
   OpDrop(src: String, ty: Type)
+  /// Async suspension point: the block yields the pending `fut` to the
+  /// scheduler and resumes at block `resume` once it completes. `resume` is
+  /// filled in by the `cps` pass, which also splits the block there.
+  OpSuspend(fut: Operand, resume: String)
 }
 
 pub type Terminator {
@@ -120,6 +124,7 @@ pub fn op_dest(op: Op) -> Result(String, Nil) {
     OpCallIndirect(dest, _, _, _) -> Ok(dest)
     OpRetain(_, _) -> Error(Nil)
     OpDrop(_, _) -> Error(Nil)
+    OpSuspend(_, _) -> Error(Nil)
   }
 }
 
@@ -143,6 +148,7 @@ pub fn op_reads(op: Op) -> List(Operand) {
     OpCallIndirect(_, fval, args, _) -> [fval, ..args]
     OpRetain(src, _) -> [Var(src)]
     OpDrop(src, _) -> [Var(src)]
+    OpSuspend(fut, _) -> [fut]
   }
 }
 
@@ -422,6 +428,8 @@ fn op_text(op: Op) -> String {
       <> describe_type(ty)
     OpRetain(src, ty) -> "    retain " <> src <> " : " <> describe_type(ty)
     OpDrop(src, ty) -> "    drop " <> src <> " : " <> describe_type(ty)
+    OpSuspend(fut, resume) ->
+      "    suspend " <> operand_text(fut) <> " -> " <> resume
   }
 }
 
