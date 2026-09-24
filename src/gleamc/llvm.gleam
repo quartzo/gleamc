@@ -366,11 +366,35 @@ fn define_name(line: String) -> String {
   }
 }
 
+fn is_terminator(t: String) -> Bool {
+  list.any(
+    ["br ", "ret ", "switch ", "unreachable", "indirectbr ", "resume "],
+    fn(prefix) { string.starts_with(t, prefix) },
+  )
+}
+
+fn depth_leave(k: Int) -> #(List(String), Int) {
+  let a = "%__dla" <> int.to_string(k)
+  let b = "%__dlb" <> int.to_string(k)
+  #(
+    [
+      "  " <> a <> " = load i64, i64* @__gleamc_depth",
+      "  " <> b <> " = sub i64 " <> a <> ", 1",
+      "  store i64 " <> b <> ", i64* @__gleamc_depth",
+    ],
+    k + 1,
+  )
+}
+
 fn instrument_depth(ll: String, limit: Int) -> String {
   let lim_s = int.to_string(limit)
-  let #(body, globals, _n, _k) =
-    list.fold(string.split(ll, "\n"), #([], [], 0, 0), fn(acc, line) {
-      let #(body, globals, n, k) = acc
+  // The entry bump is inserted just before the entry block's terminator, not
+  // right after `define`: a branch at the very top would move the function's
+  // `alloca`s out of the entry block and turn them into dynamic stack
+  // adjustments on every call.
+  let #(body, globals, _n, _k, _entry) =
+    list.fold(string.split(ll, "\n"), #([], [], 0, 0, []), fn(acc, line) {
+      let #(body, globals, n, k, entry) = acc
       let trimmed = string.trim(line)
       case string.starts_with(line, "define ") {
         True -> {
@@ -408,21 +432,32 @@ fn instrument_depth(ll: String, limit: Int) -> String {
             "  unreachable",
             ok <> ":",
           ]
-          #(list.append(body, [line, ..entry]), [glob, ..globals], n + 1, k)
+          #(list.append(body, [line]), [glob, ..globals], n + 1, k, entry)
         }
         False ->
-          case string.starts_with(trimmed, "ret ") {
-            True -> {
-              let a = "%__dla" <> int.to_string(k)
-              let b = "%__dlb" <> int.to_string(k)
-              let leave = [
-                "  " <> a <> " = load i64, i64* @__gleamc_depth",
-                "  " <> b <> " = sub i64 " <> a <> ", 1",
-                "  store i64 " <> b <> ", i64* @__gleamc_depth",
-              ]
-              #(list.append(body, list.append(leave, [line])), globals, n, k + 1)
-            }
-            False -> #(list.append(body, [line]), globals, n, k)
+          case entry {
+            [] ->
+              case string.starts_with(trimmed, "ret ") {
+                True -> {
+                  let #(leave, k) = depth_leave(k)
+                  #(list.append(body, list.append(leave, [line])), globals, n, k, [])
+                }
+                False -> #(list.append(body, [line]), globals, n, k, [])
+              }
+            _ ->
+              case is_terminator(trimmed) {
+                True -> {
+                  let #(entry, k) = case string.starts_with(trimmed, "ret ") {
+                    True -> {
+                      let #(leave, k) = depth_leave(k)
+                      #(list.append(entry, leave), k)
+                    }
+                    False -> #(entry, k)
+                  }
+                  #(list.append(body, list.append(entry, [line])), globals, n, k, [])
+                }
+                False -> #(list.append(body, [line]), globals, n, k, entry)
+              }
           }
       }
     })
