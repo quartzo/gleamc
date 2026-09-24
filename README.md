@@ -23,5 +23,9 @@ gleam run   # Run the project
 gleam test  # Run the tests
 ```
 
-See [docs/known-limitations.md](docs/known-limitations.md) for the current
-status, unsupported features, and how differential testing works.
+Start with [docs/overview.md](docs/overview.md) for what the project is and how
+the compiler is organised, then [docs/memory.md](docs/memory.md) for the
+refcount/ownership model and [docs/machine.md](docs/machine.md) for the
+tail-call and async machine. See
+[docs/known-limitations.md](docs/known-limitations.md) for the current status,
+unsupported features, and how differential testing works.
