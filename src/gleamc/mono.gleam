@@ -334,12 +334,15 @@ fn specialise_fn_inner(state: State, name, type_args) {
 }
 
 fn mono_params(state: State, surface_map, params) {
+  mono_params_acc(state, surface_map, params, [])
+}
+
+fn mono_params_acc(state, surface_map, params, acc) {
   case params {
-    [] -> Ok(#([], state))
+    [] -> Ok(#(list.reverse(acc), state))
     [#(name, ty), ..rest] -> {
       use #(ty2, state) <- result_try(mono_type(state, surface_map, ty))
-      use #(rest2, state) <- result_try(mono_params(state, surface_map, rest))
-      Ok(#([#(name, ty2), ..rest2], state))
+      mono_params_acc(state, surface_map, rest, [#(name, ty2), ..acc])
     }
   }
 }
@@ -407,8 +410,12 @@ fn specialise_type(state: State, name, type_args) {
 }
 
 fn mono_variants(state: State, type_name, type_args, surface_map, variants) {
+  mono_variants_acc(state, type_name, type_args, surface_map, variants, [])
+}
+
+fn mono_variants_acc(state, type_name, type_args, surface_map, variants, acc) {
   case variants {
-    [] -> Ok(#([], state))
+    [] -> Ok(#(list.reverse(acc), state))
     [Variant(ctor, fields), ..rest] -> {
       let ctor_specialized =
         ctor_specialised_name(state, type_name, ctor, type_args)
@@ -417,25 +424,28 @@ fn mono_variants(state: State, type_name, type_args, surface_map, variants) {
         surface_map,
         fields,
       ))
-      use #(rest2, state) <- result_try(mono_variants(
+      mono_variants_acc(
         state,
         type_name,
         type_args,
         surface_map,
         rest,
-      ))
-      Ok(#([Variant(ctor_specialized, fields2), ..rest2], state))
+        [Variant(ctor_specialized, fields2), ..acc],
+      )
     }
   }
 }
 
 fn mono_fields(state: State, surface_map, fields) {
+  mono_fields_acc(state, surface_map, fields, [])
+}
+
+fn mono_fields_acc(state, surface_map, fields, acc) {
   case fields {
-    [] -> Ok(#([], state))
+    [] -> Ok(#(list.reverse(acc), state))
     [#(name, ty), ..rest] -> {
       use #(ty2, state) <- result_try(mono_type(state, surface_map, ty))
-      use #(rest2, state) <- result_try(mono_fields(state, surface_map, rest))
-      Ok(#([#(name, ty2), ..rest2], state))
+      mono_fields_acc(state, surface_map, rest, [#(name, ty2), ..acc])
     }
   }
 }
@@ -478,12 +488,15 @@ fn mono_types(
   surface_map: Dict(String, Type),
   types_list: List(Type),
 ) {
+  mono_types_acc(state, surface_map, types_list, [])
+}
+
+fn mono_types_acc(state, surface_map, types_list, acc) {
   case types_list {
-    [] -> Ok(#([], state))
+    [] -> Ok(#(list.reverse(acc), state))
     [ty, ..rest] -> {
       use #(ty2, state) <- result_try(mono_type(state, surface_map, ty))
-      use #(rest2, state) <- result_try(mono_types(state, surface_map, rest))
-      Ok(#([ty2, ..rest2], state))
+      mono_types_acc(state, surface_map, rest, [ty2, ..acc])
     }
   }
 }
@@ -628,8 +641,12 @@ fn mono_exprs_ex(
   expected_list: List(types.Ty),
   exprs: List(Expr),
 ) {
+  mono_exprs_ex_acc(state, locals, expected_list, exprs, [])
+}
+
+fn mono_exprs_ex_acc(state, locals, expected_list, exprs, acc) {
   case exprs, expected_list {
-    [], _ -> Ok(#([], state))
+    [], _ -> Ok(#(list.reverse(acc), state))
     [expr, ..rest_exprs], [expected, ..rest_expected] -> {
       use #(expr2, state) <- result_try(mono_expr_ex(
         state,
@@ -637,23 +654,17 @@ fn mono_exprs_ex(
         Some(expected),
         expr,
       ))
-      use #(rest2, state) <- result_try(mono_exprs_ex(
+      mono_exprs_ex_acc(
         state,
         locals,
         rest_expected,
         rest_exprs,
-      ))
-      Ok(#([expr2, ..rest2], state))
+        [expr2, ..acc],
+      )
     }
     [expr, ..rest_exprs], [] -> {
       use #(expr2, state) <- result_try(mono_expr(state, locals, expr))
-      use #(rest2, state) <- result_try(mono_exprs_ex(
-        state,
-        locals,
-        [],
-        rest_exprs,
-      ))
-      Ok(#([expr2, ..rest2], state))
+      mono_exprs_ex_acc(state, locals, [], rest_exprs, [expr2, ..acc])
     }
   }
 }
@@ -1096,8 +1107,12 @@ fn free_var_names_opt(opt, bound) -> List(String) {
 }
 
 fn mono_arms_ex(state, locals, subject_ty, result_expected, arms) {
+  mono_arms_ex_acc(state, locals, subject_ty, result_expected, arms, [])
+}
+
+fn mono_arms_ex_acc(state, locals, subject_ty, result_expected, arms, acc) {
   case arms {
-    [] -> Ok(#([], state))
+    [] -> Ok(#(list.reverse(acc), state))
     [Arm(pattern, guard, body), ..rest] -> {
       use #(pattern2, bindings, state) <- result_try(mono_pattern(
         state,
@@ -1113,21 +1128,28 @@ fn mono_arms_ex(state, locals, subject_ty, result_expected, arms) {
         result_expected,
         body,
       ))
-      use #(rest2, state) <- result_try(mono_arms_ex(
+      mono_arms_ex_acc(
         state,
         locals,
         subject_ty,
         result_expected,
         rest,
-      ))
-      Ok(#([Arm(pattern2, guard2, body2), ..rest2], state))
+        [Arm(pattern2, guard2, body2), ..acc],
+      )
     }
   }
 }
 
 fn mono_block_ex(state, locals, expected, statements) {
+  mono_block_ex_acc(state, locals, expected, statements, [])
+}
+
+/// Tail-recursive: each statement is monomorphised in tail position and pushed
+/// onto the accumulator, so a long block runs in constant stack (the last
+/// statement keeps using the block's expected type).
+fn mono_block_ex_acc(state, locals, expected, statements, acc) {
   case statements {
-    [] -> Ok(#(EBlock([]), state))
+    [] -> Ok(#(EBlock(list.reverse(acc)), state))
     [Stmt(expr)] -> {
       use #(expr2, state) <- result_try(mono_expr_ex(
         state,
@@ -1135,17 +1157,11 @@ fn mono_block_ex(state, locals, expected, statements) {
         expected,
         expr,
       ))
-      Ok(#(EBlock([Stmt(expr2)]), state))
+      Ok(#(EBlock(list.reverse([Stmt(expr2), ..acc])), state))
     }
     [Stmt(expr), ..rest] -> {
       use #(expr2, state) <- result_try(mono_expr(state, locals, expr))
-      use #(rest2, state) <- result_try(mono_block_ex(
-        state,
-        locals,
-        expected,
-        rest,
-      ))
-      Ok(#(EBlock([Stmt(expr2), ..block_statements(rest2)]), state))
+      mono_block_ex_acc(state, locals, expected, rest, [Stmt(expr2), ..acc])
     }
     [Let(pattern, value), ..rest] -> {
       let #(declared_ty, state) = type_of(state, locals, value)
@@ -1163,24 +1179,29 @@ fn mono_block_ex(state, locals, expected, statements) {
         value_ty,
       ))
       let locals = merge_dicts(locals, bindings)
-      use #(rest2, state) <- result_try(mono_block_ex(
+      mono_block_ex_acc(
         state,
         locals,
         expected,
         rest,
-      ))
-      Ok(#(EBlock([Let(pattern2, value2), ..block_statements(rest2)]), state))
+        [Let(pattern2, value2), ..acc],
+      )
     }
   }
 }
 
 fn mono_exprs(state: State, locals: Dict(String, Scheme), exprs: List(Expr)) {
+  mono_exprs_acc(state, locals, exprs, [])
+}
+
+/// Tail-recursive (`list.reverse` at the end) so monomorphising a long list of
+/// expressions runs in constant stack.
+fn mono_exprs_acc(state, locals, exprs, acc) {
   case exprs {
-    [] -> Ok(#([], state))
+    [] -> Ok(#(list.reverse(acc), state))
     [expr, ..rest] -> {
       use #(expr2, state) <- result_try(mono_expr(state, locals, expr))
-      use #(rest2, state) <- result_try(mono_exprs(state, locals, rest))
-      Ok(#([expr2, ..rest2], state))
+      mono_exprs_acc(state, locals, rest, [expr2, ..acc])
     }
   }
 }
@@ -1284,7 +1305,7 @@ fn mono_args_expect(
     expected_list,
     args,
   ))
-  mono_args_expect_go(state, locals, expected_list, args)
+  mono_args_expect_go(state, locals, expected_list, args, [])
 }
 
 fn unify_arg_types(state: State, locals, expected_list, args) {
@@ -1307,14 +1328,9 @@ fn unify_arg_types(state: State, locals, expected_list, args) {
   }
 }
 
-fn mono_args_expect_go(
-  state: State,
-  locals: Dict(String, Scheme),
-  expected_list: List(types.Ty),
-  args: List(Expr),
-) {
+fn mono_args_expect_go(state, locals, expected_list, args, acc) {
   case args, expected_list {
-    [], _ -> Ok(#([], state))
+    [], _ -> Ok(#(list.reverse(acc), state))
     [arg, ..rest], [expected, ..rest_expected] -> {
       use #(arg2, state) <- result_try(mono_arg_expect(
         state,
@@ -1322,23 +1338,11 @@ fn mono_args_expect_go(
         expected,
         arg,
       ))
-      use #(rest2, state) <- result_try(mono_args_expect(
-        state,
-        locals,
-        rest_expected,
-        rest,
-      ))
-      Ok(#([arg2, ..rest2], state))
+      mono_args_expect_go(state, locals, rest_expected, rest, [arg2, ..acc])
     }
     [arg, ..rest], [] -> {
       use #(arg2, state) <- result_try(mono_expr(state, locals, arg))
-      use #(rest2, state) <- result_try(mono_args_expect(
-        state,
-        locals,
-        [],
-        rest,
-      ))
-      Ok(#([arg2, ..rest2], state))
+      mono_args_expect_go(state, locals, [], rest, [arg2, ..acc])
     }
   }
 }
@@ -1407,8 +1411,12 @@ fn mono_ctor_ex(state, locals, name, args, expected_opt) {
 /// Lowers constructor arguments left to right, propagating the (resolved)
 /// expected type of each parameter so nested nullary constructors resolve.
 fn mono_ctor_args(state, locals, param_tys, args, subst) {
+  mono_ctor_args_acc(state, locals, param_tys, args, subst, [])
+}
+
+fn mono_ctor_args_acc(state, locals, param_tys, args, subst, acc) {
   case args, param_tys {
-    [], _ -> Ok(#([], state, subst))
+    [], _ -> Ok(#(list.reverse(acc), state, subst))
     [arg, ..rest_args], [param_ty, ..rest_params] -> {
       let expected = types.zonk(param_ty, subst)
       use #(arg2, state) <- result_try(mono_arg_expect(
@@ -1424,25 +1432,18 @@ fn mono_ctor_args(state, locals, param_tys, args, subst) {
         state.subst,
       ))
       let state = State(..state, subst: subst)
-      use #(rest2, state, subst) <- result_try(mono_ctor_args(
+      mono_ctor_args_acc(
         state,
         locals,
         rest_params,
         rest_args,
         subst,
-      ))
-      Ok(#([arg2, ..rest2], state, subst))
+        [arg2, ..acc],
+      )
     }
     [arg, ..rest_args], [] -> {
       use #(arg2, state) <- result_try(mono_expr(state, locals, arg))
-      use #(rest2, state, subst) <- result_try(mono_ctor_args(
-        state,
-        locals,
-        [],
-        rest_args,
-        subst,
-      ))
-      Ok(#([arg2, ..rest2], state, subst))
+      mono_ctor_args_acc(state, locals, [], rest_args, subst, [arg2, ..acc])
     }
   }
 }
@@ -1598,8 +1599,12 @@ fn mono_case(state: State, locals: Dict(String, Scheme), subject, arms) {
 }
 
 fn mono_arms(state: State, locals: Dict(String, Scheme), subject_ty, arms) {
+  mono_arms_acc(state, locals, subject_ty, arms, [])
+}
+
+fn mono_arms_acc(state, locals, subject_ty, arms, acc) {
   case arms {
-    [] -> Ok(#([], state))
+    [] -> Ok(#(list.reverse(acc), state))
     [Arm(pattern, guard, body), ..rest] -> {
       use #(pattern2, bindings, state) <- result_try(mono_pattern(
         state,
@@ -1610,13 +1615,13 @@ fn mono_arms(state: State, locals: Dict(String, Scheme), subject_ty, arms) {
       let arm_locals = merge_dicts(locals, bindings)
       use #(guard2, state) <- result_try(mono_guard(state, arm_locals, guard))
       use #(body2, state) <- result_try(mono_expr(state, arm_locals, body))
-      use #(rest2, state) <- result_try(mono_arms(
+      mono_arms_acc(
         state,
         locals,
         subject_ty,
         rest,
-      ))
-      Ok(#([Arm(pattern2, guard2, body2), ..rest2], state))
+        [Arm(pattern2, guard2, body2), ..acc],
+      )
     }
   }
 }
@@ -1728,8 +1733,12 @@ fn mono_patterns(
   patterns: List(Pattern),
   tys: List(types.Ty),
 ) {
+  mono_patterns_acc(state, locals, patterns, tys, [], dict.new())
+}
+
+fn mono_patterns_acc(state, locals, patterns, tys, acc, bindings_acc) {
   case patterns, tys {
-    [], _ -> Ok(#([], dict.new(), state))
+    [], _ -> Ok(#(list.reverse(acc), bindings_acc, state))
     [pattern, ..rest_patterns], [ty, ..rest_tys] -> {
       use #(pattern2, bindings1, state) <- result_try(mono_pattern(
         state,
@@ -1737,13 +1746,14 @@ fn mono_patterns(
         pattern,
         ty,
       ))
-      use #(rest2, bindings2, state) <- result_try(mono_patterns(
+      mono_patterns_acc(
         state,
         locals,
         rest_patterns,
         rest_tys,
-      ))
-      Ok(#([pattern2, ..rest2], merge_dicts(bindings1, bindings2), state))
+        [pattern2, ..acc],
+        merge_dicts(bindings_acc, bindings1),
+      )
     }
     [pattern, ..rest_patterns], [] -> {
       use #(pattern2, bindings1, state) <- result_try(mono_pattern(
@@ -1752,10 +1762,14 @@ fn mono_patterns(
         pattern,
         Con("?", []),
       ))
-      use #(rest2, bindings2, state) <- result_try(
-        mono_patterns(state, locals, rest_patterns, []),
+      mono_patterns_acc(
+        state,
+        locals,
+        rest_patterns,
+        [],
+        [pattern2, ..acc],
+        merge_dicts(bindings_acc, bindings1),
       )
-      Ok(#([pattern2, ..rest2], merge_dicts(bindings1, bindings2), state))
     }
   }
 }
