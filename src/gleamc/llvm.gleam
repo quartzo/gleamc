@@ -1217,7 +1217,7 @@ fn emit_frame_locals(ctx: Ctx, fr_ty: String, locals: List(ir.Local), b: Builder
   list.fold(unique_locals(locals), b, fn(b, local) {
     let ir.Local(name, _) = local
     case ctx.frame {
-      Some(FrameInfo(_, fields, ..)) ->
+      Some(FrameInfo(_, fields, _, _, _, _)) ->
         case dict.get(fields, name) {
           Ok(index) ->
             emit_line(

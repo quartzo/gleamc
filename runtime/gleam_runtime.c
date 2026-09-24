@@ -888,7 +888,9 @@ bool gleamc_sched_run(bool (*step)(void* frame), void* frame,
         if (step(frame)) return true;
         GleamcFuture* fut = *fut_slot;
         while (fut != NULL && !fut->done) {
-            if (fut->deadline > 0) {
+            /* Only scheduler-deadline futures sleep; libuv-armed ones are
+             * woken by their callback. */
+            if (!fut->uv_armed && fut->deadline > 0) {
                 int64_t now = (int64_t)gleamc_now_ms();
                 if (fut->deadline > now)
                     gleamc_sleep_ms(fut->deadline - now);

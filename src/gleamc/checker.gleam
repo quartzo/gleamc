@@ -1471,6 +1471,96 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         TBool,
         "bit_array.is_utf8",
       )
+    "host", "run" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TNamed("BitArray"),
+        "host.run",
+      )
+    "host", "char_code_at" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TInt],
+        TInt,
+        "host.char_code_at",
+      )
+    "host", "char_byte_len" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TInt],
+        TInt,
+        "host.char_byte_len",
+      )
+    "host", "byte_slice" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TInt, TInt],
+        TString,
+        "host.byte_slice",
+      )
+    "host", "argv" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [],
+        TNamed("BitArray"),
+        "host.argv",
+      )
+    "host", "get_env" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TString,
+        "host.get_env",
+      )
+    "host", "which" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TString,
+        "host.which",
+      )
+    "host", "blob_slice" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("BitArray"), TInt],
+        TNamed("BitArray"),
+        "host.blob_slice",
+      )
+    "host", "int64_at" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("BitArray"), TInt],
+        TInt,
+        "host.int64_at",
+      )
     _, _ ->
       Error(CheckError(
         "unknown module function `" <> module <> "." <> name <> "`",
