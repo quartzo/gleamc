@@ -1025,7 +1025,9 @@ fn infer_call_dispatch(env, st: St, fun_ty, args, ctx) {
       use st <- result_try(unify_st(fun_ty, Fun(arg_tys, ret), st))
       Ok(#(ret, st))
     }
-    _ -> infer_call_with(env, st, fun_ty, args, ctx)
+    // Use the resolved type: a function bound by a pattern (e.g. a tuple
+    // element) is still a variable that only the substitution resolves.
+    resolved -> infer_call_with(env, st, resolved, args, ctx)
   }
 }
 

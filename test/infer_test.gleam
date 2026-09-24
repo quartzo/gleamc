@@ -48,6 +48,15 @@ pub fn generic_tuple_polymorphism_test() {
   let assert Error(_) = check(source)
 }
 
+/// A function bound by a tuple pattern is still a variable until the
+/// substitution resolves it; calling it must use the resolved type, or the
+/// arity check sees a bare variable and fails.
+pub fn tuple_destructured_function_call_test() {
+  let source =
+    "fn adder(n: Int) -> fn(Int) -> Int {\n  fn(x) { x + n }\n}\n\nfn run(p: #(fn(Int) -> Int, Int)) -> Int {\n  let #(f, _) = p\n  f(1)\n}\n\npub fn main() {\n  io.println(int.to_string(run(#(adder(1), 0))))\n}\n"
+  let assert Ok(_) = check(source)
+}
+
 pub fn generic_first_inferred_test() {
   let source =
     "fn first(pair: #(a, b)) -> a {\n  case pair {\n    #(x, _) -> x\n  }\n}\n\npub fn main() {\n  io.println(int.to_string(first(#(1, \"a\"))))\n}\n"
