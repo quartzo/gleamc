@@ -807,6 +807,68 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
       check_builtin(env, signatures, ctors, args, [TInt], TNil, "time.timer")
     "time", "timer_count" ->
       check_builtin(env, signatures, ctors, args, [TInt], TInt, "time.timer_count")
+    // Async I/O surface (Vesper `std::uv`): the host returns a `Future<T>`
+    // which the caller sees unwrapped (implicit await).
+    "uv", "fs_open" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString, TInt, TInt],
+        TNamed("Handle"),
+        "uv.fs_open",
+      )
+    "uv", "fs_fstat" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("Handle")],
+        TInt,
+        "uv.fs_fstat",
+      )
+    "uv", "fs_read" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("Handle"), TInt],
+        TNamed("BitArray"),
+        "uv.fs_read",
+      )
+    "uv", "fs_close" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("Handle")],
+        TNil,
+        "uv.fs_close",
+      )
+    "uv", "fs_write" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("Handle"), TNamed("BitArray")],
+        TNil,
+        "uv.fs_write",
+      )
+    "uv", "fs_unlink" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TString],
+        TNil,
+        "uv.fs_unlink",
+      )
     "int", "to_string" ->
       check_builtin(
         env,

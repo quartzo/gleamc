@@ -778,22 +778,23 @@ fn lower_call(b, fun, args) -> Result(#(ir.Operand, Builder), LowerError) {
           Ok(#(ir.Var(dest), emit(b2, ir.OpCall(dest, name, operands, ret_ty))))
         }
       }
-    EField(EVar(module), name) ->
-      case module, name {
-        // Async base: `timer(ms)` starts a `Future(())` (internal handle)
-        // and suspends; the scheduler loop resumes when it completes. The
-        // Gleam-visible value stays `Nil`.
-        "time", "timer" -> lower_suspend(b, args, "time.timer", TNil)
-        "time", "timer_count" -> lower_suspend(b, args, "time.timer_count", TInt)
-        _, _ -> {
+    EField(EVar(module), name) -> {
+      let builtin = module <> "." <> name
+      case is_suspending(builtin) {
+        // Async host call: starts an internal `Future` and suspends; the
+        // scheduler loop resumes when it completes, binding the awaited value
+        // (the Gleam-visible result).
+        True -> lower_suspend(b, args, builtin, ret_ty)
+        False -> {
           use #(operands, b1) <- result.try(lower_args(b, args))
           let #(dest, b2) = fresh_local(b1, "call", ret_ty)
           Ok(#(
             ir.Var(dest),
-            emit(b2, ir.OpBuiltin(dest, module <> "." <> name, operands, ret_ty)),
+            emit(b2, ir.OpBuiltin(dest, builtin, operands, ret_ty)),
           ))
         }
       }
+    }
     _ -> {
       use #(fval, b1) <- result.try(lower_expr(b, fun))
       use #(operands, b2) <- result.try(lower_args(b1, args))
@@ -806,7 +807,25 @@ fn lower_call(b, fun, args) -> Result(#(ir.Operand, Builder), LowerError) {
   }
 }
 
-/// Suspending host call (`time.timer`, `time.timer_count`): starts the future
+/// Async host builtins whose `Future` return is awaited implicitly: the call
+/// starts the future and suspends, and the caller sees the unwrapped value.
+fn is_suspending(builtin: String) -> Bool {
+  list.contains(
+    [
+      "time.timer",
+      "time.timer_count",
+      "uv.fs_open",
+      "uv.fs_fstat",
+      "uv.fs_read",
+      "uv.fs_close",
+      "uv.fs_write",
+      "uv.fs_unlink",
+    ],
+    builtin,
+  )
+}
+
+/// Suspending host call (`time.timer`, `uv.fs_read`, ...): starts the future
 /// (internal handle) and suspends, binding the awaited value to a fresh local.
 /// The Gleam-visible result is that local (unwrapped from the future).
 fn lower_suspend(b, args, builtin, dest_ty) {

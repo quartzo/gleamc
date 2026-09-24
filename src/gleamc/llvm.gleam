@@ -337,6 +337,7 @@ fn header() -> String {
   <> "declare void @Gleamc_rc_release(i8*, i8*)\n"
   <> "declare void @Gleamc_uv_await_nil(i8*)\n"
   <> "declare i64 @Gleamc_uv_value_int(i8*)\n"
+  <> "declare %GleamcBitArray @Gleamc_uv_await_bytes(i8*)\n"
   <> "declare i1 @gleamc_sched_run(i1 (i8*)*, i8*, i8**)\n"
   <> "declare %GleamcString @gleamc_string_lit(i8*, i64)\n"
   <> "declare %GleamcString @Gleamc_show_concat(%GleamcString, %GleamcString)\n"
@@ -441,6 +442,8 @@ fn llvm_ty(ty: Type, recursive: Dict(String, Bool)) -> String {
     TNamed("FileResult") -> "%GleamcFileResult"
     // Internal async handle (`GleamcFuture*`); never visible to Gleam.
     TNamed("Future") -> "i8*"
+    // Async I/O handle (a file descriptor); opaque scalar.
+    TNamed("Handle") -> "i64"
     ast.TNil -> "i32"
     ast.TVar(name) -> name
     TNamed("Nil") -> "i32"
@@ -1009,15 +1012,31 @@ fn emit_wake(ctx: Ctx, fr_ty: String, fut_idx: Int, dest: String, b: Builder) ->
   let dest_ty = local_type(ctx.by_name, dest)
   let b = case is_nil_type(dest_ty) {
     True -> b
-    False -> {
-      let #(val, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  " <> val <> " = call i64 @Gleamc_uv_value_int(i8* " <> fv <> ")",
-        )
-      store_local(ctx, dest, "i64", val, b)
-    }
+    False ->
+      case dest_ty {
+        TNamed("BitArray") -> {
+          let #(val, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> val
+                <> " = call %GleamcBitArray @Gleamc_uv_await_bytes(i8* "
+                <> fv
+                <> ")",
+            )
+          store_local(ctx, dest, "%GleamcBitArray", val, b)
+        }
+        _ -> {
+          let #(val, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  " <> val <> " = call i64 @Gleamc_uv_value_int(i8* " <> fv <> ")",
+            )
+          store_local(ctx, dest, "i64", val, b)
+        }
+      }
   }
   emit_line(
     b,

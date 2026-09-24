@@ -53,6 +53,12 @@ pub fn table() -> Dict(String, FfiSig) {
   // internal; the builtin itself has no user-visible result.
   |> dict.insert("time.timer", FfiSig([Borrow], OwnedResult))
   |> dict.insert("time.timer_count", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("uv.fs_open", FfiSig([Borrow, Borrow, Borrow], OwnedResult))
+  |> dict.insert("uv.fs_fstat", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("uv.fs_read", FfiSig([Borrow, Borrow], OwnedResult))
+  |> dict.insert("uv.fs_close", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("uv.fs_write", FfiSig([Borrow, Borrow], OwnedResult))
+  |> dict.insert("uv.fs_unlink", FfiSig([Borrow], OwnedResult))
   |> dict.insert("int.to_string", FfiSig([Borrow], OwnedResult))
   |> dict.insert("float.to_string", FfiSig([Borrow], OwnedResult))
   |> dict.insert("bool.to_string", FfiSig([Borrow], OwnedResult))

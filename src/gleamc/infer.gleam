@@ -677,6 +677,21 @@ fn builtins() -> Dict(String, Scheme) {
   |> dict.insert("io.print", Scheme(none, Fun([s], n)))
   |> dict.insert("time.timer", Scheme(none, Fun([i], n)))
   |> dict.insert("time.timer_count", Scheme(none, Fun([i], i)))
+  |> dict.insert(
+    "uv.fs_open",
+    Scheme(none, Fun([s, i, i], Con("Handle", []))),
+  )
+  |> dict.insert("uv.fs_fstat", Scheme(none, Fun([Con("Handle", [])], i)))
+  |> dict.insert(
+    "uv.fs_read",
+    Scheme(none, Fun([Con("Handle", []), i], Con("BitArray", []))),
+  )
+  |> dict.insert("uv.fs_close", Scheme(none, Fun([Con("Handle", [])], n)))
+  |> dict.insert(
+    "uv.fs_write",
+    Scheme(none, Fun([Con("Handle", []), Con("BitArray", [])], n)),
+  )
+  |> dict.insert("uv.fs_unlink", Scheme(none, Fun([s], n)))
   |> dict.insert("int.to_string", Scheme(none, Fun([i], s)))
   |> dict.insert("float.to_string", Scheme(none, Fun([f], s)))
   |> dict.insert("bool.to_string", Scheme(none, Fun([b], s)))
