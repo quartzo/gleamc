@@ -1,10 +1,12 @@
 //// Expands `const name = value` by inlining the value at each use and
-//// removing the declarations. Consts are module-local and may reference
-//// other consts (resolved recursively).
+//// removing the declarations. Consts may reference other consts of the same
+//// module (by bare name) or of another module (qualified, `module.name`),
+//// resolved recursively.
 
 import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import gleamc/ast.{
   type Expr, type Module, Arm, DConst, DFunction, EBinop, EBitArray, EBlock,
   EBool, ECall, ECase, EClosure, ECtor, EEnvGet, EField, EFloat, EInt, ELabelled,
@@ -15,16 +17,31 @@ import gleamc/ast.{
 pub fn expand_modules(
   modules: List(#(String, Module)),
 ) -> List(#(String, Module)) {
+  // Every module's consts, keyed by the alias used to reference them from
+  // another module (`module.name`, the module's last path segment).
+  let globals =
+    list.fold(modules, dict.new(), fn(acc, pair) {
+      let #(module_name, Module(definitions)) = pair
+      let alias = last_segment(module_name)
+      list.fold(definitions, acc, fn(acc, def) {
+        case def {
+          DConst(name, value) -> dict.insert(acc, alias <> "." <> name, value)
+          _ -> acc
+        }
+      })
+    })
   list.map(modules, fn(pair) {
     let #(name, module) = pair
-    #(name, expand_module(module))
+    #(name, expand_module(module, globals))
   })
 }
 
-fn expand_module(module: Module) -> Module {
+fn expand_module(module: Module, globals) -> Module {
   let Module(definitions) = module
+  // The module's own consts shadow nothing: bare names never collide with the
+  // qualified (`module.name`) global keys.
   let table =
-    list.fold(definitions, dict.new(), fn(acc, def) {
+    list.fold(definitions, globals, fn(acc, def) {
       case def {
         DConst(name, value) -> dict.insert(acc, name, value)
         _ -> acc
@@ -38,6 +55,13 @@ fn expand_module(module: Module) -> Module {
       }
     })
   Module(list.map(definitions, fn(def) { resolve_definition(def, table) }))
+}
+
+fn last_segment(name: String) -> String {
+  case list.reverse(string.split(name, "/")) {
+    [last, ..] -> last
+    [] -> name
+  }
 }
 
 fn resolve_definition(def, table) {
@@ -68,6 +92,18 @@ fn resolve(expr: Expr, table, stack: List(String)) -> Expr {
             False -> resolve(value, table, [name, ..stack])
           }
       }
+    // A qualified reference to another module's const (`frame.frame_local`).
+    EField(EVar(module), name) -> {
+      let qualified = module <> "." <> name
+      case dict.get(table, qualified) {
+        Ok(value) ->
+          case list.contains(stack, qualified) {
+            True -> expr
+            False -> resolve(value, table, [qualified, ..stack])
+          }
+        Error(_) -> EField(EVar(module), name)
+      }
+    }
     EField(obj, name) -> EField(resolve(obj, table, stack), name)
     ECtor(name, args) -> ECtor(name, resolve_all(args, table, stack))
     ECall(fun, args) ->

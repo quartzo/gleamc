@@ -391,15 +391,22 @@ pub fn frame_field_names(function: ir.Function) -> List(String) {
 // local liveness (backward, per block over the IR CFG)
 // ---------------------------------------------------------------------------
 
+fn live_set() -> Dict(String, Bool) {
+  dict.new()
+}
+
 fn live_out_map(blocks: List(ir.Block)) -> Dict(String, Dict(String, Bool)) {
   let initial = list.fold(blocks, dict.new(), fn(acc, block) {
     let ir.Block(label, _, _) = block
-    dict.insert(acc, label, dict.new())
+    dict.insert(acc, label, live_set())
   })
   fixpoint(blocks, initial)
 }
 
-fn fixpoint(blocks, live_out) {
+fn fixpoint(
+  blocks: List(ir.Block),
+  live_out: Dict(String, Dict(String, Bool)),
+) -> Dict(String, Dict(String, Bool)) {
   let #(next, changed) =
     list.fold(blocks, #(dict.new(), False), fn(acc, block) {
       let #(result, changed) = acc

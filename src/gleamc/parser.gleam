@@ -1160,6 +1160,14 @@ fn parse_list_literal(tokens) {
   }
 }
 
+/// A trailing comma is allowed after a list spread (`[a, ..rest, ]`).
+fn skip_optional_comma(tokens) {
+  case peek(tokens) {
+    Symbol(",") -> drop_token(tokens)
+    _ -> tokens
+  }
+}
+
 fn list_lit_elems(tokens, acc) {
   case peek(tokens) {
     Symbol("]") ->
@@ -1169,6 +1177,7 @@ fn list_lit_elems(tokens, acc) {
       ))
     Symbol("..") -> {
       use #(tail, rest2) <- and_then(parse_expr(drop_token(tokens)))
+      let rest2 = skip_optional_comma(rest2)
       use rest3 <- and_then(expect_symbol(rest2, "]"))
       Ok(#(build_list_expr(list.reverse(acc), tail), rest3))
     }
@@ -1214,6 +1223,7 @@ fn list_pat_elems(tokens, acc) {
           Ok(#(build_list_pat(list.reverse(acc), PWildcard), drop_token(after)))
         _ -> {
           use #(tail, rest2) <- and_then(parse_pattern(after))
+          let rest2 = skip_optional_comma(rest2)
           use rest3 <- and_then(expect_symbol(rest2, "]"))
           Ok(#(build_list_pat(list.reverse(acc), tail), rest3))
         }
