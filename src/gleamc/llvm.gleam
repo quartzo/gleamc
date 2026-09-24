@@ -13,6 +13,7 @@ import gleam/dict.{type Dict}
 import gleam/float
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import gleamc/ast.{type Type, TNamed, TString}
 import gleamc/checker
@@ -37,6 +38,21 @@ type Ctx {
     params: List(String),
     prefix: String,
     group: Dict(String, #(String, List(String), String)),
+    /// Set while emitting a state-machine `step`: locals live in the frame,
+    /// not in entry allocas.
+    frame: Option(FrameInfo),
+  )
+}
+
+/// Frame layout of one state machine: locals + `state` + `fut` (+ `result`).
+type FrameInfo {
+  FrameInfo(
+    ty: String,
+    fields: Dict(String, Int),
+    state: Int,
+    fut: Int,
+    result: Int,
+    block_index: Dict(String, Int),
   )
 }
 
@@ -136,6 +152,13 @@ pub fn emit(
     )
     <> "\n"
     <> group_type_decls(all_groups, recursive)
+    <> "\n"
+    <> string.join(
+      list.map(list.filter(functions, has_suspend), fn(f) {
+        frame_type_decl(f, recursive)
+      }),
+      "\n",
+    )
 
   let builtins =
     string.join(
@@ -176,7 +199,20 @@ pub fn emit(
     }
     <> string.join(
       list.map(normal_fns, fn(function) {
-        emit_function(function, recursive, lits, custom_types, custom_by_name, ctors, tuples)
+        case has_suspend(function) {
+          True ->
+            emit_machine_function(
+              function,
+              recursive,
+              lits,
+              custom_types,
+              custom_by_name,
+              ctors,
+              tuples,
+            )
+          False ->
+            emit_function(function, recursive, lits, custom_types, custom_by_name, ctors, tuples)
+        }
       }),
       "\n\n",
     )
@@ -300,6 +336,7 @@ fn header() -> String {
   <> "declare void @Gleamc_rc_retain(i8*, i8*)\n"
   <> "declare void @Gleamc_rc_release(i8*, i8*)\n"
   <> "declare void @Gleamc_uv_await_nil(i8*)\n"
+  <> "declare i1 @gleamc_sched_run(i1 (i8*)*, i8*, i8**)\n"
   <> "declare %GleamcString @gleamc_string_lit(i8*, i64)\n"
   <> "declare %GleamcString @Gleamc_show_concat(%GleamcString, %GleamcString)\n"
   <> "declare %GleamcString @Gleamc_int_to_string(i64)\n"
@@ -753,6 +790,7 @@ fn emit_function(
       params: params,
       prefix: "",
       group: dict.new(),
+      frame: None,
     )
   let b = Builder(next: 0, lines: [])
   let b = emit_allocas(ctx, params, locals, b)
@@ -776,6 +814,231 @@ fn emit_function(
   <> ") {\n"
   <> string.join(lines, "\n")
   <> "\n}\n"
+}
+
+// ---------------------------------------------------------------------------
+// state machine (Vesper `machine.py`): frame struct + step + sched_run wrapper
+// ---------------------------------------------------------------------------
+
+fn function_name(function: ir.Function) -> String {
+  let ir.Function(name, _, _, _, _) = function
+  name
+}
+
+fn has_suspend(function: ir.Function) -> Bool {
+  let ir.Function(_, _, _, blocks, _) = function
+  list.any(blocks, fn(block) {
+    let ir.Block(_, ops, _) = block
+    list.any(ops, fn(op) {
+      case op {
+        ir.OpSuspend(_, _) -> True
+        _ -> False
+      }
+    })
+  })
+}
+
+fn unique_locals(locals: List(ir.Local)) -> List(ir.Local) {
+  let #(_, rev) =
+    list.fold(locals, #(dict.new(), []), fn(acc, local) {
+      let #(seen, rev) = acc
+      let ir.Local(name, _) = local
+      case dict.get(seen, name) {
+        Ok(_) -> acc
+        Error(_) -> #(dict.insert(seen, name, True), [local, ..rev])
+      }
+    })
+  list.reverse(rev)
+}
+
+fn is_nil_type(ty: Type) -> Bool {
+  case ty {
+    ast.TNil -> True
+    TNamed("Nil") -> True
+    _ -> False
+  }
+}
+
+fn block_index_of(blocks: List(ir.Block)) -> Dict(String, Int) {
+  list.index_map(blocks, fn(block, index) {
+    let ir.Block(label, _, _) = block
+    #(label, index)
+  })
+  |> dict.from_list
+}
+
+fn frame_info(function: ir.Function, _recursive) -> FrameInfo {
+  let ir.Function(name, _, ret, blocks, locals) = function
+  let uniq = unique_locals(locals)
+  let fields =
+    dict.from_list(list.index_map(uniq, fn(local, index) {
+      let ir.Local(n, _) = local
+      #(n, index)
+    }))
+  let state = list.length(uniq)
+  let fut = state + 1
+  let result = case is_nil_type(ret) {
+    True -> fut
+    False -> fut + 1
+  }
+  FrameInfo(
+    "%__frame_" <> safe(name),
+    fields,
+    state,
+    fut,
+    result,
+    block_index_of(blocks),
+  )
+}
+
+fn frame_type_decl(function: ir.Function, recursive) -> String {
+  let ir.Function(_, _, ret, _, locals) = function
+  let field_tys =
+    list.map(unique_locals(locals), fn(local) {
+      let ir.Local(_, ty) = local
+      llvm_ty(ty, recursive)
+    })
+  let tail = case is_nil_type(ret) {
+    True -> ["i32", "i8*"]
+    False -> ["i32", "i8*", llvm_ty(ret, recursive)]
+  }
+  "%__frame_"
+  <> safe(function_name(function))
+  <> " = type { "
+  <> string.join(list.append(field_tys, tail), ", ")
+  <> " }"
+}
+
+/// Emits the `step` (switch on state) and the wrapper that drives it through
+/// `gleamc_sched_run`. Locals live in the frame, so they survive a suspension.
+fn emit_machine_function(
+  function: ir.Function,
+  recursive,
+  lits,
+  custom_types,
+  custom_by_name,
+  ctors,
+  tuples,
+) -> String {
+  let ir.Function(name, params, ret, blocks, locals) = function
+  let info = frame_info(function, recursive)
+  let FrameInfo(fr_ty, _fields, state_idx, _fut_idx, _result_idx, _block_index) = info
+  let ctx =
+    Ctx(
+      recursive: recursive,
+      by_name: locals_map(locals),
+      lits: lits,
+      blocks: block_names(blocks),
+      ret: ret,
+      custom_types: custom_types,
+      custom_by_name: custom_by_name,
+      ctors: ctors,
+      tuples: tuples,
+      fn_name: name,
+      entry: case blocks {
+        [ir.Block(label, _, _), ..] -> block_name_of(blocks, label)
+        [] -> "bb0"
+      },
+      params: params,
+      prefix: "",
+      group: dict.new(),
+      frame: Some(info),
+    )
+  // step
+  let b = Builder(next: 0, lines: [])
+  let b =
+    emit_line(b, "define i1 @Gleamc_" <> name <> "_step(" <> fr_ty <> "* %__fr) {")
+  let b = emit_frame_locals(ctx, fr_ty, locals, b)
+  let #(sp, b) = frame_gep(fr_ty, state_idx, b)
+  let #(sv, b) = fresh(b)
+  let b = emit_line(b, "  " <> sv <> " = load i32, i32* " <> sp)
+  let arms =
+    list.index_map(blocks, fn(block, index) {
+      let ir.Block(label, _, _) = block
+      " i32 " <> int.to_string(index) <> ", label %" <> block_name(ctx, label)
+    })
+  let b =
+    emit_line(
+      b,
+      "  switch i32 "
+        <> sv
+        <> ", label %__bad [ "
+        <> string.join(arms, " ")
+        <> " ]",
+    )
+  let b = emit_line(b, "\n__bad:")
+  let b = emit_line(b, "  unreachable")
+  let #(b, _) = emit_block_list(ctx, blocks, b)
+  let step = string.join(list.reverse(b.lines), "\n") <> "\n}\n"
+  // wrapper with the original signature
+  let wrapper = emit_machine_wrapper(function, info, recursive)
+  step <> "\n" <> wrapper
+}
+
+fn emit_machine_wrapper(function: ir.Function, info: FrameInfo, recursive) -> String {
+  let ir.Function(name, params, ret, _, locals) = function
+  let FrameInfo(fr_ty, fields, state_idx, fut_idx, result_idx, _) = info
+  let by_name = locals_map(locals)
+  let ret_ty = llvm_ty(ret, recursive)
+  let args =
+    list.map(params, fn(param) {
+      llvm_ty(local_type(by_name, param), recursive) <> " %arg." <> safe(param)
+    })
+  let b = Builder(next: 0, lines: [])
+  let b =
+    emit_line(b, "define " <> ret_ty <> " @Gleamc_" <> name <> "(" <> string.join(args, ", ") <> ") {")
+  let b = emit_line(b, "  %__fr = alloca " <> fr_ty)
+  let b =
+    list.fold(params, b, fn(b, param) {
+      let pty = llvm_ty(local_type(by_name, param), recursive)
+      let index = case dict.get(fields, param) {
+        Ok(found) -> found
+        Error(_) -> 0
+      }
+      let #(ptr, b) = frame_gep(fr_ty, index, b)
+      emit_line(
+        b,
+        "  store " <> pty <> " %arg." <> safe(param) <> ", " <> pty <> "* " <> ptr,
+      )
+    })
+  let #(state_ptr, b) = frame_gep(fr_ty, state_idx, b)
+  let b = emit_line(b, "  store i32 0, i32* " <> state_ptr)
+  let #(fut_ptr, b) = frame_gep(fr_ty, fut_idx, b)
+  let b = emit_line(b, "  store i8* null, i8** " <> fut_ptr)
+  let #(fut_ptr2, b) = frame_gep(fr_ty, fut_idx, b)
+  let b = emit_line(b, "  %__frp = bitcast " <> fr_ty <> "* %__fr to i8*")
+  let b =
+    emit_line(
+      b,
+      "  %__did = call i1 @gleamc_sched_run(i1 (i8*)* bitcast (i1 ("
+        <> fr_ty
+        <> "*)* @Gleamc_"
+        <> name
+        <> "_step to i1 (i8*)*), i8* %__frp, i8** "
+        <> fut_ptr2
+        <> ")",
+    )
+  let b = case is_nil_type(ret) {
+    True -> emit_line(b, "  ret i32 0")
+    False -> {
+      let #(result_ptr, b) = frame_gep(fr_ty, result_idx, b)
+      let #(rv, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> rv
+            <> " = load "
+            <> ret_ty
+            <> ", "
+            <> ret_ty
+            <> "* "
+            <> result_ptr,
+        )
+      emit_line(b, "  ret " <> ret_ty <> " " <> rv)
+    }
+  }
+  string.join(list.reverse(b.lines), "\n") <> "\n}\n"
 }
 
 fn block_names(blocks: List(ir.Block)) -> Dict(String, String) {
@@ -857,6 +1120,52 @@ fn emit_rebind(ctx: Ctx, target, args, b: Builder) -> Builder {
 
 fn local_ptr(ctx: Ctx, name: String) -> String {
   "%l." <> ctx.prefix <> safe(name)
+}
+
+/// Emits a frame field `getelementptr` as an instruction and returns its SSA
+/// name (an inline GEP with a local base is not a valid LLVM operand).
+fn frame_gep(fr_ty: String, index: Int, b: Builder) -> #(String, Builder) {
+  let #(reg, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  "
+        <> reg
+        <> " = getelementptr inbounds "
+        <> fr_ty
+        <> ", "
+        <> fr_ty
+        <> "* %__fr, i32 0, i32 "
+        <> int.to_string(index),
+    )
+  #(reg, b)
+}
+
+/// In a machine `step`, locals are frame fields: pre-emit `%l.<name>` as a GEP
+/// so every existing `local_ptr(ctx, name)` keeps working unchanged.
+fn emit_frame_locals(ctx: Ctx, fr_ty: String, locals: List(ir.Local), b: Builder) {
+  list.fold(unique_locals(locals), b, fn(b, local) {
+    let ir.Local(name, _) = local
+    case ctx.frame {
+      Some(FrameInfo(_, fields, ..)) ->
+        case dict.get(fields, name) {
+          Ok(index) ->
+            emit_line(
+              b,
+              "  "
+                <> local_ptr(ctx, name)
+                <> " = getelementptr inbounds "
+                <> fr_ty
+                <> ", "
+                <> fr_ty
+                <> "* %__fr, i32 0, i32 "
+                <> int.to_string(index),
+            )
+          Error(_) -> b
+        }
+      None -> b
+    }
+  })
 }
 
 fn block_name_of(blocks: List(ir.Block), label: String) -> String {
@@ -1420,11 +1729,40 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
     // Async suspension. The scheduler (`gleamc_sched_run`) owns the loop:
     // until the machine lowering lands, await the future inline so the
     // program still runs correctly.
-    ir.OpSuspend(fut, _) -> {
-      let #(_, v, b) = read_val(ctx, fut, b)
-      let b =
-        emit_line(b, "  call void @Gleamc_uv_await_nil(i8* " <> v <> ")")
-      #(b, Nil)
+    ir.OpSuspend(fut, resume) -> {
+      case ctx.frame {
+        // Inside a machine: hand the future to the scheduler and yield.
+        Some(FrameInfo(fr_ty, _, state_idx, fut_idx, _, block_index)) -> {
+          let #(fty, v, b) = read_val(ctx, fut, b)
+          let #(fut_ptr, b) = frame_gep(fr_ty, fut_idx, b)
+          let b =
+            emit_line(
+              b,
+              "  store " <> fty <> " " <> v <> ", " <> fty <> "* " <> fut_ptr,
+            )
+          let resume_idx = case dict.get(block_index, resume) {
+            Ok(found) -> found
+            Error(_) -> 0
+          }
+          let #(state_ptr, b) = frame_gep(fr_ty, state_idx, b)
+          let b =
+            emit_line(
+              b,
+              "  store i32 "
+                <> int.to_string(resume_idx)
+                <> ", i32* "
+                <> state_ptr,
+            )
+          let b = emit_line(b, "  ret i1 false")
+          #(b, Nil)
+        }
+        None -> {
+          let #(_, v, b) = read_val(ctx, fut, b)
+          let b =
+            emit_line(b, "  call void @Gleamc_uv_await_nil(i8* " <> v <> ")")
+          #(b, Nil)
+        }
+      }
     }
   }
 }
@@ -1445,9 +1783,35 @@ fn emit_term(ctx: Ctx, term: ir.Terminator, b: Builder) {
       )
     }
     ir.Ret(value) -> {
-      let ret_ty = llvm_ty(ctx.ret, ctx.recursive)
-      let #(_, v, b) = read_val(ctx, value, b)
-      emit_line(b, "  ret " <> ret_ty <> " " <> v)
+      case ctx.frame {
+        Some(FrameInfo(fr_ty, _, _, _, result_idx, _)) ->
+          case is_nil_type(ctx.ret) {
+            True -> emit_line(b, "  ret i1 true")
+            False -> {
+              let ret_ty = llvm_ty(ctx.ret, ctx.recursive)
+              let #(_, v, b) = read_val(ctx, value, b)
+              let #(result_ptr, b) = frame_gep(fr_ty, result_idx, b)
+              let b =
+                emit_line(
+                  b,
+                  "  store "
+                    <> ret_ty
+                    <> " "
+                    <> v
+                    <> ", "
+                    <> ret_ty
+                    <> "* "
+                    <> result_ptr,
+                )
+              emit_line(b, "  ret i1 true")
+            }
+          }
+        None -> {
+          let ret_ty = llvm_ty(ctx.ret, ctx.recursive)
+          let #(_, v, b) = read_val(ctx, value, b)
+          emit_line(b, "  ret " <> ret_ty <> " " <> v)
+        }
+      }
     }
     ir.Tailcall(fun, args) -> {
       case dict.get(ctx.group, fun) {
@@ -3679,6 +4043,7 @@ fn emit_group(
           params: params,
           prefix: prefix,
           group: group_map,
+          frame: None,
         )
       let #(b, _) = emit_block_list(ctx, blocks, b)
       b
