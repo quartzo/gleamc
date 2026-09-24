@@ -124,6 +124,33 @@ void Gleamc_rc_release(void* p, const char* site) {
 
 static size_t _gleamc_live = 0;
 
+/* Call-depth probe (compiled in only when the backend is asked to instrument
+ * with GLEAMC_CALL_DEPTH). Each generated function calls `enter` on entry and
+ * `leave` before returning, so the counter is the number of active native
+ * calls. When it reaches the limit the function that went deepest is printed
+ * and the process aborts, turning a stack overflow into a name. */
+static long _gleamc_depth = 0;
+static long _gleamc_depth_max = -1;
+
+void gleamc_depth_enter(const char* fn) {
+    if (_gleamc_depth_max < 0) {
+        const char* env = getenv("GLEAMC_CALL_DEPTH");
+        _gleamc_depth_max = env != NULL ? atol(env) : 100;
+        if (_gleamc_depth_max <= 0) _gleamc_depth_max = 100;
+    }
+    _gleamc_depth++;
+    if (_gleamc_depth >= _gleamc_depth_max) {
+        fprintf(stderr, "gleamc: call depth %ld reached in %s\n",
+                _gleamc_depth, fn != NULL ? fn : "?");
+        fflush(stderr);
+        abort();
+    }
+}
+
+void gleamc_depth_leave(void) {
+    if (_gleamc_depth > 0) _gleamc_depth--;
+}
+
 static void _gleamc_report_leaks(void) {
     const char* flag = getenv("GLEAMC_MEM_REPORT");
     if (flag != NULL) {

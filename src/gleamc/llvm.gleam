@@ -334,7 +334,72 @@ pub fn emit(
       ],
       "",
     )
-  out
+  // Optional call-depth instrumentation (debug aid): every generated function
+  // announces its entry and every return pops the counter, so a runaway
+  // non-tail recursion aborts naming the function that went deepest.
+  case ffi.get_env("GLEAMC_CALL_DEPTH") {
+    Ok(_) -> instrument_depth(out)
+    Error(_) -> out
+  }
+}
+
+fn define_name(line: String) -> String {
+  case string.split(line, "@") {
+    [_, rest, ..] ->
+      case string.split(rest, "(") {
+        [name, ..] -> name
+        [] -> ""
+      }
+    _ -> ""
+  }
+}
+
+fn instrument_depth(ll: String) -> String {
+  let lines = string.split(ll, "\n")
+  let #(body, globals, _) =
+    list.fold(lines, #([], [], 0), fn(acc, line) {
+      let #(body, globals, index) = acc
+      let trimmed = string.trim(line)
+      case string.starts_with(line, "define ") {
+        True -> {
+          let name = define_name(line)
+          let len = string.byte_size(name) + 1
+          let len_s = int.to_string(len)
+          let g = "@__depthfn_" <> int.to_string(index)
+          let glob =
+            g
+            <> " = private unnamed_addr constant ["
+            <> len_s
+            <> " x i8] c\""
+            <> name
+            <> "\\00\""
+          let enter =
+            "  call void @gleamc_depth_enter(i8* getelementptr inbounds (["
+            <> len_s
+            <> " x i8], ["
+            <> len_s
+            <> " x i8]* "
+            <> g
+            <> ", i32 0, i32 0))"
+          #(list.append(body, [line, enter]), [glob, ..globals], index + 1)
+        }
+        False ->
+          case string.starts_with(trimmed, "ret ") {
+            True ->
+              #(
+                list.append(body, ["  call void @gleamc_depth_leave()", line]),
+                globals,
+                index,
+              )
+            False -> #(list.append(body, [line]), globals, index)
+          }
+      }
+    })
+  string.join(body, "\n")
+  <> "\ndeclare void @gleamc_depth_enter(i8*)\n"
+  <> "declare void @gleamc_depth_leave()\n"
+  <> string.join(list.reverse(globals), "\n")
+  <> "\n"
 }
 
 fn header() -> String {
