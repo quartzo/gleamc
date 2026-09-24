@@ -80,3 +80,37 @@ pub fn leak_get_files_frame_test() {
   assert string.contains(output, "a.txt")
   assert string.contains(output, "live blocks = 0")
 }
+
+/// Regression: `list.map2` over lists of unequal length extracts the tails only
+/// on the branch that consumes them; at the critical-edge join the ownership
+/// drops used to land in the unreachable block, leaking both empty tails.
+const map2_source = "import gleam/io
+import gleam/list
+
+pub fn main() {
+  io.debug(list.map2([1, 2, 3], [10, 20], fn(a, b) { a + b }))
+}
+"
+
+pub fn leak_map2_partial_ownership_test() {
+  let _ = ffi.run("mkdir -p " <> dir)
+  let assert Ok(_) = ffi.write_file(dir <> "/map2.gleam", map2_source)
+  let assert Ok(modules) = loader.load(dir <> "/map2.gleam")
+  let assert Ok(ll_code) = pipeline.compile_modules_llvm(modules)
+  let assert Ok(_) = ffi.write_file(dir <> "/map2.ll", ll_code)
+
+  let cmd =
+    toolchain.build_command(
+      toolchain.default_cc(),
+      toolchain.Debug,
+      [dir <> "/map2.ll", "runtime/gleam_runtime.c"],
+      ["runtime"],
+      dir <> "/map2",
+    )
+  let #(compile_status, _compile_out) = toolchain.run_shell(cmd)
+  assert compile_status == 0 as "program failed to compile"
+
+  let #(_status, output) =
+    toolchain.run_shell("env GLEAMC_MEM_REPORT=1 " <> dir <> "/map2")
+  assert string.contains(output, "live blocks = 0")
+}

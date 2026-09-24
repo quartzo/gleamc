@@ -222,6 +222,10 @@ fn insert_fn(function: ir.Function, fields_of, recursive, modes, ffi) -> ir.Func
         False -> acc
       }
     })
+  // Partial ownership at a join cannot be resolved per block: a value may be
+  // owned on one incoming edge (from its definition) and not on another. Split
+  // critical edges so each edge has its own block, where the dead drop lands.
+  let blocks = split_critical_edges(blocks)
   // Borrow-only field/tuple/env extractions *of a parameter* (or of another
   // such view) are references into the container, not owned values: they
   // carry no retain/drop. Mirrors Vesper's `FieldRef`.
@@ -253,6 +257,51 @@ fn insert_fn(function: ir.Function, fields_of, recursive, modes, ffi) -> ir.Func
         locals,
       )
     }
+  }
+}
+
+/// Inserts an empty block on every critical edge — a branch target that also
+/// has another predecessor — so a value that dies only on that edge can be
+/// dropped in the new block instead of leaking (or being dropped for a path
+/// that never owned it).
+fn split_critical_edges(blocks: List(ir.Block)) -> List(ir.Block) {
+  let preds =
+    list.fold(blocks, dict.new(), fn(acc, block) {
+      list.fold(successors(block.term), acc, fn(acc, succ) {
+        let count = case dict.get(acc, succ) {
+          Ok(found) -> found
+          Error(_) -> 0
+        }
+        dict.insert(acc, succ, count + 1)
+      })
+    })
+  list.flat_map(blocks, fn(block) {
+    case block.term {
+      ir.Branch(cond, then, otherwise) -> {
+        let #(then, then_blocks) = split_edge(block.label, "t", then, preds)
+        let #(otherwise, else_blocks) =
+          split_edge(block.label, "f", otherwise, preds)
+        [
+          ir.Block(block.label, block.ops, ir.Branch(cond, then, otherwise)),
+          ..list.append(then_blocks, else_blocks),
+        ]
+      }
+      _ -> [block]
+    }
+  })
+}
+
+fn split_edge(from: String, tag: String, target: String, preds) {
+  let count = case dict.get(preds, target) {
+    Ok(found) -> found
+    Error(_) -> 0
+  }
+  case count > 1 {
+    True -> {
+      let label = from <> "_ce_" <> tag
+      #(label, [ir.Block(label, [], ir.Jmp(target))])
+    }
+    False -> #(target, [])
   }
 }
 
