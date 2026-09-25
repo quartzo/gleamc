@@ -1213,19 +1213,6 @@ fn emit_await_read(ctx: Ctx, dest: String, fut_v: String, b: Builder) -> Builder
   emit_line(b, "  call void @Gleamc_rc_release(i8* " <> fut_v <> ", i8* null)")
 }
 
-/// Splits a block's op list at its (single) `OpSuspend`: the ops before it, the
-/// suspension, and the ops after it (ownership's dead drops).
-fn split_suspend(ops: List(ir.Op)) {
-  case ops {
-    [] -> #([], None, [])
-    [ir.OpSuspend(_, fut, resume), ..rest] -> #([], Some(#(fut, resume)), rest)
-    [op, ..rest] -> {
-      let #(pre, suspend, post) = split_suspend(rest)
-      #([op, ..pre], suspend, post)
-    }
-  }
-}
-
 /// Emits the blocks of a machine `step`: a suspension stores the pending future
 /// and the resume state and returns "not done"; a resume block reads the awaited
 /// value; a `Ret` stores the result and returns "done".
@@ -1253,13 +1240,9 @@ fn emit_machine_blocks(
         }
         Error(_) -> b
       }
-      let #(pre, suspend, post) = split_suspend(ops)
-      let #(b, _) = emit_ops(ctx, pre, b)
-      // The ops after a suspension are the ownership dead drops; they run before
-      // the yield, since the block leaves at the suspension.
-      let #(b, _) = emit_ops(ctx, post, b)
-      let b = case suspend {
-        Some(#(fut, resume)) -> {
+      let #(b, _) = emit_ops(ctx, ops, b)
+      let b = case term {
+        ir.Suspend(fut, _dest, resume) -> {
           let #(_, fv, b) = read_val(ctx, fut, b)
           let #(fp, b) = frame_gep("%__fr", fr_ty, fut_idx, b)
           let b = emit_line(b, "  store i8* " <> fv <> ", i8** " <> fp)
@@ -1275,7 +1258,7 @@ fn emit_machine_blocks(
             )
           emit_line(b, "  ret i1 false")
         }
-        None -> emit_machine_term(ctx, info, term, b)
+        _ -> emit_machine_term(ctx, info, term, b)
       }
       emit_machine_blocks(ctx, info, resumes, rest, b)
     }
@@ -1344,6 +1327,8 @@ fn emit_machine_term(ctx: Ctx, info: FrameInfo, term: ir.Terminator, b: Builder)
         )
       emit_machine_finish(ctx, info, r, b)
     }
+    // Handled by `emit_machine_blocks` before reaching here.
+    ir.Suspend(_, _, _) -> emit_line(b, "  unreachable")
     ir.Unreachable -> emit_line(b, "  unreachable")
   }
 }
@@ -1417,13 +1402,10 @@ fn emit_machine_function(
     )
   let resumes =
     list.fold(blocks, dict.new(), fn(acc, block) {
-      let ir.Block(_, ops, _) = block
-      list.fold(ops, acc, fn(acc, op) {
-        case op {
-          ir.OpSuspend(dest, _, resume) -> dict.insert(acc, resume, dest)
-          _ -> acc
-        }
-      })
+      case block.term {
+        ir.Suspend(_, dest, resume) -> dict.insert(acc, resume, dest)
+        _ -> acc
+      }
     })
   let b = Builder(next: 0, lines: [])
   let b =
@@ -2599,50 +2581,6 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
       }
       #(b, Nil)
     }
-    // `await`: the future is a value; drive it with the libuv loop (the
-    // runtime accessors call `gleamc_future_wait`) and read the result. This is
-    // an ordinary value operation — the machine (tail calls) never sees async.
-    ir.OpSuspend(dest, fut, _resume) -> {
-      let #(_, v, b) = read_val(ctx, fut, b)
-      let dest_ty = local_type(ctx.by_name, dest)
-      let b = case is_nil_type(dest_ty) {
-        True -> emit_line(b, "  call void @Gleamc_uv_await_nil(i8* " <> v <> ")")
-        False ->
-          case dest_ty {
-            TNamed("BitArray") -> {
-              let #(val, b) = fresh(b)
-              let b =
-                emit_line(
-                  b,
-                  "  "
-                    <> val
-                    <> " = call %GleamcBitArray @Gleamc_uv_await_bytes(i8* "
-                    <> v
-                    <> ")",
-                )
-              store_local(ctx, dest, "%GleamcBitArray", val, b)
-            }
-            _ -> {
-              let b =
-                emit_line(b, "  call void @Gleamc_uv_await_nil(i8* " <> v <> ")")
-              let #(val, b) = fresh(b)
-              let b =
-                emit_line(
-                  b,
-                  "  "
-                    <> val
-                    <> " = call i64 @Gleamc_uv_result(i8* "
-                    <> v
-                    <> ")",
-                )
-              store_local(ctx, dest, "i64", val, b)
-            }
-          }
-      }
-      let b =
-        emit_line(b, "  call void @Gleamc_rc_release(i8* " <> v <> ", i8* null)")
-      #(b, Nil)
-    }
     ir.OpFrameNew(_, _) -> #(b, Nil)
     ir.OpFrameGet(dest, _frame, index, ty) ->
       case ctx.frame {
@@ -2698,6 +2636,9 @@ fn emit_term(ctx: Ctx, term: ir.Terminator, b: Builder) {
     // (no drops) if `emit_term` is ever called directly.
     ir.Ret(_) | ir.Tailcall(_, _) | ir.TailcallIndirect(_, _) ->
       emit_exit_term(ctx, term, [], b)
+    // Suspensions only appear in machine functions, emitted by
+    // `emit_machine_blocks`, so a plain function never sees one.
+    ir.Suspend(_, _, _) -> emit_line(b, "  unreachable")
     ir.Unreachable -> emit_line(b, "  unreachable")
   }
 }

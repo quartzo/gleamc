@@ -65,15 +65,14 @@ consults the caller's borrowed parameters (`borrowed_params` in
 ## Async (stage 2, done)
 
 `await` suspends and hands the `Future` back to the libuv loop: a function with
-an `OpSuspend` is a heap frame function (`frame.has_suspend`) and is emitted as
-a `_step` + wrapper state machine (`emit_machine_function`), driven by
-`gleamc_sched_run`. `lower` ends the block at the suspension and stamps the
-resume label, so no `cps` pass is needed. The wrapper owns the frame and
-releases it after reading the result; the step suppresses `OpDrop(frame)`. See
-[machine.md](machine.md#async).
+an `ir.Suspend(fut, dest, resume)` terminator is a heap frame function
+(`frame.has_suspend`) and is emitted as a `_step` + wrapper state machine
+(`emit_machine_function`), driven by `gleamc_sched_run`. `lower` emits the
+terminator, so no `cps` pass is needed and the op-`OpSuspend` code smell is
+gone. The wrapper owns the frame and releases it after reading the result; the
+step suppresses `OpDrop(frame)`. See [machine.md](machine.md#async).
 
-Still to refine: `OpSuspend` remains an op (block-ending) rather than an IR
-terminator, and a tail call inside a suspending function is a plain call.
+Still to refine: a tail call inside a suspending function is a plain call.
 
 ## The `-O0` frame problem and the `-O1` baseline
 

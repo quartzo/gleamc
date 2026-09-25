@@ -61,11 +61,6 @@ pub type Op {
   OpRetain(src: String, ty: Type)
   /// -1 on the local at its death.
   OpDrop(src: String, ty: Type)
-  /// Async suspension point: the block yields the pending `fut` to the
-  /// scheduler and resumes at block `resume` once it completes, binding the
-  /// future's value to `dest`. `resume` is filled in by the `cps` pass, which
-  /// also splits the block there.
-  OpSuspend(dest: String, fut: Operand, resume: String)
   /// Defines the function's frame: a composite, reference-counted heap cell
   /// holding the variables that must survive a jump (captured by a closure or
   /// live across a suspension). Fields are read/written with `OpFrameGet` and
@@ -85,6 +80,10 @@ pub type Terminator {
   Tailcall(fun: String, args: List(Operand))
   /// Tail call through a function value: the callee is `fval` (an operand).
   TailcallIndirect(fval: Operand, args: List(Operand))
+  /// Async suspension point: control yields the pending `fut` to the driver and
+  /// resumes at block `resume` once it completes, binding the future's value to
+  /// the local `dest`. `lower` creates the resume block.
+  Suspend(fut: Operand, dest: String, resume: String)
   Unreachable
 }
 
@@ -134,7 +133,6 @@ pub fn op_dest(op: Op) -> Result(String, Nil) {
     OpCallIndirect(dest, _, _, _) -> Ok(dest)
     OpRetain(_, _) -> Error(Nil)
     OpDrop(_, _) -> Error(Nil)
-    OpSuspend(dest, _, _) -> Ok(dest)
     OpFrameNew(dest, _) -> Ok(dest)
     OpFrameGet(dest, _, _, _) -> Ok(dest)
     OpFrameSet(_, _, _) -> Error(Nil)
@@ -168,7 +166,6 @@ pub fn op_reads(op: Op) -> List(Operand) {
     OpCallIndirect(_, fval, args, _) -> [fval, ..args]
     OpRetain(src, _) -> [Var(src)]
     OpDrop(src, _) -> [Var(src)]
-    OpSuspend(_, fut, _) -> [fut]
     OpFrameNew(_, _) -> []
     OpFrameGet(_, frame, _, _) -> [frame]
     OpFrameSet(frame, _, value) -> [frame, value]
@@ -262,6 +259,7 @@ pub fn term_reads(term: Terminator) -> List(Operand) {
     Ret(value) -> [value]
     Tailcall(_, args) -> args
     TailcallIndirect(fval, args) -> [fval, ..args]
+    Suspend(fut, _, _) -> [fut]
     Unreachable -> []
   }
 }
@@ -459,13 +457,6 @@ fn op_text(op: Op) -> String {
       <> describe_type(ty)
     OpRetain(src, ty) -> "    retain " <> src <> " : " <> describe_type(ty)
     OpDrop(src, ty) -> "    drop " <> src <> " : " <> describe_type(ty)
-    OpSuspend(dest, fut, resume) ->
-      "    suspend "
-      <> operand_text(fut)
-      <> " -> "
-      <> dest
-      <> " @"
-      <> resume
     OpFrameNew(dest, frame_ty) ->
       "    " <> dest <> " = framenew " <> frame_ty
     OpFrameGet(dest, frame, index, ty) ->
@@ -505,6 +496,8 @@ fn term_text(term: Terminator) -> String {
       <> "("
       <> string.join(list.map(args, operand_text), ", ")
       <> ")"
+    Suspend(fut, dest, resume) ->
+      "suspend " <> operand_text(fut) <> " -> " <> dest <> " @" <> resume
     Unreachable -> "unreachable"
   }
 }

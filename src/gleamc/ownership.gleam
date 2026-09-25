@@ -436,9 +436,27 @@ fn insert_blocks(
         dict.insert(acc2, succ, [block.label, ..existing])
       })
     })
+  // A `Suspend` defines its destination in the *resume* block (the value only
+  // exists after the future completes), so the resume block owns the definition.
+  let resume_defs =
+    list.fold(blocks, dict.new(), fn(acc, block) {
+      case block.term {
+        ir.Suspend(_, dest, resume) -> dict.insert(acc, resume, dest)
+        _ -> acc
+      }
+    })
   let use_def =
     list.fold(blocks, dict.new(), fn(acc, block) {
-      dict.insert(acc, block.label, block_use_def(block, handles, views))
+      let #(used, defs) = block_use_def(block, handles, views)
+      let defs = case dict.get(resume_defs, block.label) {
+        Ok(dest) ->
+          case dict.get(handles, dest) {
+            Ok(_) -> dict.insert(defs, dest, True)
+            Error(_) -> defs
+          }
+        Error(_) -> defs
+      }
+      dict.insert(acc, block.label, #(used, defs))
     })
   let live_in = compute_liveness(blocks, succ_map, use_def)
   let live_out =
@@ -600,6 +618,7 @@ fn successors(term: ir.Terminator) -> List(String) {
     ir.Ret(_) -> []
     ir.Tailcall(_, _) -> []
     ir.TailcallIndirect(_, _) -> []
+    ir.Suspend(_, _, resume) -> [resume]
     ir.Unreachable -> []
   }
 }
@@ -1029,6 +1048,9 @@ fn transferred_set(term: ir.Terminator, handles, modes, ffi) {
     // function value itself, so the function value is released by its owner.
     ir.TailcallIndirect(_, args) ->
       sets_from(handle_names(args, handles))
+    // The pending future is handed to the driver and released by the machine on
+    // resume, so the flow does not drop it at the suspension.
+    ir.Suspend(fut, _, _) -> sets_from(handle_names([fut], handles))
     _ -> dict.new()
   }
 }

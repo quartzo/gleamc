@@ -50,9 +50,10 @@ fn has_capture(function: ir.Function) -> Bool {
 /// A function that suspends: a `Future` is awaited through the libuv loop, so a
 /// local live across the suspension must live in the frame.
 pub fn has_suspend(function: ir.Function) -> Bool {
-  list.any(op_list(function), fn(op) {
-    case op {
-      ir.OpSuspend(_, _, _) -> True
+  let ir.Function(_, _, _, blocks, _) = function
+  list.any(blocks, fn(block) {
+    case block.term {
+      ir.Suspend(_, _, _) -> True
       _ -> False
     }
   })
@@ -334,7 +335,6 @@ fn rewrite_op(op: ir.Op, repl) -> ir.Op {
     ir.OpCopy(d, s, ty) -> ir.OpCopy(d, sub(s, repl), ty)
     ir.OpCallIndirect(d, f, args, rt) ->
       ir.OpCallIndirect(d, sub(f, repl), subs(args, repl), rt)
-    ir.OpSuspend(d, fut, resume) -> ir.OpSuspend(d, sub(fut, repl), resume)
     _ -> op
   }
 }
@@ -346,6 +346,7 @@ fn rewrite_term(term: ir.Terminator, repl) -> ir.Terminator {
     ir.Tailcall(f, args) -> ir.Tailcall(f, subs(args, repl))
     ir.TailcallIndirect(f, args) ->
       ir.TailcallIndirect(sub(f, repl), subs(args, repl))
+    ir.Suspend(fut, dest, resume) -> ir.Suspend(sub(fut, repl), dest, resume)
     _ -> term
   }
 }
@@ -394,25 +395,18 @@ pub fn suspend_live_vars(function: ir.Function) -> List(String) {
   let live_out = live_out_map(blocks)
   let names =
     list.flat_map(blocks, fn(block) {
-      let ir.Block(label, ops, _) = block
-      let ir.Block(_, _, term) = block
-      let base = case dict.get(live_out, label) {
-        Ok(found) -> found
-        Error(_) -> dict.new()
-      }
-      let base = list.fold(ir.term_reads(term), base, add_read)
-      // Walk the ops backwards; every `OpSuspend` records the live set at that
-      // point (uses after it, plus everything live out of the block).
-      let #(_, acc) =
-        list.fold(list.reverse(ops), #(base, []), fn(state, op) {
-          let #(live, acc) = state
-          let acc = case op {
-            ir.OpSuspend(_, _, _) -> list.append(set_keys(live), acc)
-            _ -> acc
+      let ir.Block(label, _ops, term) = block
+      case term {
+        ir.Suspend(_, _, _) -> {
+          // Everything live out of the suspension block, plus the future.
+          let base = case dict.get(live_out, label) {
+            Ok(found) -> found
+            Error(_) -> dict.new()
           }
-          #(op_transfer(live, op), acc)
-        })
-      acc
+          set_keys(list.fold(ir.term_reads(term), base, add_read))
+        }
+        _ -> []
+      }
     })
   dedupe(names)
 }
@@ -477,14 +471,6 @@ fn successors(term: ir.Terminator) -> List(String) {
     ir.Jmp(label) -> [label]
     ir.Branch(_, then, otherwise) -> [then, otherwise]
     _ -> []
-  }
-}
-
-fn op_transfer(live: Dict(String, Bool), op: ir.Op) -> Dict(String, Bool) {
-  let live = list.fold(ir.op_reads(op), live, add_read)
-  case ir.op_dest(op) {
-    Ok(dest) -> dict.delete(live, dest)
-    Error(_) -> live
   }
 }
 

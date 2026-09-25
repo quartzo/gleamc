@@ -47,7 +47,7 @@ any `-O`, including `-O0`.
 ## Async
 
 `time.timer` / `uv.fs_*` start a `Future`; `await` **suspends and hands the
-future back to the libuv loop**. A function containing an `OpSuspend` is a heap
+future back to the libuv loop**. A function containing an `ir.Suspend` is a heap
 frame function (`frame.machine_functions`) and is emitted as a flat state
 machine (`emit_machine_function`):
 
@@ -62,10 +62,11 @@ machine (`emit_machine_function`):
   the result — the step suppresses `OpDrop(frame)` so the frame outlives the
   machine.
 
-`lower` ends the block at the suspension (`OpSuspend` + `Jmp(resume)`), so no
-separate CPS pass is needed. Locals live in the frame, so they survive the
-suspension. A tail call *inside* a suspending function is emitted as a plain
-call (the machine cannot keep the caller's frame across it).
+The suspension is an `ir.Suspend(fut, dest, resume)` **terminator**: it ends
+the block, so no `cps` pass is needed, and it defines `dest` in the resume
+block. Locals live in the frame, so they survive the suspension. A tail call
+*inside* a suspending function is emitted as a plain call (the machine cannot
+keep the caller's frame across it).
 
 The runtime (`runtime/gleam_runtime.[ch]`) carries the scheduler: `GleamcFuture`,
 `gleamc_sched_run`, the task list (`gleamc_task_spawn` / `gleamc_tasks_drain`)
