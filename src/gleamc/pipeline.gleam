@@ -1,6 +1,6 @@
 //// The compilation cascade: source(s) -> LLVM IR.
 ////
-////   lower -> frame -> ownership -> cps -> llvm
+////   lower -> frame -> ownership -> llvm
 ////
 //// `compile_to_ir` stops after the ownership pass (useful for dumps/tests).
 
@@ -13,7 +13,6 @@ import gleamc/ffi
 import gleamc/ast.{type CustomType, type Module, DCustomType, Module}
 import gleamc/checker
 import gleamc/consts
-import gleamc/cps
 import gleamc/dce
 import gleamc/frame
 import gleamc/ir
@@ -24,23 +23,12 @@ import gleamc/mono
 import gleamc/opacity
 import gleamc/ownership
 import gleamc/parser
-import gleamc/plan
 import gleamc/qualify
 
 /// Single-module convenience (entry module name "").
 pub fn compile_to_llvm(source: String) -> Result(String, String) {
   use module <- result.try(map_err(parser.parse(source), parser.describe_error))
   compile_modules_llvm([#("", module)])
-}
-
-pub fn compile_to_plan(source: String) -> Result(plan.Plan, String) {
-  use module <- result.try(map_err(parser.parse(source), parser.describe_error))
-  use #(_module, owned, _ctors, _custom_types) <- result.try(
-    cascade([
-      #("", module),
-    ]),
-  )
-  Ok(plan.plan(owned))
 }
 
 pub fn compile_to_ir(source: String) -> Result(ir.Module, String) {
@@ -110,9 +98,7 @@ fn cascade(modules: List(#(String, Module))) {
   let ir_module = frame.materialize(ir_module)
   let t = mark("frame", t)
   let owned = ownership.insert(ir_module, checked.ctors)
-  let t = mark("ownership", t)
-  let owned = cps.normalize(owned)
-  let _ = mark("cps", t)
+  let _ = mark("ownership", t)
   Ok(#(checked.module, owned, checked.ctors, custom_types_of(checked.module)))
 }
 

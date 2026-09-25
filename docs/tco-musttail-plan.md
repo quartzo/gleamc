@@ -1,135 +1,89 @@
-# Plan: drop the dispatchers, TCO with musttail
+# Plan: drop the dispatchers, TCO with musttail, async explicit
 
-Status: proposed. Execute in a dedicated session.
+Status: dispatchers removed and `musttail` TCO landed (tests/diffs green).
+Async stage 2 and the 8 MiB self-host target remain.
 
 ## Context
 
-The backend currently collapses mutual tail-call groups into per-group
-"dispatchers" (`plan.Group`, `emit_group`) and carries non-tail member calls on a
-heap return stack (`%__ret`, `emit_machine_call`/`emit_machine_return`). Grouping
-by weakly-connected components made dispatchers gigantic, and at `-O0` their
-spilled frames (hundreds of KB) dominate the native stack, so the self-hosted
-compiler still needs more than 8 MiB. The complexity is not paying off.
+The backend used to collapse mutual tail-call groups into per-group
+"dispatchers" (`plan.Group`, `emit_group`) and carry non-tail member calls on a
+heap return stack. Grouping by weakly-connected components made dispatchers
+gigantic and their `-O0` spilled frames dominated the native stack. All of that
+is now gone: functions are emitted one by one and tail calls use LLVM
+`musttail`. `plan.gleam`, `cps.gleam` and the group machinery were deleted.
 
-This plan removes all of that and does TCO between plain functions with LLVM
-`musttail`. Async does not change: a `Future` is a value awaited through the
-libuv loop (inline), not a machine state.
+## What landed
 
-Baseline: commit `a238e25` (green: `gleam test` 153/0, `scripts/diff.sh` 61/61).
-Discard the uncommitted `plan.gleam` change (all-calls-as-edges).
+- `plan.gleam`, `cps.gleam`, `pipeline.compile_to_plan`, `test/plan_test.gleam`
+  deleted. `has_capture` moved to `frame.gleam` (`frame.machine_functions`).
+- `ownership.gleam`: `plan.*` and `lower_indirect_tails` removed.
+- One emitter per function: `emit_function` (no frame) or `emit_frame_function`
+  (heap frame because a closure captures a local). No `emit_group`,
+  dispatchers, return stack, `member_call_op`, `emit_rebind`,
+  `emit_machine_call/return`, `emit_indirect_switch`.
+- Direct tail calls: `%r = musttail call <ret> @Gleamc_<fun>(args)` then
+  `ret <ret> %r` when allowed, else a plain `call` + `ret`.
+- `OpDrop(frame)` now renders the frame teardown; the old inline drop at `Ret`
+  was removed (avoids a double release).
+- Tail-terminator operands are read **before** the trailing `OpDrop` run, so a
+  `musttail` call is immediately followed by its `ret` and frame slots/`fval`
+  are not read after release.
 
-## Goal
+## musttail rules discovered
 
-- No function planning, no dispatchers, no groups, no weak components.
-- Each function is emitted on its own.
-- `Tailcall` / `TailcallIndirect` become `musttail` calls (direct and indirect),
-  so tail recursion runs in constant native stack at any `-O`.
-- Async unchanged (`Future` value + inline await).
-- Keep `frame` (heap frame for captures) and `owned_clone` (owned ABI for
-  tail/indirect calls).
+- **Calling convention.** `tailcc`/fastcc miscompiles `musttail` when arguments
+  spill to the stack: a self-recursive `tailcc` function with 7 `i64` arguments
+  loops forever (clang 22, x86-64). The default `ccc` handles stack arguments
+  correctly. So generated functions stay `ccc`.
+- **Prototypes.** Under `ccc`, `musttail` requires the caller and callee
+  prototypes to match. That holds for self-recursion and same-signature mutual
+  recursion, but not for the common wrapper→helper pattern (e.g. `reverse` has 1
+  parameter, `reverse_helper` has 2). `musttail_ok` (in `llvm.gleam`) therefore
+  checks `can_musttail(return)` **and** `prototype_matches(caller, callee)`;
+  otherwise the call is plain.
+- **Return type.** A return type the ABI lowers to an sret pointer (large
+  aggregate) aborts the backend under `musttail`. `can_musttail` allows only
+  scalar/pointer/builtin/small types; everything else falls back to `call`.
+- **Indirect tail calls are plain calls.** A local closure owns the frame that
+  the callee uses as its environment; releasing the closure before the call
+  would free that frame early. `TailcallIndirect` is therefore emitted as
+  `call` + drops + `ret`, keeping the closure alive through the call. (An owned
+  environment ABI would allow indirect `musttail`; deferred.)
 
-## Target architecture
+## Ownership change
 
-- `emit_function` (no frame) or `emit_frame_function` (heap frame, captures
-  only). No `emit_group`.
-- Tail call, direct:
-  `%r = musttail call <ret> @Gleamc_<fun>(args)` then `ret <ret> %r`.
-- Tail call, indirect:
-  `%r = musttail call <ret> <code>(<env>, args)` then `ret <ret> %r`.
-- No instruction may sit between the call and the `ret`. All cleanup (drops,
-  frame release) is emitted as ops before the terminator.
+A `Borrow` parameter passed to an `Owned` target (a tail call to an `__owned`
+clone) is an ownership transfer with no reference to hand over, so it needs
+`count` retains even on its last use — unlike an owned local, whose last use
+already carries one reference and needs `count - 1`. `term_retains_owning` now
+consults the caller's borrowed parameters (`borrowed_params` in
+`ownership.gleam`).
 
-## What to delete
+## Async (stage 2, pending)
 
-- `src/gleamc/plan.gleam`: everything (`Group`, `Edge`, `Plan`, `mutual_groups`,
-  `tail_edges`, `callback_edges`, `dispatched_members`, `number_states`,
-  `to_text`). Move only the capture predicate (`has_capture`) into
-  `frame.gleam` so `frame.machine_functions` is self-contained.
-- `src/gleamc/cps.gleam` (after the async change it only does `split_calls`) and
-  its call in `pipeline.gleam`.
-- `src/gleamc/llvm.gleam`: `emit_group`, `wrapper_for_group`,
-  `group_type_decls`, `emit_machine_call`, `emit_machine_return`,
-  `emit_machine_return_val`, `emit_rebind`, `emit_indirect_switch`,
-  `emit_indirect_rebind`, `emit_group_frame_release`, `plan_machines`,
-  `eligible_groups`; `Ctx` fields `group`, `group_frames`, `ret_head`,
-  `members`, `resume_labels`, `resume_index`, `ret_ty_name`, `ret_val`; simplify
-  `local_addr`/`frame_base` (the frame pointer is the fixed `%__fr`).
-- `src/gleamc/ownership.gleam`: `plan.*` usage and `lower_indirect_tails` (the
-  indirect tail call stays and is TCO'd).
-- `pipeline.compile_to_plan`; `test/plan_test.gleam`; adjust
-  `test/frame_test.gleam`.
+The intended behaviour is to suspend and hand the `Future` back to the libuv
+loop (restore the `80b62ff` state machine, undone by `4afd3d6`). The plan is to
+lower it in an IR->IR pass right after `frame`, with an `ir.Suspend(fut, dest,
+resume)` **terminator** instead of the `OpSuspend` op, so `cps` is not needed
+and the backend has no async knowledge. `musttail` is not used for suspending
+functions: pausing to the loop is the expected behaviour.
 
-## What to implement
+## Remaining
 
-`emit_term`:
+- [ ] Async stage 2: `Suspend` terminator, `step` + wrapper in IR, delete
+      `OpSuspend`.
+- [ ] Self-host under 8 MiB: the self-hosted compiler currently needs ~64 MiB
+      even for a tiny file. Different-arity tail calls (wrapper→helper) and
+      indirect continuations are plain calls, so their chains use the native
+      stack; closing the gap needs either constant-prototype shims, a
+      trampoline for the non-`musttail` calls, or smaller `-O0` frames.
+- [ ] Update `docs/machine.md` / `docs/cascade.md` / `docs/frame-environment.md`
+      (they still describe dispatchers, `plan`/`cps` and inline async).
 
-- `ir.Tailcall(fun, args)` ->
-  `%r = musttail call <ret_s> @Gleamc_<fun>(<args>)` + `ret <ret_s> %r`.
-  No `emit_rebind`, including self-recursion.
-- `ir.TailcallIndirect(fval, args)` -> extract `code`/`env` from the function
-  value and `%r = musttail call <ret_s> <code>(<env>, <args>)` +
-  `ret <ret_s> %r`.
+## Validation
 
-`musttail` requirements to honour:
-
-- the callee's return type equals the caller's (true for a genuine tail call);
-- the call is immediately followed by `ret` of its result;
-- same calling convention (all our functions use the default);
-- the indirect `%code` operand has the exact function-pointer type.
-
-## Ownership / frame interaction
-
-- `ownership.add_frame_lifecycle` already appends `OpDrop(frame)` as an op at
-  every exit, including `Tailcall`/`TailcallIndirect`, so the frame is released
-  *before* the tail call. Verify there is exactly one release (no double drop)
-  and none emitted after the call.
-- A tail call moves its arguments (owned ABI). If a captured frame is passed as
-  a closure argument, ownership retains it for the closure, so releasing the
-  activation's frame reference before the call is correct.
-
-## owned_clone (keep)
-
-A tail/indirect call moves its arguments into the callee, so the callee must
-take ownership of every handle parameter. Instead of forcing every such target's
-parameters to `Owned` (which would add retains to its ordinary direct calls),
-`owned_clone` emits an all-`Owned` clone `f__owned` used only by tail/indirect
-calls. It is orthogonal to the dispatchers and is still required with `musttail`.
-
-## Incremental steps
-
-1. Baseline: discard the uncommitted `plan.gleam` change (HEAD `a238e25`).
-2. Remove the dispatchers and switch tail calls to `musttail` (`llvm.gleam`).
-   The tree is expected to break.
-3. Delete `cps.gleam` and its `pipeline` call.
-4. Move the capture predicate to `frame.gleam`; delete `plan.gleam`,
-   `compile_to_plan`, `test/plan_test.gleam`.
-5. `ownership.gleam`: remove `plan.*` and `lower_indirect_tails`.
-6. Get isolated tests green, in this order:
-   1. direct self tail recursion, constant stack;
-   2. mutual tail recursion (`/tmp/opencode/mutual.gleam`);
-   3. tail call inside a capture function (frame released before the call);
-   4. indirect tail call (closure) without capture;
-   5. indirect tail call with capture;
-   6. std loops: `list.sort`, `string.join`, `list.map` (`scripts/diff.sh`);
-   7. `gleam test` (153) and `scripts/diff.sh` (61);
-   8. self-host compiling itself under an 8 MiB stack.
-7. Update `docs/machine.md` (drop dispatchers/return stack) and
-   `docs/cascade.md` (drop `plan`/`cps`).
-
-## Risks / open questions
-
-- The earlier `musttail` attempt broke 11 tests; find and fix each in step 6,
-  isolated. Most likely causes: mismatched return types, or cleanup emitted
-  after the call.
-- Indirect `musttail` requires the `%code` pointer type to match exactly.
-- Frame + tail call: release before the call, not too early when a captured
-  closure is an argument.
-
-## Validation checklist
-
-- [ ] `gleam test` green (153/0).
-- [ ] `scripts/diff.sh` 61/61.
-- [ ] Leak checks: `live blocks = 0` on the frame/closure reproducers.
-- [ ] Tail recursion constant stack (direct, mutual, indirect).
-- [ ] Self-hosted compiler compiles itself and the 2nd-gen binary works, under
-      8 MiB (`ulimit -s 8192`).
+- `gleam test`: 147/0 (the 6 removed `plan` tests aside).
+- `scripts/diff.sh`: 61/61.
+- Constant-stack: direct, mutual and same-signature recursion at 1e6
+  iterations; `live blocks = 0` on the closure/frame reproducers.
+- Self-hosted compiler builds and runs (needs > 8 MiB).

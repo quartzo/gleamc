@@ -12,7 +12,6 @@ import gleam/list
 import gleam/string
 import gleamc/ast.{TNil}
 import gleamc/ir
-import gleamc/plan
 
 /// The synthetic local that holds the frame handle.
 pub const frame_local = "__frame"
@@ -23,9 +22,35 @@ pub fn frame_type_name(function_name: String) -> String {
   "__frame_" <> function_name
 }
 
-/// Functions that must be worked through a frame: the plan's state machines.
+/// Functions that must be worked through a heap frame: a closure captures one
+/// of their locals, so the locals cannot live on the native stack. Async is not
+/// part of this rule: a `Future` is a value awaited through the libuv loop, so
+/// the frame never needs to carry a suspension state.
 pub fn machine_functions(module: ir.Module) -> List(String) {
-  plan.machines(module)
+  let ir.Module(functions) = module
+  functions
+  |> list.filter(fn(function) { has_capture(function) })
+  |> list.map(fn(function) { function.name })
+  |> list.sort(fn(a, b) { string.compare(a, b) })
+}
+
+/// A function that creates a closure capturing at least one variable: its frame
+/// can be referenced by that closure, so it needs a heap frame.
+fn has_capture(function: ir.Function) -> Bool {
+  list.any(op_list(function), fn(op) {
+    case op {
+      ir.OpClosure(_, _, captures, _, _) -> !list.is_empty(captures)
+      _ -> False
+    }
+  })
+}
+
+fn op_list(function: ir.Function) -> List(ir.Op) {
+  let ir.Function(_, _, _, blocks, _) = function
+  list.flat_map(blocks, fn(block) {
+    let ir.Block(_, ops, _) = block
+    ops
+  })
 }
 
 /// Materializes the frame of every machine function as an explicit IR value:
@@ -156,7 +181,7 @@ fn code_to_name(code: String) -> String {
 /// on the `__frame` value, so `ownership` sees and manages each value.
 fn demote_module(module: ir.Module) -> ir.Module {
   let ir.Module(functions) = module
-  let machines = plan.machines(module)
+  let machines = machine_functions(module)
   ir.Module(list.map(functions, fn(function) {
     case list.contains(machines, function.name) {
       True -> demote_function(function)

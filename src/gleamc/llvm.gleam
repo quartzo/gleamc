@@ -21,7 +21,6 @@ import gleamc/ffi
 import gleamc/frame
 import gleamc/ir
 import gleamc/ownership
-import gleamc/plan
 
 type Ctx {
   Ctx(
@@ -38,31 +37,13 @@ type Ctx {
     entry: String,
     params: List(String),
     prefix: String,
-    /// A rebind target: `#(prefix, params, entry, frame)` where `frame` is
-    /// `Some(#(fr_ty, fr_reg, fields))` for a function whose locals live in a
-    /// heap frame (dispatcher members), or `None` for a plain function whose
-    /// locals are entry allocas (a self tail call).
-    group: Dict(
-      String,
-      #(String, List(String), String, Option(#(String, String, Dict(String, Int)))),
-    ),
-    /// Set while emitting a state-machine `step`: locals live in the frame,
-    /// not in entry allocas.
+    /// Parameter types of every function, keyed by name. A `musttail` call in
+    /// the default calling convention requires the caller and callee prototypes
+    /// to match, so a call may only be marked when these line up.
+    signatures: Dict(String, List(Type)),
+    /// Set for a function whose locals live in a heap frame (a closure
+    /// captures them), instead of entry allocas.
     frame: Option(FrameInfo),
-    /// Frame registers of every member of a dispatcher (`#(reg, fr_ty)`), so a
-    /// member can release them all when the dispatcher returns.
-    group_frames: List(#(String, String)),
-    /// Dispatcher only: the `alloca i8*` holding the heap return-stack head,
-    /// the members in index order, and the global block numbering used to
-    /// resume a caller after a non-tail member call.
-    ret_head: String,
-    members: List(String),
-    resume_labels: List(String),
-    resume_index: Dict(String, Int),
-    ret_ty_name: String,
-    /// Dispatcher only: `alloca <ret_ty>` used to carry a non-tail member
-    /// call's result from the return to the call site's resume block.
-    ret_val: String,
   )
 }
 
@@ -109,13 +90,8 @@ pub fn emit(
   let tuples =
     collect_tuple_types(custom_types, functions)
     |> list.sort(fn(a, b) { string.compare(tuple_key(a), tuple_key(b)) })
-  let planned = plan.plan(ir_module)
-  let machines = plan_machines(planned)
-  let all_groups = eligible_groups(planned, functions, ctors)
-  let member_names =
-    list.flat_map(all_groups, fn(group) { list.map(group, fn(f) { f.name }) })
-  let member_set =
-    list.fold(member_names, dict.new(), fn(acc, n) { dict.insert(acc, n, True) })
+  let machines = machine_set(ir_module)
+  let signatures = function_signatures(functions)
   let fn_types =
     collect_fn_types(custom_types, functions)
     |> list.sort(fn(a, b) { string.compare(mangle_type(a), mangle_type(b)) })
@@ -170,13 +146,9 @@ pub fn emit(
       "\n",
     )
     <> "\n"
-    <> group_type_decls(all_groups, recursive)
-    <> "\n"
     <> string.join(
       list.map(
-        list.filter(functions, fn(f) {
-          dict.has_key(machines, f.name) || dict.has_key(member_set, f.name)
-        }),
+        list.filter(functions, fn(f) { dict.has_key(machines, f.name) }),
         fn(f) { frame_type_decl(f, recursive) },
       ),
       "\n",
@@ -192,31 +164,9 @@ pub fn emit(
       "\n",
     )
 
-  let group_fns = all_groups
-  let group_defs =
-    string.join(
-      list.flat_map(group_fns, fn(group) {
-        let #(dispatcher, wrappers) =
-          emit_group(group, recursive, lits, custom_types, custom_by_name, ctors, tuples)
-        list.append([dispatcher], wrappers)
-      }),
-      "\n\n",
-    )
-  let normal_fns =
-    list.filter(functions, fn(function) {
-      case dict.get(member_set, function.name) {
-        Ok(_) -> False
-        Error(_) -> True
-      }
-    })
   let defs =
-    group_defs
-    <> case group_defs {
-      "" -> ""
-      _ -> "\n\n"
-    }
-    <> string.join(
-      list.map(normal_fns, fn(function) {
+    string.join(
+      list.map(functions, fn(function) {
         case dict.has_key(machines, function.name) {
           True ->
             emit_frame_function(
@@ -227,9 +177,19 @@ pub fn emit(
               custom_by_name,
               ctors,
               tuples,
+              signatures,
             )
           False ->
-            emit_function(function, recursive, lits, custom_types, custom_by_name, ctors, tuples)
+            emit_function(
+              function,
+              recursive,
+              lits,
+              custom_types,
+              custom_by_name,
+              ctors,
+              tuples,
+              signatures,
+            )
         }
       }),
       "\n\n",
@@ -307,9 +267,7 @@ pub fn emit(
 
   // Frame teardowns (the frame owns its kept-alive fields).
   let frame_fns =
-    list.filter(functions, fn(f) {
-      dict.has_key(machines, f.name) || dict.has_key(member_set, f.name)
-    })
+    list.filter(functions, fn(f) { dict.has_key(machines, f.name) })
   let frame_drops =
     string.join(
       list.map(frame_fns, fn(f) {
@@ -923,6 +881,23 @@ fn builtin_decls(
   })
 }
 
+/// The set of functions emitted with a heap frame (a closure captures one of
+/// their locals).
+fn machine_set(module: ir.Module) -> Dict(String, Bool) {
+  frame.machine_functions(module)
+  |> list.fold(dict.new(), fn(acc, name) { dict.insert(acc, name, True) })
+}
+
+/// Parameter types of every function, keyed by name. Used to decide whether a
+/// `musttail` call has matching caller/callee prototypes.
+fn function_signatures(functions: List(ir.Function)) -> Dict(String, List(Type)) {
+  list.fold(functions, dict.new(), fn(acc, function) {
+    let ir.Function(name, params, _, _, locals) = function
+    let by_name = locals_map(locals)
+    dict.insert(acc, name, list.map(params, fn(p) { local_type(by_name, p) }))
+  })
+}
+
 fn emit_function(
   function: ir.Function,
   recursive: Dict(String, Bool),
@@ -931,6 +906,7 @@ fn emit_function(
   custom_by_name: Dict(String, ast.CustomType),
   ctors: Dict(String, checker.CtorInfo),
   tuples: List(Type),
+  signatures: Dict(String, List(Type)),
 ) -> String {
   let ir.Function(name, params, ret, blocks, locals) = function
   let by_name = locals_map(locals)
@@ -952,15 +928,8 @@ fn emit_function(
       },
       params: params,
       prefix: "",
-      group: dict.new(),
+      signatures: signatures,
       frame: None,
-      group_frames: [],
-      ret_head: "",
-      members: [],
-      resume_labels: [],
-      resume_index: dict.new(),
-      ret_ty_name: "",
-      ret_val: "",
     )
   let b = Builder(next: 0, lines: [])
   let b = emit_allocas(ctx, params, locals, b)
@@ -1047,29 +1016,6 @@ fn frame_info(function: ir.Function, _recursive) -> FrameInfo {
     result,
     block_index_of(blocks),
   )
-}
-
-/// The same frame layout with a different frame-pointer register (a dispatcher
-/// member uses `%__fr_m<index>`).
-fn with_reg(info: FrameInfo, reg: String) -> FrameInfo {
-  let FrameInfo(ty, _, fields, state, fut, result, block_index) = info
-  FrameInfo(ty, reg, fields, state, fut, result, block_index)
-}
-
-/// Releases the invocation reference of every member frame when a dispatcher
-/// returns. Closures that captured a frame hold their own reference.
-fn emit_group_frame_release(ctx: Ctx, b: Builder) -> Builder {
-  list.fold(ctx.group_frames, b, fn(b, pair) {
-    let #(reg, fr_ty) = pair
-    let #(base, b) = frame_base(reg, fr_ty, b)
-    let #(p, b) = fresh(b)
-    let b =
-      emit_line(b, "  " <> p <> " = bitcast " <> fr_ty <> "* " <> base <> " to i8*")
-    emit_line(
-      b,
-      "  call void @" <> frame_drop_sym(fr_ty) <> "(i8* " <> p <> ")",
-    )
-  })
 }
 
 /// The teardown of a frame type `%__frame_<fn>`: at refcount 1->0 it drops the
@@ -1201,6 +1147,7 @@ fn emit_frame_function(
   custom_by_name,
   ctors,
   tuples,
+  signatures,
 ) -> String {
   let ir.Function(name, params, ret, blocks, locals) = function
   let info = frame_info(function, recursive)
@@ -1225,15 +1172,8 @@ fn emit_frame_function(
       },
       params: params,
       prefix: "",
-      group: dict.new(),
+      signatures: signatures,
       frame: Some(info),
-      group_frames: [],
-      ret_head: "",
-      members: [],
-      resume_labels: [],
-      resume_index: dict.new(),
-      ret_ty_name: "",
-      ret_val: "",
     )
   let args =
     list.map(params, fn(param) {
@@ -1318,16 +1258,13 @@ fn emit_block_list(ctx: Ctx, blocks: List(ir.Block), b: Builder) {
     [block, ..rest] -> {
       let ir.Block(label, ops, term) = block
       let b = emit_line(b, "\n" <> block_name(ctx, label) <> ":")
-      let b = case member_call_op(ctx, ops, term) {
-        Some(#(args, fun)) -> {
-          let init_ops = case list.reverse(ops) {
-            [_, ..rev] -> list.reverse(rev)
-            [] -> []
-          }
-          let #(b, _) = emit_ops(ctx, init_ops, b)
-          emit_machine_call(ctx, args, fun, label, b)
+      let b = case term {
+        ir.Ret(_) | ir.Tailcall(_, _) | ir.TailcallIndirect(_, _) -> {
+          let #(body, drops) = split_drops(ops)
+          let #(b, _) = emit_ops(ctx, body, b)
+          emit_exit_term(ctx, term, drops, b)
         }
-        None -> {
+        _ -> {
           let #(b, _) = emit_ops(ctx, ops, b)
           emit_term(ctx, term, b)
         }
@@ -1337,377 +1274,141 @@ fn emit_block_list(ctx: Ctx, blocks: List(ir.Block), b: Builder) {
   }
 }
 
-fn member_call_op(
-  ctx: Ctx,
-  ops: List(ir.Op),
-  term: ir.Terminator,
-) -> Option(#(List(ir.Operand), String)) {
-  case ctx.ret_head {
-    "" -> None
-    _ ->
-      case term {
-        ir.Jmp(_) ->
-          case list.last(ops) {
-            Ok(ir.OpCall(_, fun, args, _)) ->
-              case dict.has_key(ctx.group, fun) {
-                True -> Some(#(args, fun))
-                False -> None
-              }
-            _ -> None
-          }
-        _ -> None
-      }
+/// Splits a trailing run of `OpDrop`s off an op list, so a terminator's
+/// operands can be read before the values they use are released.
+fn split_drops(ops: List(ir.Op)) -> #(List(ir.Op), List(ir.Op)) {
+  let rev = list.reverse(ops)
+  let drops = list.take_while(rev, is_drop)
+  #(list.reverse(list.drop(rev, list.length(drops))), list.reverse(drops))
+}
+
+fn is_drop(op: ir.Op) -> Bool {
+  case op {
+    ir.OpDrop(_, _) -> True
+    _ -> False
   }
 }
 
-fn emit_rebind(ctx: Ctx, target, args, b: Builder) -> Builder {
-  let #(prefix, params, entry, frame) = target
-  let indexed = list.index_map(args, fn(arg, index) { #(arg, index) })
-  let b =
-    list.fold(indexed, b, fn(b, pair) {
-      let #(arg, index) = pair
-      let #(ty, v, b) = read_val(ctx, arg, b)
-      case list_at(params, index) {
-        Ok(pname) ->
-          case frame {
-            Some(#(fr_ty, fr_reg, fields)) ->
-              case dict.get(fields, pname) {
-                Ok(slot) -> {
-                  let #(ptr, b) = frame_gep(fr_reg, fr_ty, slot, b)
-                  emit_line(
-                    b,
-                    "  store " <> ty <> " " <> v <> ", " <> ty <> "* " <> ptr,
-                  )
-                }
-                Error(_) -> b
-              }
-            None ->
-              emit_line(
-                b,
-                "  store "
-                  <> ty
-                  <> " "
-                  <> v
-                  <> ", "
-                  <> ty
-                  <> "* %l."
-                  <> prefix
-                  <> safe(pname),
-              )
-          }
-        Error(_) -> b
-      }
-    })
-  emit_line(b, "  br label %" <> entry)
-}
-
-fn index_of_member(members: List(String), name: String, i: Int) -> Int {
-  case members {
-    [] -> 0
-    [head, ..tail] ->
-      case head == name {
-        True -> i
-        False -> index_of_member(tail, name, i + 1)
-      }
+fn emit_drops(ctx: Ctx, drops: List(ir.Op), b: Builder) -> Builder {
+  case drops {
+    [] -> b
+    [op, ..rest] -> {
+      let #(b, _) = emit_op(ctx, op, b)
+      emit_drops(ctx, rest, b)
+    }
   }
 }
 
-fn struct_gep(node: String, ty: String, index: Int, b: Builder) -> #(String, Builder) {
-  let #(p, b) = fresh(b)
-  let b =
-    emit_line(
-      b,
-      "  "
-        <> p
-        <> " = getelementptr "
-        <> ty
-        <> ", "
-        <> ty
-        <> "* "
-        <> node
-        <> ", i32 0, i32 "
-        <> int.to_string(index),
-    )
-  #(p, b)
-}
-
-/// A non-tail call to another member of the same dispatcher. It must not use
-/// the native stack: push the caller's frames and its return address on the
-/// heap return-stack, point every member slot at a fresh frame, bind the
-/// arguments and jump to the callee's entry. The result is left in `%__ret_val`
-/// and picked up by the call site's resume block (`__rs<k>`).
-fn emit_machine_call(ctx: Ctx, args: List(ir.Operand), fun: String, block_label: String, b: Builder) -> Builder {
-  // Read the arguments while the caller's frames are still in the slots.
-  let #(b, arg_vals) =
-    list.fold(args, #(b, []), fn(acc, arg) {
-      let #(b, vals) = acc
-      let #(ty, v, b) = read_val(ctx, arg, b)
-      #(b, [#(ty, v), ..vals])
-    })
-  let arg_vals = list.reverse(arg_vals)
-  let n = list.length(ctx.members)
-  let caller_idx = index_of_member(ctx.members, ctx.fn_name, 0)
-  let resume_idx = case dict.get(ctx.resume_index, block_name(ctx, block_label)) {
-    Ok(i) -> i
-    Error(_) -> 0
-  }
-  let size = 24 + n * 8
-  let #(raw, b) = fresh(b)
-  let b =
-    emit_line(b, "  " <> raw <> " = call i8* @gleamc_alloc0(i64 " <> int.to_string(size) <> ")")
-  let #(node, b) = fresh(b)
-  let b =
-    emit_line(b, "  " <> node <> " = bitcast i8* " <> raw <> " to " <> ctx.ret_ty_name <> "*")
-  let #(p, b) = struct_gep(node, ctx.ret_ty_name, 0, b)
-  let b = emit_line(b, "  store i64 " <> int.to_string(caller_idx) <> ", i64* " <> p)
-  let #(p, b) = struct_gep(node, ctx.ret_ty_name, 1, b)
-  let b = emit_line(b, "  store i64 " <> int.to_string(resume_idx) <> ", i64* " <> p)
-  let #(head, b) = fresh(b)
-  let b = emit_line(b, "  " <> head <> " = load i8*, i8** " <> ctx.ret_head)
-  let #(p, b) = struct_gep(node, ctx.ret_ty_name, 2, b)
-  let b = emit_line(b, "  store i8* " <> head <> ", i8** " <> p)
-  let b =
-    list.fold(
-      list.index_map(ctx.group_frames, fn(pair, index) { #(pair, index) }),
-      b,
-      fn(b, item) {
-        let #(#(slot, fr_ty), index) = item
-        let #(f, b) = fresh(b)
-        let b = emit_line(b, "  " <> f <> " = load " <> fr_ty <> "*, " <> fr_ty <> "** " <> slot)
-        let #(fp, b) = fresh(b)
-        let b = emit_line(b, "  " <> fp <> " = bitcast " <> fr_ty <> "* " <> f <> " to i8*")
-        let #(gp, b) = struct_gep(node, ctx.ret_ty_name, 3 + index, b)
-        emit_line(b, "  store i8* " <> fp <> ", i8** " <> gp)
-      },
-    )
-  let #(pushed, b) = fresh(b)
-  let b =
-    emit_line(
-      b,
-      "  " <> pushed <> " = bitcast " <> ctx.ret_ty_name <> "* " <> node <> " to i8*",
-    )
-  let b = emit_line(b, "  store i8* " <> pushed <> ", i8** " <> ctx.ret_head)
-  let b =
-    list.fold(ctx.group_frames, b, fn(b, pair) {
-      let #(slot, fr_ty) = pair
-      let #(raw, b) = fresh(b)
+/// Emits a terminator that leaves the function (`Ret`, `Tailcall`,
+/// `TailcallIndirect`). Operands are read first, then the trailing drops are
+/// emitted, then the transfer — so a `musttail` call is immediately followed by
+/// its `ret`.
+fn emit_exit_term(ctx: Ctx, term: ir.Terminator, drops: List(ir.Op), b: Builder) {
+  case term {
+    ir.Ret(value) -> {
+      let ret_ty = llvm_ty(ctx.ret, ctx.recursive)
+      let #(_, v, b) = read_val(ctx, value, b)
+      let b = emit_drops(ctx, drops, b)
+      emit_line(b, "  ret " <> ret_ty <> " " <> v)
+    }
+    ir.Tailcall(fun, args) -> {
+      let #(b, arg_list) = read_args(ctx, args, b)
+      let b = emit_drops(ctx, drops, b)
+      emit_tail_call(ctx, "@Gleamc_" <> fun, arg_list, musttail_ok(ctx, fun), b)
+    }
+    ir.TailcallIndirect(fval, args) -> {
+      // A function value that owns a frame (a local closure) must stay alive
+      // through the call: its environment is the callee's frame, and releasing
+      // the closure drops that frame. So the closure's own drops are emitted
+      // *after* the call, not before; the call cannot be `musttail`.
+      let fn_ty = operand_type(ctx.by_name, fval)
+      let fn_s = llvm_ty(fn_ty, ctx.recursive)
+      let #(_, fv, b) = read_val(ctx, fval, b)
+      let #(code, b) = extract_value(fn_s, fv, [0], b)
+      let #(env, b) = extract_value(fn_s, fv, [1], b)
+      let #(b, arg_list) = read_args(ctx, args, b)
+      let callargs = case arg_list {
+        "" -> "i8* " <> env
+        _ -> "i8* " <> env <> ", " <> arg_list
+      }
+      let ret_s = llvm_ty(ctx.ret, ctx.recursive)
+      let #(r, b) = fresh(b)
       let b =
         emit_line(
           b,
-          "  "
-            <> raw
-            <> " = call i8* @gleamc_alloc0(i64 ptrtoint ("
-            <> fr_ty
-            <> "* getelementptr ("
-            <> fr_ty
-            <> ", "
-            <> fr_ty
-            <> "* null, i32 1) to i64))",
+          "  " <> r <> " = call " <> ret_s <> " " <> code <> "(" <> callargs <> ")",
         )
-      let #(nf, b) = fresh(b)
-      let b = emit_line(b, "  " <> nf <> " = bitcast i8* " <> raw <> " to " <> fr_ty <> "*")
-      emit_line(b, "  store " <> fr_ty <> "* " <> nf <> ", " <> fr_ty <> "** " <> slot)
-    })
-  let target = case dict.get(ctx.group, fun) {
-    Ok(t) -> t
-    Error(_) -> #("", [], "", None)
+      let b = emit_drops(ctx, drops, b)
+      emit_line(b, "  ret " <> ret_s <> " " <> r)
+    }
+    _ -> emit_term(ctx, term, b)
   }
-  let #(_, params, entry, frame) = target
-  let b =
-    list.fold(
-      list.index_map(arg_vals, fn(pair, index) { #(pair, index) }),
-      b,
-      fn(b, item) {
-        let #(#(ty, v), index) = item
-        case list_at(params, index) {
-          Ok(pname) ->
-            case frame {
-              Some(#(fr_ty, fr_reg, fields)) ->
-                case dict.get(fields, pname) {
-                  Ok(slot) -> {
-                    let #(ptr, b) = frame_gep(fr_reg, fr_ty, slot, b)
-                    emit_line(b, "  store " <> ty <> " " <> v <> ", " <> ty <> "* " <> ptr)
-                  }
-                  Error(_) -> b
-                }
-              None -> b
-            }
-          Error(_) -> b
-        }
-      },
-    )
-  emit_line(b, "  br label %" <> entry)
 }
 
-/// Returns from a dispatcher member: pops the heap return-stack when this was a
-/// non-tail call (restoring the caller's frames and jumping to its call site),
-/// otherwise releases the frames and returns to the dispatcher's caller.
-fn emit_machine_return(ctx: Ctx, value: ir.Operand, b: Builder) -> Builder {
-  let #(_, v, b) = read_val(ctx, value, b)
-  emit_machine_return_val(ctx, v, b)
-}
-
-/// Like `emit_machine_return`, but the result is already an SSA value (e.g. the
-/// result of a tail call to a non-member).
-fn emit_machine_return_val(ctx: Ctx, v: String, b: Builder) -> Builder {
-  let ret_s = llvm_ty(ctx.ret, ctx.recursive)
-  let uid = int.to_string(b.next)
-  let done = "__ret_done_" <> uid
-  let pop = "__ret_pop_" <> uid
-  let #(head, b) = fresh(b)
-  let b = emit_line(b, "  " <> head <> " = load i8*, i8** " <> ctx.ret_head)
-  let #(isnull, b) = fresh(b)
-  let b = emit_line(b, "  " <> isnull <> " = icmp eq i8* " <> head <> ", null")
-  let b =
-    emit_line(b, "  br i1 " <> isnull <> ", label %" <> done <> ", label %" <> pop)
-  let b = emit_line(b, "\n" <> pop <> ":")
-  let #(node, b) = fresh(b)
-  let b =
-    emit_line(
-      b,
-      "  " <> node <> " = bitcast i8* " <> head <> " to " <> ctx.ret_ty_name <> "*",
-    )
-  let b = emit_group_frame_release(ctx, b)
-  let b =
-    list.fold(
-      list.index_map(ctx.group_frames, fn(pair, index) { #(pair, index) }),
-      b,
-      fn(b, item) {
-        let #(#(slot, fr_ty), index) = item
-        let #(gp, b) = struct_gep(node, ctx.ret_ty_name, 3 + index, b)
-        let #(fp, b) = fresh(b)
-        let b = emit_line(b, "  " <> fp <> " = load i8*, i8** " <> gp)
-        let #(f, b) = fresh(b)
-        let b = emit_line(b, "  " <> f <> " = bitcast i8* " <> fp <> " to " <> fr_ty <> "*")
-        emit_line(b, "  store " <> fr_ty <> "* " <> f <> ", " <> fr_ty <> "** " <> slot)
-      },
-    )
-  let #(npt, b) = struct_gep(node, ctx.ret_ty_name, 2, b)
-  let #(next, b) = fresh(b)
-  let b = emit_line(b, "  " <> next <> " = load i8*, i8** " <> npt)
-  let b = emit_line(b, "  store i8* " <> next <> ", i8** " <> ctx.ret_head)
-  let b =
-    emit_line(b, "  store " <> ret_s <> " " <> v <> ", " <> ret_s <> "* " <> ctx.ret_val)
-  let #(rp, b) = struct_gep(node, ctx.ret_ty_name, 1, b)
-  let #(rute, b) = fresh(b)
-  let b = emit_line(b, "  " <> rute <> " = load i64, i64* " <> rp)
-  let b =
-    emit_line(b, "  call void @Gleamc_rc_release(i8* " <> head <> ", i8* null)")
-  let arms =
-    list.index_map(ctx.resume_labels, fn(label, index) {
-      " i64 " <> int.to_string(index) <> ", label %" <> label
-    })
-  let b =
-    emit_line(
-      b,
-      "  switch i64 "
-        <> rute
-        <> ", label %"
-        <> done
-        <> " [ "
-        <> string.join(arms, " ")
-        <> " ]",
-    )
-  let b = emit_line(b, "\n" <> done <> ":")
-  let b = emit_group_frame_release(ctx, b)
-  emit_line(b, "  ret " <> ret_s <> " " <> v)
-}
-
-/// Rebinds an indirect tail call inside a dispatcher: the closure's code names
-/// a member of the same machine, so control moves there by storing the captured
-/// environment and the arguments into that member's frame and branching to its
-/// entry — constant stack, no `callindirect`.
-fn emit_indirect_rebind(ctx: Ctx, target, env, args, b: Builder) -> Builder {
-  let #(prefix, params, entry, frame) = target
-  let #(b, rest_params) = case params {
-    ["__env", ..rest] ->
-      case frame {
-        Some(#(fr_ty, fr_reg, fields)) ->
-          case dict.get(fields, "__env") {
-            Ok(slot) -> {
-              let #(ptr, b) = frame_gep(fr_reg, fr_ty, slot, b)
-              #(emit_line(b, "  store i8* " <> env <> ", i8** " <> ptr), rest)
-            }
-            Error(_) -> #(b, rest)
-          }
-        None ->
-          #(
-            emit_line(
-              b,
-              "  store i8* " <> env <> ", i8** %l." <> prefix <> safe("__env"),
-            ),
-            rest,
-          )
-      }
-    _ -> #(b, params)
-  }
-  emit_rebind(ctx, #(prefix, rest_params, entry, frame), args, b)
-}
-
-/// Runtime dispatch for an indirect tail call inside a dispatcher: compare the
-/// closure's code pointer against every member and jump to the matching state;
-/// anything else falls back to a normal indirect call.
-fn emit_indirect_switch(
+/// Emits a tail transfer: `musttail` when the return type allows it, otherwise a
+/// plain call followed by `ret`. A `musttail` call must be immediately followed
+/// by its `ret`; a large aggregate return goes through an sret pointer and
+/// aborts the backend under `musttail`, so it falls back to a normal call.
+fn emit_tail_call(
   ctx: Ctx,
-  code: String,
-  env: String,
-  args,
-  ret_s: String,
+  callee: String,
+  args: String,
+  musttail_ok: Bool,
   b: Builder,
 ) -> Builder {
-  let members =
-    dict.to_list(ctx.group)
-    |> list.sort(fn(a, b) {
-      let #(an, _) = a
-      let #(bn, _) = b
-      string.compare(an, bn)
-    })
-  // Each member: compare the code, jump to its rebind on a match, else fall
-  // through to the next comparison. The last `next` label is the fallback.
-  let b =
-    list.fold(members, b, fn(b, entry) {
-      let #(name, target) = entry
-      let #(cmp, b) = fresh(b)
-      let #(hit, b) = fresh(b)
-      let #(next, b) = fresh(b)
-      let hit_l = string.replace(hit, "%", "")
-      let next_l = string.replace(next, "%", "")
-      let b =
-        emit_line(
-          b,
-          "  " <> cmp <> " = icmp eq ptr " <> code <> ", @Gleamc_" <> name,
-        )
-      let b =
-        emit_line(
-          b,
-          "  br i1 " <> cmp <> ", label %" <> hit_l <> ", label %" <> next_l,
-        )
-      let b = emit_line(b, "\n" <> hit_l <> ":")
-      let b = emit_indirect_rebind(ctx, target, env, args, b)
-      emit_line(b, "\n" <> next_l <> ":")
-    })
-  emit_indirect_call(ctx, code, env, args, ret_s, b)
-}
-
-/// The fallback when a dispatcher's indirect callee is not a member: a normal
-/// indirect call (machine-aware result/return).
-fn emit_indirect_call(ctx: Ctx, code: String, env: String, args, ret_s: String, b: Builder) -> Builder {
-  let #(b, arg_list) = read_args(ctx, args, b)
-  let callargs = case arg_list {
-    "" -> "i8* " <> env
-    _ -> "i8* " <> env <> ", " <> arg_list
+  let ret_s = llvm_ty(ctx.ret, ctx.recursive)
+  let marker = case musttail_ok {
+    True -> "musttail call "
+    False -> "call "
   }
   let #(r, b) = fresh(b)
   let b =
     emit_line(
       b,
-      "  " <> r <> " = call " <> ret_s <> " " <> code <> "(" <> callargs <> ")",
+      "  " <> r <> " = " <> marker <> ret_s <> " " <> callee <> "(" <> args <> ")",
     )
-  case dict.is_empty(ctx.group) {
-    // Inside a dispatcher: pop the return-stack if this member was called
-    // (otherwise release its frames and return the value).
-    False -> emit_machine_return_val(ctx, r, b)
-    True -> emit_line(b, "  ret " <> ret_s <> " " <> r)
+  emit_line(b, "  ret " <> ret_s <> " " <> r)
+}
+
+/// Whether a value of `ty` can be returned through a `musttail` call. The ABI
+/// forbids a return type that lowers to an sret pointer (large aggregates);
+/// LLVM aborts the backend for those. Restricted to types the C ABI returns in
+/// registers.
+fn can_musttail(ty: Type, recursive: Dict(String, Bool)) -> Bool {
+  case ty {
+    ast.TInt | ast.TFloat | ast.TBool | ast.TNil -> True
+    TString -> True
+    TNamed("Nil") -> True
+    TNamed("BitArray") -> True
+    TNamed("void*") -> True
+    TNamed("Future") -> True
+    TNamed("Handle") -> True
+    ast.TFun(_, _) -> True
+    TNamed(name) -> is_recursive(recursive, name)
+    _ -> False
+  }
+}
+
+/// Whether a direct tail call may be marked `musttail`. The default calling
+/// convention requires the caller and callee prototypes to match exactly, which
+/// only holds when both sides take the same parameter types (a self- or
+/// same-signature mutual call). The return type must also be register-returned.
+fn musttail_ok(ctx: Ctx, fun: String) -> Bool {
+  can_musttail(ctx.ret, ctx.recursive) && prototype_matches(ctx, fun)
+}
+
+fn prototype_matches(ctx: Ctx, fun: String) -> Bool {
+  case dict.get(ctx.signatures, fun) {
+    Error(_) -> False
+    Ok(callee_params) -> {
+      let caller =
+        list.map(ctx.params, fn(param) {
+          llvm_ty(local_type(ctx.by_name, param), ctx.recursive)
+        })
+      let callee =
+        list.map(callee_params, fn(ty) { llvm_ty(ty, ctx.recursive) })
+      caller == callee
+    }
   }
 }
 
@@ -1715,40 +1416,17 @@ fn local_ptr(ctx: Ctx, name: String) -> String {
   "%l." <> ctx.prefix <> safe(name)
 }
 
-/// The address of a local. In a dispatcher member the frame lives in a mutable
-/// slot that a call/return can change, so the pointer must be recomputed from
-/// the slot at each access; elsewhere the pre-emitted `%l.<name>` GEP is fine.
+/// The address of a local. A frame function has already emitted `%l.<name>` as a
+/// GEP into the frame (`emit_frame_locals`); a plain function has emitted it as
+/// an entry alloca. Either way `%l.<name>` is the address.
 fn local_addr(ctx: Ctx, name: String, b: Builder) -> #(String, Builder) {
-  case ctx.ret_head {
-    "" -> #(local_ptr(ctx, name), b)
-    _ ->
-      case ctx.frame {
-        Some(FrameInfo(fr_ty, fr_reg, fields, _, _, _, _)) ->
-          case dict.get(fields, name) {
-            Ok(index) -> frame_gep(fr_reg, fr_ty, index, b)
-            Error(_) -> #(local_ptr(ctx, name), b)
-          }
-        None -> #(local_ptr(ctx, name), b)
-      }
-  }
+  #(local_ptr(ctx, name), b)
 }
 
-/// Emits a frame field `getelementptr` as an instruction and returns its SSA
-/// name (an inline GEP with a local base is not a valid LLVM operand).
-/// The current frame pointer for `base`. A dispatcher member keeps its frame in
-/// a mutable slot (`%__frp_m<idx>`, an `alloca <fr_ty>*`) so a call can push a
-/// fresh frame and the return can restore the caller's; a plain state machine
-/// passes the frame pointer directly.
-fn frame_base(base: String, fr_ty: String, b: Builder) -> #(String, Builder) {
-  case string.starts_with(base, "%__frp_") {
-    True -> {
-      let #(p, b) = fresh(b)
-      let b =
-        emit_line(b, "  " <> p <> " = load " <> fr_ty <> "*, " <> fr_ty <> "** " <> base)
-      #(p, b)
-    }
-    False -> #(base, b)
-  }
+/// The current frame pointer for `base`. The frame pointer is the fixed `%__fr`
+/// for every frame function, so this is the identity.
+fn frame_base(base: String, _fr_ty: String, b: Builder) -> #(String, Builder) {
+  #(base, b)
 }
 
 fn frame_gep(
@@ -2062,11 +1740,21 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
     }
     ir.OpDrop(src, ty) -> {
       case src == frame.frame_local {
-        // The frame handle is a machine-level value: the backend places its
-        // alloc and release at the call boundary (the wrapper), because the
-        // step returns before the wrapper reads the result. Nothing to emit in
-        // the step.
-        True -> #(b, Nil)
+        // The frame's own reference. Emitted as an op (not at `Ret`) so a
+        // `musttail` tail call can release the frame before the call, leaving
+        // no instruction between the call and its `ret`.
+        True ->
+          case ctx.frame {
+            Some(FrameInfo(fr_ty, _, _, _, _, _, _)) ->
+              #(
+                emit_line(
+                  b,
+                  "  call void @" <> frame_drop_sym(fr_ty) <> "(i8* %__frp)",
+                ),
+                Nil,
+              )
+            None -> #(b, Nil)
+          }
         False -> {
           let #(ty_s, v, b) = read_val(ctx, ir.Var(src), b)
           #(
@@ -2487,103 +2175,11 @@ fn emit_term(ctx: Ctx, term: ir.Terminator, b: Builder) {
           <> block_name(ctx, otherwise),
       )
     }
-    ir.Ret(value) -> {
-      case dict.is_empty(ctx.group) {
-        // A dispatcher member: pop the heap return-stack if this was a non-tail
-        // call, otherwise release the member frames and return the value.
-        False -> emit_machine_return(ctx, value, b)
-        True -> {
-          // Plain function or heap-frame function (captures only): the frame
-          // lives on the heap but there is no step machine, so release the
-          // active invocation's reference and return the value directly.
-          let ret_ty = llvm_ty(ctx.ret, ctx.recursive)
-          let #(_, v, b) = read_val(ctx, value, b)
-          let b = case ctx.frame {
-            Some(FrameInfo(fr_ty, _, _, _, _, _, _)) ->
-              emit_line(
-                b,
-                "  call void @" <> frame_drop_sym(fr_ty) <> "(i8* %__frp)",
-              )
-            None -> b
-          }
-          emit_line(b, "  ret " <> ret_ty <> " " <> v)
-        }
-      }
-    }
-    ir.Tailcall(fun, args) -> {
-      // A tail call to a dispatcher member (including the current one) is a
-      // rebind, not a call: constant stack.
-      case dict.get(ctx.group, fun) {
-        Ok(target) -> emit_rebind(ctx, target, args, b)
-        Error(_) ->
-          case dict.is_empty(ctx.group) {
-            // A dispatcher member tail-calls a function outside the group: an
-            // ordinary call, then the dispatcher returns (releasing every
-            // member frame). Not a step return.
-            False -> {
-              let ret_s = llvm_ty(ctx.ret, ctx.recursive)
-              let #(b, arg_list) = read_args(ctx, args, b)
-              let #(r, b) = fresh(b)
-              let b =
-                emit_line(
-                  b,
-                  "  "
-                    <> r
-                    <> " = call "
-                    <> ret_s
-                    <> " @Gleamc_"
-                    <> fun
-                    <> "("
-                    <> arg_list
-                    <> ")",
-                )
-              emit_machine_return_val(ctx, r, b)
-            }
-            True ->
-              case fun == ctx.fn_name {
-                True ->
-                  emit_rebind(
-                    ctx,
-                    #(ctx.prefix, ctx.params, ctx.entry, None),
-                    args,
-                    b,
-                  )
-                False -> {
-                  let ret_s = llvm_ty(ctx.ret, ctx.recursive)
-                  let #(b, arg_list) = read_args(ctx, args, b)
-                  let #(r, b) = fresh(b)
-                  let b =
-                    emit_line(
-                      b,
-                      "  "
-                        <> r
-                        <> " = call "
-                        <> ret_s
-                        <> " @Gleamc_"
-                        <> fun
-                        <> "("
-                        <> arg_list
-                        <> ")",
-                    )
-                  emit_line(b, "  ret " <> ret_s <> " " <> r)
-                }
-              }
-          }
-      }
-    }
-    ir.TailcallIndirect(fval, args) -> {
-      let fn_ty = operand_type(ctx.by_name, fval)
-      let fn_s = llvm_ty(fn_ty, ctx.recursive)
-      let #(_, fv, b) = read_val(ctx, fval, b)
-      let #(code, b) = extract_value(fn_s, fv, [0], b)
-      let #(env, b) = extract_value(fn_s, fv, [1], b)
-      let ret_s = llvm_ty(ctx.ret, ctx.recursive)
-      case dict.is_empty(ctx.group) {
-        // Inside a dispatcher the callee is a member: jump instead of calling.
-        False -> emit_indirect_switch(ctx, code, env, args, ret_s, b)
-        True -> emit_indirect_call(ctx, code, env, args, ret_s, b)
-      }
-    }
+    // Exit terminators are emitted by `emit_exit_term`, which reads their
+    // operands before the trailing drops. Delegating here keeps a safe default
+    // (no drops) if `emit_term` is ever called directly.
+    ir.Ret(_) | ir.Tailcall(_, _) | ir.TailcallIndirect(_, _) ->
+      emit_exit_term(ctx, term, [], b)
     ir.Unreachable -> emit_line(b, "  unreachable")
   }
 }
@@ -2812,18 +2408,6 @@ fn sizeof_reg(ty_name: String, b: Builder) {
       "  " <> sz <> " = ptrtoint %" <> ty_name <> "* " <> p <> " to i64",
     )
   #(sz, b)
-}
-
-fn list_at(items: List(String), index: Int) -> Result(String, Nil) {
-  case items {
-    [] -> Error(Nil)
-    [first, ..rest] -> {
-      case index {
-        0 -> Ok(first)
-        _ -> list_at(rest, index - 1)
-      }
-    }
-  }
 }
 
 fn records_ctors(ctx: Ctx) -> Dict(String, checker.CtorInfo) {
@@ -4398,518 +3982,6 @@ fn cmp_named(recursive, custom_types, type_name, ty_s, b) {
       },
     )
   #(b, Nil)
-}
-
-// ---------------------------------------------------------------------------
-// mutual tail-call groups (single dispatcher, the trampoline)
-// ---------------------------------------------------------------------------
-
-/// The functions the plan marked as state machines.
-fn plan_machines(planned: plan.Plan) -> Dict(String, Bool) {
-  case planned {
-    plan.Plan(_, _, _, _, _, _, machines) ->
-      list.fold(machines, dict.new(), fn(acc, name) {
-        dict.insert(acc, name, True)
-      })
-  }
-}
-
-/// The mutual groups a backend can collapse into a dispatcher, taken from the
-/// plan (planning owns membership; the backend only applies emission
-/// constraints such as matching return types).
-fn eligible_groups(
-  planned: plan.Plan,
-  functions: List(ir.Function),
-  ctors: Dict(String, checker.CtorInfo),
-) -> List(List(ir.Function)) {
-  let _ = ctors
-  let by_name =
-    dict.from_list(list.map(functions, fn(function) {
-      let ir.Function(name, _, _, _, _) = function
-      #(name, function)
-    }))
-  let dispatched = plan.dispatched_members(planned, functions)
-  let groups = case planned {
-    plan.Plan(_, _, groups, _, _, _, _) -> groups
-  }
-  list.filter_map(groups, fn(group) {
-    let plan.Group(members, _) = group
-    case list.all(members, fn(name) { dict.has_key(dispatched, name) }) {
-      True -> lookup_all(by_name, members)
-      False -> Error(Nil)
-    }
-  })
-}
-
-fn lookup_all(
-  by_name: Dict(String, ir.Function),
-  names: List(String),
-) -> Result(List(ir.Function), Nil) {
-  case names {
-    [] -> Ok([])
-    [name, ..rest] ->
-      case dict.get(by_name, name) {
-        Ok(function) ->
-          case lookup_all(by_name, rest) {
-            Ok(fns) -> Ok([function, ..fns])
-            Error(_) -> Error(Nil)
-          }
-        Error(_) -> Error(Nil)
-      }
-  }
-}
-
-/// A mutual group is eligible when every member has the same return type and
-/// only scalar locals (no handle), so the frame rebind can never dangle a
-/// borrowed reference. Handle groups await the frame-claim ownership stage.
-fn group_type_decls(
-  groups: List(List(ir.Function)),
-  recursive: Dict(String, Bool),
-) -> String {
-  string.join(
-    list.flat_map(groups, fn(group) {
-      let gid = string.join(list.map(group, fn(f) { f.name }), "_")
-      list.index_map(group, fn(function, index) {
-        let ir.Function(_, params, _, _, locals) = function
-        let by_name = locals_map(locals)
-        "%__"
-        <> gid
-        <> ".m"
-        <> int.to_string(index)
-        <> " = type { "
-        <> string.join(
-          list.map(params, fn(param) {
-            llvm_ty(local_type(by_name, param), recursive)
-          }),
-          ", ",
-        )
-        <> " }"
-      })
-    }),
-    "\n",
-  )
-}
-
-fn block_names_prefixed(
-  blocks: List(ir.Block),
-  prefix: String,
-) -> Dict(String, String) {
-  blocks
-  |> list.index_map(fn(block, index) {
-    let ir.Block(label, _, _) = block
-    #(label, prefix <> "bb" <> int.to_string(index))
-  })
-  |> dict.from_list
-}
-
-fn entry_name(blocks: List(ir.Block), prefix: String) -> String {
-  let _ = blocks
-  prefix <> "bb0"
-}
-
-fn emit_group(
-  group: List(ir.Function),
-  recursive: Dict(String, Bool),
-  lits: Dict(String, Int),
-  custom_types: List(ast.CustomType),
-  custom_by_name: Dict(String, ast.CustomType),
-  ctors: Dict(String, checker.CtorInfo),
-  tuples: List(Type),
-) -> #(String, List(String)) {
-  let gid = string.join(list.map(group, fn(f) { f.name }), "_")
-  let disp = "__g_" <> gid
-  let ret = case group {
-    [first, ..] -> {
-      let ir.Function(_, _, ret, _, _) = first
-      ret
-    }
-    [] -> ast.TNil
-  }
-  let ret_s = llvm_ty(ret, recursive)
-  let indexed =
-    list.index_map(group, fn(function, index) {
-      let prefix = "m" <> int.to_string(index) <> "_"
-      let ir.Function(name, params, _, blocks, _) = function
-      let info = frame_info(function, recursive)
-      // A mutable slot holding this member's *current* frame pointer, so a
-      // call can push a fresh frame and the return can restore the caller's.
-      let fr_reg = "%__frp_m" <> int.to_string(index)
-      #(
-        function,
-        index,
-        prefix,
-        entry_name(blocks, prefix),
-        name,
-        params,
-        with_reg(info, fr_reg),
-      )
-    })
-  let group_map =
-    indexed
-    |> list.map(fn(entry) {
-      let #(_, _, prefix, entry_label, name, params, info) = entry
-      let FrameInfo(fr_ty, fr_reg, fields, _, _, _, _) = info
-      #(name, #(prefix, params, entry_label, Some(#(fr_ty, fr_reg, fields))))
-    })
-    |> dict.from_list
-  let group_frames =
-    list.map(indexed, fn(entry) {
-      let #(_, _, _, _, _, _, info) = entry
-      let FrameInfo(fr_ty, fr_reg, _, _, _, _, _) = info
-      #(fr_reg, fr_ty)
-    })
-  let member_names =
-    list.map(indexed, fn(entry) {
-      let #(_, _, _, _, name, _, _) = entry
-      name
-    })
-  // Every non-tail call to a member gets a resume block, indexed so the heap
-  // return-stack can jump back to it.
-  let sites =
-    list.flat_map(indexed, fn(entry) {
-      let #(function, member_index, prefix, _, _, _, info) = entry
-      let FrameInfo(fr_ty, _, fields, _, _, _, _) = info
-      let ir.Function(_, _, _, blocks, _) = function
-      list.filter_map(blocks, fn(block) {
-        let ir.Block(label, ops, term) = block
-        case list.last(ops) {
-          Ok(ir.OpCall(dest, fun, _, _)) ->
-            case dict.has_key(group_map, fun) {
-              True ->
-                case term {
-                  ir.Jmp(resume) -> {
-                    let names = block_names_prefixed(blocks, prefix)
-                    let resume_prefixed = case dict.get(names, resume) {
-                      Ok(name) -> name
-                      Error(_) -> ""
-                    }
-                    let call_prefixed = case dict.get(names, label) {
-                      Ok(name) -> name
-                      Error(_) -> label
-                    }
-                    Ok(
-                      #(
-                        prefix,
-                        fr_ty,
-                        member_index,
-                        dict.get(fields, dest),
-                        resume_prefixed,
-                        call_prefixed,
-                      ),
-                    )
-                  }
-                  _ -> Error(Nil)
-                }
-              False -> Error(Nil)
-            }
-          _ -> Error(Nil)
-        }
-      })
-    })
-  let resume_labels =
-    list.index_map(sites, fn(_, index) { "__rs" <> int.to_string(index) })
-  let resume_index =
-    sites
-    |> list.index_map(fn(site, index) {
-      let #(_, _, _, _, _, block_label) = site
-      #(block_label, index)
-    })
-    |> dict.from_list
-  let ret_ty_name = "%__ret_" <> gid
-
-  // dispatcher
-  let b = Builder(next: 0, lines: [])
-  let b =
-    emit_line(
-      b,
-      "define " <> ret_s <> " @" <> disp <> "(i32 %__fn, i8* %__args) {",
-    )
-  // Every member's locals live in its own heap frame (the unified machine).
-  let b =
-    list.fold(indexed, b, fn(b, entry) {
-      let #(_, _, _, _, _, _, info) = entry
-      let FrameInfo(fr_ty, fr_reg, _, _, _, _, _) = info
-      let b = emit_line(b, "  " <> fr_reg <> " = alloca " <> fr_ty <> "*")
-      let #(raw, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  "
-            <> raw
-            <> " = call i8* @gleamc_alloc0(i64 ptrtoint ("
-            <> fr_ty
-            <> "* getelementptr ("
-            <> fr_ty
-            <> ", "
-            <> fr_ty
-            <> "* null, i32 1) to i64))",
-        )
-      let #(init, b) = fresh(b)
-      let b =
-        emit_line(b, "  " <> init <> " = bitcast i8* " <> raw <> " to " <> fr_ty <> "*")
-      emit_line(b, "  store " <> fr_ty <> "* " <> init <> ", " <> fr_ty <> "** " <> fr_reg)
-    })
-  // Heap return-stack head (null = at the dispatcher's tail) and the slot that
-  // carries a non-tail call's result back to its call site.
-  let b = emit_line(b, "  %__ret = alloca i8*")
-  let b = emit_line(b, "  store i8* null, i8** %__ret")
-  let b = emit_line(b, "  %__ret_val = alloca " <> ret_s)
-  let member_ctxs =
-    list.map(indexed, fn(entry) {
-      let #(function, _, prefix, entry_label, name, params, info) = entry
-      let ir.Function(_, _, member_ret, blocks, locals) = function
-      Ctx(
-        recursive: recursive,
-        by_name: locals_map(locals),
-        lits: lits,
-        blocks: block_names_prefixed(blocks, prefix),
-        ret: member_ret,
-        custom_types: custom_types,
-        custom_by_name: custom_by_name,
-        ctors: ctors,
-        tuples: tuples,
-        fn_name: name,
-        entry: entry_label,
-        params: params,
-        prefix: prefix,
-        group: group_map,
-        frame: Some(info),
-        group_frames: group_frames,
-        ret_head: "%__ret",
-        members: member_names,
-        resume_labels: resume_labels,
-        resume_index: resume_index,
-        ret_ty_name: ret_ty_name,
-        ret_val: "%__ret_val",
-      )
-    })
-  let b =
-    list.fold(list.zip(indexed, member_ctxs), b, fn(b, pair) {
-      let #(#(function, _, _, _, _, _, info), ctx) = pair
-      let ir.Function(_, _, _, _, locals) = function
-      let FrameInfo(fr_ty, _, _, _, _, _, _) = info
-      emit_frame_locals(ctx, fr_ty, locals, b)
-    })
-  let switch_arms =
-    list.index_map(group, fn(_, index) {
-      " i32 "
-      <> int.to_string(index)
-      <> ", label %__pro"
-      <> int.to_string(index)
-    })
-  let b =
-    emit_line(
-      b,
-      "  switch i32 %__fn, label %__bad [ "
-        <> string.join(switch_arms, " ")
-        <> " ]",
-    )
-  let b = emit_line(b, "\n__bad:")
-  let b = emit_line(b, "  unreachable")
-  // prologues
-  let b =
-    list.fold(indexed, b, fn(b, entry) {
-      let #(function, index, _, entry_label, _, _, info) = entry
-      let ir.Function(_, params, _, _, locals) = function
-      let by_name = locals_map(locals)
-      let struct_ty = "%__" <> gid <> ".m" <> int.to_string(index)
-      let FrameInfo(fr_ty, fr_reg, fields, _, _, _, _) = info
-      let b = emit_line(b, "\n__pro" <> int.to_string(index) <> ":")
-      let #(p, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  " <> p <> " = bitcast i8* %__args to " <> struct_ty <> "*",
-        )
-      let b =
-        list.fold(
-          list.index_map(params, fn(param, field) { #(param, field) }),
-          b,
-          fn(b, pair) {
-            let #(param, field) = pair
-            let pty_s = llvm_ty(local_type(by_name, param), recursive)
-            let #(gp, b) = fresh(b)
-            let b =
-              emit_line(
-                b,
-                "  "
-                  <> gp
-                  <> " = getelementptr "
-                  <> struct_ty
-                  <> ", "
-                  <> struct_ty
-                  <> "* "
-                  <> p
-                  <> ", i32 0, i32 "
-                  <> int.to_string(field),
-              )
-            let #(v, b) = fresh(b)
-            let b =
-              emit_line(
-                b,
-                "  " <> v <> " = load " <> pty_s <> ", " <> pty_s <> "* " <> gp,
-              )
-            case dict.get(fields, param) {
-              Ok(slot) -> {
-                let #(ptr, b) = frame_gep(fr_reg, fr_ty, slot, b)
-                emit_line(
-                  b,
-                  "  store " <> pty_s <> " " <> v <> ", " <> pty_s <> "* " <> ptr,
-                )
-              }
-              Error(_) -> b
-            }
-          },
-        )
-      emit_line(b, "  br label %" <> entry_label)
-    })
-  // member bodies
-  let b =
-    list.fold(list.zip(indexed, member_ctxs), b, fn(b, pair) {
-      let #(#(function, _, _, _, _, _, _), ctx) = pair
-      let ir.Function(_, _, _, blocks, _) = function
-      let #(b, _) = emit_block_list(ctx, blocks, b)
-      b
-    })
-  // Resume blocks for non-tail member calls: pick the result up from
-  // `%__ret_val`, store it into the caller's frame and jump back.
-  let b =
-    list.fold(
-      list.index_map(sites, fn(site, index) { #(site, index) }),
-      b,
-      fn(b, item) {
-        let #(#(_, fr_ty, member_index, dest_slot, resume_prefixed, _), index) = item
-        let b = emit_line(b, "\n__rs" <> int.to_string(index) <> ":")
-        let b = case dest_slot {
-          Ok(slot) -> {
-            let #(val, b) = fresh(b)
-            let b =
-              emit_line(
-                b,
-                "  " <> val <> " = load " <> ret_s <> ", " <> ret_s <> "* %__ret_val",
-              )
-            let #(fk, b) = fresh(b)
-            let b =
-              emit_line(
-                b,
-                "  "
-                  <> fk
-                  <> " = load "
-                  <> fr_ty
-                  <> "*, "
-                  <> fr_ty
-                  <> "** %__frp_m"
-                  <> int.to_string(member_index),
-              )
-            let #(dp, b) = fresh(b)
-            let b =
-              emit_line(
-                b,
-                "  "
-                  <> dp
-                  <> " = getelementptr "
-                  <> fr_ty
-                  <> ", "
-                  <> fr_ty
-                  <> "* "
-                  <> fk
-                  <> ", i32 0, i32 "
-                  <> int.to_string(slot),
-              )
-            emit_line(b, "  store " <> ret_s <> " " <> val <> ", " <> ret_s <> "* " <> dp)
-          }
-          Error(_) -> b
-        }
-        emit_line(b, "  br label %" <> resume_prefixed)
-      },
-    )
-  let record_decl =
-    ret_ty_name
-    <> " = type { i64, i64, i8*"
-    <> string.repeat(", i8*", list.length(member_names))
-    <> " }"
-  let dispatcher =
-    record_decl <> "\n" <> string.join(list.reverse(b.lines), "\n") <> "\n}\n"
-  let wrappers =
-    list.map(indexed, fn(entry) {
-      let #(function, index, _, _, _, _, _) = entry
-      wrapper_for_group(function, index, gid, ret_s, recursive, disp)
-    })
-  #(dispatcher, wrappers)
-}
-
-fn wrapper_for_group(
-  function: ir.Function,
-  index: Int,
-  gid: String,
-  ret_s: String,
-  recursive: Dict(String, Bool),
-  disp: String,
-) -> String {
-  let ir.Function(name, params, _, _, locals) = function
-  let by_name = locals_map(locals)
-  let struct_ty = "%__" <> gid <> ".m" <> int.to_string(index)
-  let decls =
-    list.index_map(params, fn(param, field) {
-      llvm_ty(local_type(by_name, param), recursive)
-      <> " %a"
-      <> int.to_string(field)
-    })
-  let stores =
-    string.join(
-      list.map(
-        list.index_map(params, fn(param, field) { #(param, field) }),
-        fn(pair) {
-          let #(param, field) = pair
-          let pty_s = llvm_ty(local_type(by_name, param), recursive)
-          "  %g"
-          <> int.to_string(field)
-          <> " = getelementptr "
-          <> struct_ty
-          <> ", "
-          <> struct_ty
-          <> "* %__a, i32 0, i32 "
-          <> int.to_string(field)
-          <> "\n"
-          <> "  store "
-          <> pty_s
-          <> " %a"
-          <> int.to_string(field)
-          <> ", "
-          <> pty_s
-          <> "* %g"
-          <> int.to_string(field)
-        },
-      ),
-      "\n",
-    )
-  "define "
-  <> ret_s
-  <> " @Gleamc_"
-  <> name
-  <> "("
-  <> string.join(decls, ", ")
-  <> ") {\n"
-  <> "  %__a = alloca "
-  <> struct_ty
-  <> "\n"
-  <> case stores {
-    "" -> ""
-    _ -> stores <> "\n"
-  }
-  <> "  %__ap = bitcast "
-  <> struct_ty
-  <> "* %__a to i8*\n"
-  <> "  %__r = call "
-  <> ret_s
-  <> " @"
-  <> disp
-  <> "(i32 "
-  <> int.to_string(index)
-  <> ", i8* %__ap)\n"
-  <> "  ret "
-  <> ret_s
-  <> " %__r\n}\n"
 }
 
 // ---------------------------------------------------------------------------

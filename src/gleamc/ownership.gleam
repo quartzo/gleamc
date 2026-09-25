@@ -19,7 +19,6 @@ import gleamc/ffi_modes
 import gleamc/frame
 import gleamc/ir
 import gleamc/owned_clone
-import gleamc/plan
 
 pub fn insert(
   module: ir.Module,
@@ -37,15 +36,10 @@ pub fn insert(
   let is_handle = fn(ty) { needs_drop_in(ty, fields_of, recursive) }
   let #(module, modes) = owned_clone.apply(module, modes, is_handle)
   let ir.Module(functions) = module
-  let machines = plan.machines(module)
-  // Only an eligible dispatcher jumps on an indirect tail call. Everywhere else
-  // it is an ordinary call, so make it one: then the function value is handled
-  // by the ownership flow (dropped after the call) instead of at the exit.
-  let dispatched = plan.dispatched_members(plan.plan(module), functions)
+  let machines = frame.machine_functions(module)
   let ffi = ffi_modes.table()
   ir.Module(
     list.map(functions, fn(function) {
-      let function = lower_indirect_tails(function, dispatched)
       let owned = insert_fn(function, fields_of, recursive, modes, ffi)
       case list.contains(machines, function.name) {
         True -> add_frame_lifecycle(owned)
@@ -53,40 +47,6 @@ pub fn insert(
       }
     }),
   )
-}
-
-/// Turns `TailcallIndirect` into `CallIndirect` + `Ret` for every function that
-/// is not a dispatcher member, so the value it calls is released through the
-/// normal ownership flow. Dispatchers keep the tail call (the target takes over).
-fn lower_indirect_tails(function: ir.Function, dispatched) -> ir.Function {
-  let ir.Function(name, params, ret, blocks, locals) = function
-  case dict.get(dispatched, name) {
-    Ok(_) -> function
-    Error(_) -> {
-      let #(blocks, added) =
-        list.fold(blocks, #([], []), fn(state, block) {
-          let #(acc, added) = state
-          let ir.Block(label, ops, term) = block
-          case term {
-            ir.TailcallIndirect(fval, args) -> {
-              let dest = label <> "_tail"
-              #(
-                list.append(acc, [
-                  ir.Block(
-                    label,
-                    list.append(ops, [ir.OpCallIndirect(dest, fval, args, ret)]),
-                    ir.Ret(ir.Var(dest)),
-                  ),
-                ]),
-                [ir.Local(dest, ret), ..added],
-              )
-            }
-            _ -> #(list.append(acc, [block]), added)
-          }
-        })
-      ir.Function(name, params, ret, blocks, list.append(locals, added))
-    }
-  }
 }
 
 /// The frame is an ownership-managed value. A closure that captures it takes a
@@ -447,6 +407,21 @@ fn insert_blocks(
   param_modes,
   views,
 ) {
+  // Parameters this function does not own. Passing one to an owned target (a
+  // tail or indirect call) is an ownership transfer, so the caller must retain
+  // it first: unlike an owned local's last use, there is no existing reference
+  // to hand over.
+  let borrowed_params =
+    list.index_map(params, fn(param, index) {
+      #(param, ffi_modes.mode_at(param_modes, index))
+    })
+    |> list.fold(dict.new(), fn(acc, pair) {
+      let #(param, mode) = pair
+      case mode {
+        ffi_modes.Borrow -> dict.insert(acc, param, True)
+        ffi_modes.Owned -> acc
+      }
+    })
   let succ_map =
     list.fold(blocks, dict.new(), fn(acc, block) {
       dict.insert(acc, block.label, successors(block.term))
@@ -506,6 +481,7 @@ fn insert_blocks(
             moved,
             modes,
             ffi,
+            borrowed_params,
           )
         // The callee is unknown, so every argument is treated as owning.
         ir.TailcallIndirect(_, args) ->
@@ -516,6 +492,7 @@ fn insert_blocks(
             base_live,
             pre,
             moved,
+            borrowed_params,
           )
         _ -> #(pre, moved)
       }
@@ -981,12 +958,39 @@ fn forward_loop(
     }
   }
 }
-fn term_retains(fun, args, index, handles, base_live, pre, moved, modes, ffi) {
+fn term_retains(
+  fun,
+  args,
+  index,
+  handles,
+  base_live,
+  pre,
+  moved,
+  modes,
+  ffi,
+  borrowed_params,
+) {
   let owning = ir.tailcall_owning_modes(fun, args, modes, ffi)
-  term_retains_owning(owning, index, handles, base_live, pre, moved)
+  term_retains_owning(
+    owning,
+    index,
+    handles,
+    base_live,
+    pre,
+    moved,
+    borrowed_params,
+  )
 }
 
-fn term_retains_owning(owning, index, handles, base_live, pre, moved) {
+fn term_retains_owning(
+  owning,
+  index,
+  handles,
+  base_live,
+  pre,
+  moved,
+  borrowed_params,
+) {
   list.fold(dict.to_list(owning_counts(owning)), #(pre, moved), fn(acc, entry) {
     let #(pre_acc, moved_acc) = acc
     let #(var_name, count) = entry
@@ -994,14 +998,20 @@ fn term_retains_owning(owning, index, handles, base_live, pre, moved) {
       Error(_) -> acc
       Ok(var_ty) -> {
         let last = !set_member(base_live, var_name)
-        let retained = case last {
-          True -> count - 1
-          False -> count
+        // A borrowed parameter has no reference to hand over, so the transfer
+        // needs `count` new retains even on its last use; an owned local's last
+        // use already carries one reference, hence `count - 1`.
+        let borrowed = set_member(borrowed_params, var_name)
+        let retained = case last, borrowed {
+          True, True -> count
+          True, False -> count - 1
+          False, _ -> count
         }
-        #(retain_n(pre_acc, index, var_name, var_ty, retained), case last {
-          True -> set_add(moved_acc, var_name)
-          False -> moved_acc
-        })
+        let moved = case last, borrowed {
+          True, False -> set_add(moved_acc, var_name)
+          _, _ -> moved_acc
+        }
+        #(retain_n(pre_acc, index, var_name, var_ty, retained), moved)
       }
     }
   })
