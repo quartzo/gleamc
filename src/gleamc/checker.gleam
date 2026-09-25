@@ -665,7 +665,13 @@ fn infer_call(env, signatures, ctors, fun, args) {
     EVar(name) ->
       case lookup(env, name) {
         Ok(TFun(param_types, ret)) -> {
-          use arg_types <- result.try(infer_all(env, signatures, ctors, args))
+          use arg_types <- result.try(infer_all_expect(
+            env,
+            signatures,
+            ctors,
+            param_types,
+            args,
+          ))
           use _ <- result.try(check_types(
             param_types,
             arg_types,
@@ -720,7 +726,13 @@ fn infer_named_call(env, signatures, ctors, name, args) {
           param_ty
         })
       use ordered <- result.try(order_args(param_names, name, args))
-      use arg_types <- result.try(infer_all(env, signatures, ctors, ordered))
+      use arg_types <- result.try(infer_all_expect(
+        env,
+        signatures,
+        ctors,
+        param_types,
+        ordered,
+      ))
       use _ <- result.try(check_types(
         param_types,
         arg_types,

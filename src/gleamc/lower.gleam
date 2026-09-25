@@ -265,8 +265,9 @@ fn lower_tail(b: Builder, expr: Expr) -> Result(Builder, LowerError) {
       case env_lookup(b.env, name) {
         // Direct call to a top-level function.
         Error(_) -> {
-          use #(operands, b1) <- result.try(lower_args(
+          use #(operands, b1) <- result.try(lower_args_expect(
             b,
+            signature_param_types(b, name),
             order_by_params(b, name, args),
           ))
           Ok(end_block(b1, ir.Tailcall(name, operands)))
@@ -822,8 +823,9 @@ fn lower_call(b, fun, args) -> Result(#(ir.Operand, Builder), LowerError) {
               ))
             }
             Error(_) -> {
-              use #(operands, b1) <- result.try(lower_args(
+              use #(operands, b1) <- result.try(lower_args_expect(
                 b,
+                signature_param_types(b, name),
                 order_by_params(b, name, args),
               ))
               let #(dest, b2) = fresh_local(b1, "call", ret_ty)
@@ -955,6 +957,17 @@ fn lower_args(b, exprs) -> Result(#(List(ir.Operand), Builder), LowerError) {
       use #(operands, b2) <- result.try(lower_args(b1, rest))
       Ok(#([operand, ..operands], b2))
     }
+  }
+}
+
+fn signature_param_types(b: Builder, name) -> List(Type) {
+  case dict.get(b.signatures, name) {
+    Ok(checker.Signature(params, _)) ->
+      list.map(params, fn(param) {
+        let #(_, ty) = param
+        ty
+      })
+    Error(_) -> []
   }
 }
 
