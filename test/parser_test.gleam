@@ -1,9 +1,25 @@
 import gleamc/ast.{
-  Arm, CustomType, DCustomType, DFunction, DImport, EBinop, EBlock, ECall, ECase,
-  ECtor, EInt, EVar, Function, Import, Module, PCtor, PVar, Stmt, TApp, TBool,
-  TInt, TString, TTuple, TVar, Variant,
+  Arm, CustomType, DCustomType, DExternal, DFunction, DImport, EBinop, EBlock,
+  ECall, ECase, ECtor, EInt, EVar, External, Function, Import, Module, PCtor,
+  PVar, Stmt, TApp, TBool, TInt, TString, TTuple, TVar, Variant,
 }
 import gleamc/parser
+
+pub fn parse_external_test() {
+  let assert Ok(Module([
+    DExternal(External(
+      True,
+      "hash",
+      [#("s", TString)],
+      TInt,
+      "native",
+      "Gleamc_hash_string",
+      _,
+    )),
+  ])) = parser.parse(
+    "@external(native, \"Gleamc_hash_string\")\npub fn hash(s: String) -> Int",
+  )
+}
 
 pub fn parse_type_variable_test() {
   let assert Ok(Module([
