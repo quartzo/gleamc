@@ -1541,6 +1541,8 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         TString,
         "host.which",
       )
+    "host", "now_ms" ->
+      check_builtin(env, signatures, ctors, args, [], TInt, "host.now_ms")
     "host", "blob_slice" ->
       check_builtin(
         env,

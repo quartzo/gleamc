@@ -195,6 +195,7 @@ GleamcBitArray Gleamc_host_run(GleamcString command);
 GleamcBitArray Gleamc_host_argv(void);
 GleamcBitArray Gleamc_host_blob_slice(GleamcBitArray blob, int64_t offset);
 int64_t Gleamc_host_int64_at(GleamcBitArray blob, int64_t index);
+int64_t Gleamc_host_now_ms(void);
 
 /* Accessors for the fixed result struct. */
 int64_t Gleamc_fs_result_code(GleamcFileResult result);

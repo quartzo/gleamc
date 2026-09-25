@@ -1766,6 +1766,11 @@ int64_t Gleamc_host_int64_at(GleamcBitArray blob, int64_t index) {
     return Gleamc_fs_int64_at(blob, index);
 }
 
+/* Monotonic milliseconds (uv_hrtime), for phase timing. */
+int64_t Gleamc_host_now_ms(void) {
+    return (int64_t)(uv_hrtime() / 1000000ULL);
+}
+
 GleamcBitArray Gleamc_host_blob_slice(GleamcBitArray blob, int64_t offset) {
     if (offset < 0 || (size_t)offset > blob.len) return (GleamcBitArray){NULL, 0};
     size_t len = blob.len - (size_t)offset;

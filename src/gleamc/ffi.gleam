@@ -48,6 +48,11 @@ pub fn which(name: String) -> Result(String, Nil) {
   }
 }
 
+/// Monotonic milliseconds (phase timing).
+pub fn now_ms() -> Int {
+  host.now_ms()
+}
+
 /// Reads an environment variable.
 pub fn get_env(name: String) -> Result(String, Nil) {
   case host.get_env(name) {

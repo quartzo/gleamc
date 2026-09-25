@@ -41,3 +41,7 @@ pub fn char_byte_len(string: String, off: Int) -> Int
 /// Copies `len` bytes from byte offset `start`.
 @external(erlang, "gleamc_ffi", "byte_slice")
 pub fn byte_slice(string: String, start: Int, len: Int) -> String
+
+/// Monotonic milliseconds (for phase timing).
+@external(erlang, "gleamc_ffi", "now_ms")
+pub fn now_ms() -> Int

@@ -120,9 +120,13 @@ fn usage() -> Nil {
 // ---------------------------------------------------------------------------
 
 fn compile_file(source: String, options: Options) -> Nil {
+  let t = ffi.now_ms()
   case loader.load(source) {
     Error(err) -> io.println(source <> ": " <> err)
-    Ok(modules) -> compile_modules(modules, strip_gleam(source), options)
+    Ok(modules) -> {
+      let _ = pipeline.mark("loader", t)
+      compile_modules(modules, strip_gleam(source), options)
+    }
   }
 }
 

@@ -810,6 +810,7 @@ fn builtins() -> Dict(String, Scheme) {
   |> dict.insert("host.argv", Scheme(none, Fun([], Con("BitArray", []))))
   |> dict.insert("host.get_env", Scheme(none, Fun([s], s)))
   |> dict.insert("host.which", Scheme(none, Fun([s], s)))
+  |> dict.insert("host.now_ms", Scheme(none, Fun([], i)))
   |> dict.insert(
     "host.blob_slice",
     Scheme(none, Fun([Con("BitArray", []), i], Con("BitArray", []))),

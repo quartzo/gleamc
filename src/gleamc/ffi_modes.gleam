@@ -148,6 +148,7 @@ pub fn table() -> Dict(String, FfiSig) {
   |> dict.insert("host.argv", FfiSig([], OwnedResult))
   |> dict.insert("host.get_env", FfiSig([Borrow], OwnedResult))
   |> dict.insert("host.which", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("host.now_ms", FfiSig([], OwnedResult))
   |> dict.insert("host.blob_slice", FfiSig([Borrow, Borrow], OwnedResult))
   |> dict.insert("host.int64_at", FfiSig([Borrow, Borrow], OwnedResult))
   |> dict.insert("host.char_code_at", FfiSig([Borrow, Borrow], OwnedResult))

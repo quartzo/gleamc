@@ -15,8 +15,13 @@
     int64_at/2,
     char_code_at/2,
     char_byte_len/2,
-    byte_slice/3
+    byte_slice/3,
+    now_ms/0
 ]).
+
+-spec now_ms() -> integer().
+now_ms() ->
+    erlang:monotonic_time(millisecond).
 
 %% Runs a command through the shell and returns a blob: 8-byte little-endian
 %% exit status followed by the combined stdout/stderr.
