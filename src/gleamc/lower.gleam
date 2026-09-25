@@ -139,10 +139,11 @@ fn sequence(results) {
 fn sequence_loop(results, acc) {
   case results {
     [] -> Ok(list.reverse(acc))
-    [result, ..rest] -> {
-      use value <- result.try(result)
-      sequence_loop(rest, [value, ..acc])
-    }
+    [result, ..rest] ->
+      case result {
+        Ok(value) -> sequence_loop(rest, [value, ..acc])
+        Error(error) -> Error(error)
+      }
   }
 }
 

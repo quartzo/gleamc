@@ -337,13 +337,29 @@ fn sort_loop(
 }
 
 fn insert(list: List(a), item: a, compare: fn(a, a) -> Order) -> List(a) {
+  insert_loop(list, item, compare, [])
+}
+
+fn insert_loop(
+  list: List(a),
+  item: a,
+  compare: fn(a, a) -> Order,
+  acc: List(a),
+) -> List(a) {
   case list {
-    [] -> [item]
+    [] -> reverse([item, ..acc])
     [head, ..rest] ->
       case compare(item, head) {
-        Lt -> [item, head, ..rest]
-        _ -> [head, ..insert(rest, item, compare)]
+        Lt -> reverse_onto(acc, [item, head, ..rest])
+        _ -> insert_loop(rest, item, compare, [head, ..acc])
       }
+  }
+}
+
+fn reverse_onto(acc: List(a), tail: List(a)) -> List(a) {
+  case acc {
+    [] -> tail
+    [head, ..rest] -> reverse_onto(rest, [head, ..tail])
   }
 }
 

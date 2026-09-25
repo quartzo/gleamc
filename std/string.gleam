@@ -4,22 +4,29 @@ import gleam/order
 
 pub fn concat(strings: List(String)) -> String {
   case strings {
-    ListCons(head, rest) -> head <> concat(rest)
+    ListCons(head, rest) -> concat_loop(rest, head)
     ListEmpty -> ""
+  }
+}
+
+fn concat_loop(strings: List(String), acc: String) -> String {
+  case strings {
+    ListCons(head, rest) -> concat_loop(rest, acc <> head)
+    ListEmpty -> acc
   }
 }
 
 pub fn join(strings: List(String), separator: String) -> String {
   case strings {
-    ListCons(head, rest) -> head <> join_rest(rest, separator)
+    ListCons(head, rest) -> join_loop(rest, separator, head)
     ListEmpty -> ""
   }
 }
 
-fn join_rest(strings: List(String), separator: String) -> String {
+fn join_loop(strings: List(String), separator: String, acc: String) -> String {
   case strings {
-    ListCons(head, rest) -> separator <> head <> join_rest(rest, separator)
-    ListEmpty -> ""
+    ListCons(head, rest) -> join_loop(rest, separator, acc <> separator <> head)
+    ListEmpty -> acc
   }
 }
 
