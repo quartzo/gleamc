@@ -975,13 +975,17 @@ fn infer_var(env: Env, st: St, name: String) -> Result(#(Ty, St), InferError) {
 }
 
 fn infer_all(env: Env, st: St, exprs) {
+  infer_all_loop(env, st, exprs, [])
+}
+
+fn infer_all_loop(env: Env, st: St, exprs, acc) {
   case exprs {
-    [] -> Ok(#([], st))
-    [expr, ..rest] -> {
-      use #(ty, st) <- result_try(infer(env, st, expr))
-      use #(tys, st) <- result_try(infer_all(env, st, rest))
-      Ok(#([ty, ..tys], st))
-    }
+    [] -> Ok(#(list.reverse(acc), st))
+    [expr, ..rest] ->
+      case infer(env, st, expr) {
+        Ok(#(ty, st)) -> infer_all_loop(env, st, rest, [ty, ..acc])
+        Error(error) -> Error(error)
+      }
   }
 }
 
