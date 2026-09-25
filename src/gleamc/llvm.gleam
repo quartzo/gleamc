@@ -91,6 +91,7 @@ pub fn emit(
     collect_tuple_types(custom_types, functions)
     |> list.sort(fn(a, b) { string.compare(tuple_key(a), tuple_key(b)) })
   let machines = machine_set(ir_module)
+  let suspends = suspend_set(ir_module)
   let signatures = function_signatures(functions)
   let fn_types =
     collect_fn_types(custom_types, functions)
@@ -167,9 +168,9 @@ pub fn emit(
   let defs =
     string.join(
       list.map(functions, fn(function) {
-        case dict.has_key(machines, function.name) {
+        case dict.has_key(suspends, function.name) {
           True ->
-            emit_frame_function(
+            emit_machine_function(
               function,
               recursive,
               lits,
@@ -180,16 +181,30 @@ pub fn emit(
               signatures,
             )
           False ->
-            emit_function(
-              function,
-              recursive,
-              lits,
-              custom_types,
-              custom_by_name,
-              ctors,
-              tuples,
-              signatures,
-            )
+            case dict.has_key(machines, function.name) {
+              True ->
+                emit_frame_function(
+                  function,
+                  recursive,
+                  lits,
+                  custom_types,
+                  custom_by_name,
+                  ctors,
+                  tuples,
+                  signatures,
+                )
+              False ->
+                emit_function(
+                  function,
+                  recursive,
+                  lits,
+                  custom_types,
+                  custom_by_name,
+                  ctors,
+                  tuples,
+                  signatures,
+                )
+            }
         }
       }),
       "\n\n",
@@ -888,6 +903,18 @@ fn machine_set(module: ir.Module) -> Dict(String, Bool) {
   |> list.fold(dict.new(), fn(acc, name) { dict.insert(acc, name, True) })
 }
 
+/// The functions that suspend: emitted as a `_step` + wrapper state machine
+/// driven by `gleamc_sched_run`.
+fn suspend_set(module: ir.Module) -> Dict(String, Bool) {
+  let ir.Module(functions) = module
+  list.fold(functions, dict.new(), fn(acc, function) {
+    case frame.has_suspend(function) {
+      True -> dict.insert(acc, function.name, True)
+      False -> acc
+    }
+  })
+}
+
 /// Parameter types of every function, keyed by name. Used to decide whether a
 /// `musttail` call has matching caller/callee prototypes.
 fn function_signatures(functions: List(ir.Function)) -> Dict(String, List(Type)) {
@@ -1146,6 +1173,360 @@ fn frame_type_decl(function: ir.Function, recursive) -> String {
   <> " = type { "
   <> string.join(list.append(field_tys, tail), ", ")
   <> " }"
+}
+
+/// Reads an awaited value from a pending future into `dest` and releases the
+/// future. `Gleamc_uv_await_*` drives the loop to completion; the scheduler has
+/// already waited, so it returns immediately.
+fn emit_await_read(ctx: Ctx, dest: String, fut_v: String, b: Builder) -> Builder {
+  let dest_ty = local_type(ctx.by_name, dest)
+  let b = case is_nil_type(dest_ty) {
+    True -> emit_line(b, "  call void @Gleamc_uv_await_nil(i8* " <> fut_v <> ")")
+    False ->
+      case dest_ty {
+        TNamed("BitArray") -> {
+          let #(val, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> val
+                <> " = call %GleamcBitArray @Gleamc_uv_await_bytes(i8* "
+                <> fut_v
+                <> ")",
+            )
+          store_local(ctx, dest, "%GleamcBitArray", val, b)
+        }
+        _ -> {
+          let b =
+            emit_line(b, "  call void @Gleamc_uv_await_nil(i8* " <> fut_v <> ")")
+          let #(val, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  " <> val <> " = call i64 @Gleamc_uv_result(i8* " <> fut_v <> ")",
+            )
+          store_local(ctx, dest, "i64", val, b)
+        }
+      }
+  }
+  emit_line(b, "  call void @Gleamc_rc_release(i8* " <> fut_v <> ", i8* null)")
+}
+
+/// Splits a block's op list at its (single) `OpSuspend`: the ops before it, the
+/// suspension, and the ops after it (ownership's dead drops).
+fn split_suspend(ops: List(ir.Op)) {
+  case ops {
+    [] -> #([], None, [])
+    [ir.OpSuspend(_, fut, resume), ..rest] -> #([], Some(#(fut, resume)), rest)
+    [op, ..rest] -> {
+      let #(pre, suspend, post) = split_suspend(rest)
+      #([op, ..pre], suspend, post)
+    }
+  }
+}
+
+/// Emits the blocks of a machine `step`: a suspension stores the pending future
+/// and the resume state and returns "not done"; a resume block reads the awaited
+/// value; a `Ret` stores the result and returns "done".
+fn emit_machine_blocks(
+  ctx: Ctx,
+  info: FrameInfo,
+  resumes: Dict(String, String),
+  blocks: List(ir.Block),
+  b: Builder,
+) {
+  let FrameInfo(fr_ty, _reg, _fields, state_idx, fut_idx, _result_idx, block_index) = info
+  case blocks {
+    [] -> #(b, Nil)
+    [block, ..rest] -> {
+      let ir.Block(label, ops, term) = block
+      let b = emit_line(b, "\n" <> block_name(ctx, label) <> ":")
+      let b = case dict.get(resumes, label) {
+        Ok(dest) -> {
+          let #(fp, b) = frame_gep("%__fr", fr_ty, fut_idx, b)
+          let #(fv, b) = fresh(b)
+          let b = emit_line(b, "  " <> fv <> " = load i8*, i8** " <> fp)
+          let b = emit_await_read(ctx, dest, fv, b)
+          let #(fp2, b) = frame_gep("%__fr", fr_ty, fut_idx, b)
+          emit_line(b, "  store i8* null, i8** " <> fp2)
+        }
+        Error(_) -> b
+      }
+      let #(pre, suspend, post) = split_suspend(ops)
+      let #(b, _) = emit_ops(ctx, pre, b)
+      // The ops after a suspension are the ownership dead drops; they run before
+      // the yield, since the block leaves at the suspension.
+      let #(b, _) = emit_ops(ctx, post, b)
+      let b = case suspend {
+        Some(#(fut, resume)) -> {
+          let #(_, fv, b) = read_val(ctx, fut, b)
+          let #(fp, b) = frame_gep("%__fr", fr_ty, fut_idx, b)
+          let b = emit_line(b, "  store i8* " <> fv <> ", i8** " <> fp)
+          let resume_idx = case dict.get(block_index, resume) {
+            Ok(i) -> i
+            Error(_) -> 0
+          }
+          let #(sp, b) = frame_gep("%__fr", fr_ty, state_idx, b)
+          let b =
+            emit_line(
+              b,
+              "  store i32 " <> int.to_string(resume_idx) <> ", i32* " <> sp,
+            )
+          emit_line(b, "  ret i1 false")
+        }
+        None -> emit_machine_term(ctx, info, term, b)
+      }
+      emit_machine_blocks(ctx, info, resumes, rest, b)
+    }
+  }
+}
+
+fn emit_machine_term(ctx: Ctx, info: FrameInfo, term: ir.Terminator, b: Builder) {
+  let FrameInfo(fr_ty, _reg, _fields, _state, _fut, result_idx, _) = info
+  let ret_ty = llvm_ty(ctx.ret, ctx.recursive)
+  case term {
+    ir.Ret(value) ->
+      case is_nil_type(ctx.ret) {
+        True -> emit_line(b, "  ret i1 true")
+        False -> {
+          let #(_, v, b) = read_val(ctx, value, b)
+          let #(rp, b) = frame_gep("%__fr", fr_ty, result_idx, b)
+          let b =
+            emit_line(
+              b,
+              "  store " <> ret_ty <> " " <> v <> ", " <> ret_ty <> "* " <> rp,
+            )
+          emit_line(b, "  ret i1 true")
+        }
+      }
+    ir.Jmp(label) -> emit_line(b, "  br label %" <> block_name(ctx, label))
+    ir.Branch(cond, then, otherwise) -> {
+      let #(_, v, b) = read_val(ctx, cond, b)
+      emit_line(
+        b,
+        "  br i1 "
+          <> v
+          <> ", label %"
+          <> block_name(ctx, then)
+          <> ", label %"
+          <> block_name(ctx, otherwise),
+      )
+    }
+    // A tail call from a suspending function is a plain call: the machine cannot
+    // keep the caller's frame across it. Store the result and finish the step.
+    ir.Tailcall(fun, args) -> {
+      let #(b, arg_list) = read_args(ctx, args, b)
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> r <> " = call " <> ret_ty <> " @Gleamc_" <> fun <> "(" <> arg_list <> ")",
+        )
+      emit_machine_finish(ctx, info, r, b)
+    }
+    ir.TailcallIndirect(fval, args) -> {
+      let fn_ty = operand_type(ctx.by_name, fval)
+      let fn_s = llvm_ty(fn_ty, ctx.recursive)
+      let #(_, fv, b) = read_val(ctx, fval, b)
+      let #(code, b) = extract_value(fn_s, fv, [0], b)
+      let #(env, b) = extract_value(fn_s, fv, [1], b)
+      let #(b, arg_list) = read_args(ctx, args, b)
+      let callargs = case arg_list {
+        "" -> "i8* " <> env
+        _ -> "i8* " <> env <> ", " <> arg_list
+      }
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> r <> " = call " <> ret_ty <> " " <> code <> "(" <> callargs <> ")",
+        )
+      emit_machine_finish(ctx, info, r, b)
+    }
+    ir.Unreachable -> emit_line(b, "  unreachable")
+  }
+}
+
+/// Stores a step's result in the frame (unless nil) and returns "done".
+fn emit_machine_finish(ctx: Ctx, info: FrameInfo, value: String, b: Builder) -> Builder {
+  let FrameInfo(fr_ty, _reg, _fields, _state, _fut, result_idx, _) = info
+  let ret_ty = llvm_ty(ctx.ret, ctx.recursive)
+  let b = case is_nil_type(ctx.ret) {
+    True -> b
+    False -> {
+      let #(rp, b) = frame_gep("%__fr", fr_ty, result_idx, b)
+      emit_line(b, "  store " <> ret_ty <> " " <> value <> ", " <> ret_ty <> "* " <> rp)
+    }
+  }
+  emit_line(b, "  ret i1 true")
+}
+
+/// A function that suspends is a flat state machine: a `_step` that switches on
+/// a frame `state`, and a wrapper that drives it through `gleamc_sched_run`. A
+/// suspension hands the future to libuv and yields; the resume block reads the
+/// value. The wrapper owns the frame and releases it after reading the result
+/// (the step suppresses `OpDrop(frame)`).
+fn emit_machine_function(
+  function: ir.Function,
+  recursive,
+  lits,
+  custom_types,
+  custom_by_name,
+  ctors,
+  tuples,
+  signatures,
+) -> String {
+  let ir.Function(name, params, ret, raw_blocks, locals) = function
+  let blocks =
+    list.map(raw_blocks, fn(block) {
+      let ir.Block(label, ops, term) = block
+      ir.Block(
+        label,
+        list.filter(ops, fn(op) {
+          case op {
+            ir.OpDrop(src, _) -> src != frame.frame_local
+            _ -> True
+          }
+        }),
+        term,
+      )
+    })
+  let info = frame_info(function, recursive)
+  let FrameInfo(fr_ty, _fr_reg, _fields, state_idx, _fut_idx, _result_idx, _block_index) = info
+  let ctx =
+    Ctx(
+      recursive: recursive,
+      by_name: locals_map(locals),
+      lits: lits,
+      blocks: block_names(blocks),
+      ret: ret,
+      custom_types: custom_types,
+      custom_by_name: custom_by_name,
+      ctors: ctors,
+      tuples: tuples,
+      fn_name: name,
+      entry: case blocks {
+        [ir.Block(label, _, _), ..] -> block_name_of(blocks, label)
+        [] -> "bb0"
+      },
+      params: params,
+      prefix: "",
+      signatures: signatures,
+      frame: Some(info),
+    )
+  let resumes =
+    list.fold(blocks, dict.new(), fn(acc, block) {
+      let ir.Block(_, ops, _) = block
+      list.fold(ops, acc, fn(acc, op) {
+        case op {
+          ir.OpSuspend(dest, _, resume) -> dict.insert(acc, resume, dest)
+          _ -> acc
+        }
+      })
+    })
+  let b = Builder(next: 0, lines: [])
+  let b =
+    emit_line(b, "define i1 @Gleamc_" <> name <> "_step(" <> fr_ty <> "* %__fr) {")
+  let b = emit_frame_locals(ctx, fr_ty, locals, b)
+  let #(sp, b) = frame_gep("%__fr", fr_ty, state_idx, b)
+  let #(sv, b) = fresh(b)
+  let b = emit_line(b, "  " <> sv <> " = load i32, i32* " <> sp)
+  let arms =
+    list.index_map(blocks, fn(block, index) {
+      let ir.Block(label, _, _) = block
+      " i32 " <> int.to_string(index) <> ", label %" <> block_name(ctx, label)
+    })
+  let b =
+    emit_line(
+      b,
+      "  switch i32 "
+        <> sv
+        <> ", label %__bad [ "
+        <> string.join(arms, " ")
+        <> " ]",
+    )
+  let b = emit_line(b, "\n__bad:")
+  let b = emit_line(b, "  unreachable")
+  let #(b, _) = emit_machine_blocks(ctx, info, resumes, blocks, b)
+  let step = string.join(list.reverse(b.lines), "\n") <> "\n}\n"
+  let wrapper = emit_machine_wrapper(function, info, recursive)
+  step <> "\n" <> wrapper
+}
+
+fn emit_machine_wrapper(function: ir.Function, info: FrameInfo, recursive: Dict(String, Bool)) -> String {
+  let ir.Function(name, params, ret, _, locals) = function
+  let FrameInfo(fr_ty, _reg, fields, state_idx, fut_idx, result_idx, _) = info
+  let by_name = locals_map(locals)
+  let ret_ty = llvm_ty(ret, recursive)
+  let args =
+    list.map(params, fn(param) {
+      llvm_ty(local_type(by_name, param), recursive) <> " %arg." <> safe(param)
+    })
+  let b = Builder(next: 0, lines: [])
+  let b =
+    emit_line(
+      b,
+      "define " <> ret_ty <> " @Gleamc_" <> name <> "(" <> string.join(args, ", ") <> ") {",
+    )
+  let b =
+    emit_line(
+      b,
+      "  %__fr_raw = call i8* @gleamc_alloc0(i64 ptrtoint ("
+        <> fr_ty
+        <> "* getelementptr ("
+        <> fr_ty
+        <> ", "
+        <> fr_ty
+        <> "* null, i32 1) to i64))",
+    )
+  let b = emit_line(b, "  %__fr = bitcast i8* %__fr_raw to " <> fr_ty <> "*")
+  let b = emit_line(b, "  %__frp = bitcast " <> fr_ty <> "* %__fr to i8*")
+  let b =
+    list.fold(params, b, fn(b, param) {
+      let pty = llvm_ty(local_type(by_name, param), recursive)
+      let index = case dict.get(fields, param) {
+        Ok(found) -> found
+        Error(_) -> 0
+      }
+      let #(ptr, b) = frame_gep("%__fr", fr_ty, index, b)
+      emit_line(
+        b,
+        "  store " <> pty <> " %arg." <> safe(param) <> ", " <> pty <> "* " <> ptr,
+      )
+    })
+  let #(sp, b) = frame_gep("%__fr", fr_ty, state_idx, b)
+  let b = emit_line(b, "  store i32 0, i32* " <> sp)
+  let #(fp, b) = frame_gep("%__fr", fr_ty, fut_idx, b)
+  let b = emit_line(b, "  store i8* null, i8** " <> fp)
+  let #(fp2, b) = frame_gep("%__fr", fr_ty, fut_idx, b)
+  let b =
+    emit_line(
+      b,
+      "  %__did = call i1 @gleamc_sched_run(i1 (i8*)* bitcast (i1 ("
+        <> fr_ty
+        <> "*)* @Gleamc_"
+        <> name
+        <> "_step to i1 (i8*)*), i8* %__frp, i8** "
+        <> fp2
+        <> ")",
+    )
+  let #(result, b) = case is_nil_type(ret) {
+    True -> #(None, b)
+    False -> {
+      let #(rp, b) = frame_gep("%__fr", fr_ty, result_idx, b)
+      let #(rv, b) = fresh(b)
+      let b =
+        emit_line(b, "  " <> rv <> " = load " <> ret_ty <> ", " <> ret_ty <> "* " <> rp)
+      #(Some(rv), b)
+    }
+  }
+  let b = emit_line(b, "  call void @" <> frame_drop_sym(fr_ty) <> "(i8* %__frp)")
+  let b = case result {
+    Some(rv) -> emit_line(b, "  ret " <> ret_ty <> " " <> rv)
+    None -> emit_line(b, "  ret i32 0")
+  }
+  string.join(list.reverse(b.lines), "\n") <> "\n}\n"
 }
 
 /// Emits the `step` (switch on state) and the wrapper that drives it through

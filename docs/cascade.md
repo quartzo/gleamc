@@ -76,10 +76,6 @@ the `--ir` dump; a rendering problem off the `.ll`.
 
 ## Known deviations (to fix)
 
-- **Async is lowered inline.** `await` drives the libuv loop synchronously with
-  `gleamc_future_wait` instead of suspending and handing the `Future` back to
-  the loop. Restoring the state machine is stage 2 of the musttail plan, and is
-  the intended home of `suspend_live_vars` in the frame.
 - **Frame lifecycle placement.** `OpFrameNew`/`OpDrop(frame)` are visible to
   `ownership`; the backend still emits the allocation (`gleamc_alloc0`) and the
   frame teardown symbol. See [frame-environment.md](frame-environment.md).

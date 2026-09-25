@@ -1,7 +1,7 @@
 # Plan: drop the dispatchers, TCO with musttail, async explicit
 
-Status: dispatchers removed, `musttail` TCO landed, and the self-host runs
-under an 8 MiB stack (tests/diffs green). Async stage 2 remains.
+Status: dispatchers removed, `musttail` TCO landed, async is a state machine
+again, and the self-host runs under an 8 MiB stack (tests/diffs green).
 
 ## Context
 
@@ -62,15 +62,18 @@ clone) is an ownership transfer with no reference to hand over, so it needs
 already carries one reference and needs `count - 1`. `term_retains_owning` now
 consults the caller's borrowed parameters (`borrowed_params` in
 `ownership.gleam`).
+## Async (stage 2, done)
 
-## Async (stage 2, pending)
+`await` suspends and hands the `Future` back to the libuv loop: a function with
+an `OpSuspend` is a heap frame function (`frame.has_suspend`) and is emitted as
+a `_step` + wrapper state machine (`emit_machine_function`), driven by
+`gleamc_sched_run`. `lower` ends the block at the suspension and stamps the
+resume label, so no `cps` pass is needed. The wrapper owns the frame and
+releases it after reading the result; the step suppresses `OpDrop(frame)`. See
+[machine.md](machine.md#async).
 
-The intended behaviour is to suspend and hand the `Future` back to the libuv
-loop (restore the `80b62ff` state machine, undone by `4afd3d6`). The plan is to
-lower it in an IR->IR pass right after `frame`, with an `ir.Suspend(fut, dest,
-resume)` **terminator** instead of the `OpSuspend` op, so `cps` is not needed
-and the backend has no async knowledge. `musttail` is not used for suspending
-functions: pausing to the loop is the expected behaviour.
+Still to refine: `OpSuspend` remains an op (block-ending) rather than an IR
+terminator, and a tail call inside a suspending function is a plain call.
 
 ## The `-O0` frame problem and the `-O1` baseline
 
@@ -88,8 +91,6 @@ took the full self-compile from ~32 MiB to under 8 MiB.
 
 ## Remaining
 
-- [ ] Async stage 2: `Suspend` terminator, `step` + wrapper in IR, delete
-      `OpSuspend`.
 - [ ] Split the giant `case` functions (`llvm.emit_op`, `frame.rewrite_op`,
       `ir.op_text`, `checker.infer_builtin`, `mono.specialise_type`,
       `mono.mono_pattern`) so each has few live values; today the `-O1`

@@ -46,14 +46,28 @@ any `-O`, including `-O0`.
 
 ## Async
 
-`await` is currently lowered inline: `time.timer` / `uv.fs_*` start a `Future`
-and `OpSuspend` drives the libuv loop synchronously with `gleamc_future_wait`.
-The intended behaviour is to **suspend and hand the future back to the loop**
-(the state machine of commit `80b62ff`), which the inline `4afd3d6` replaced.
-That restoration is stage 2 of the musttail plan and is not implemented yet;
-see [tco-musttail-plan.md](tco-musttail-plan.md).
+`time.timer` / `uv.fs_*` start a `Future`; `await` **suspends and hands the
+future back to the libuv loop**. A function containing an `OpSuspend` is a heap
+frame function (`frame.machine_functions`) and is emitted as a flat state
+machine (`emit_machine_function`):
 
-The runtime (`runtime/gleam_runtime.[ch]`) already carries the pieces:
-`GleamcFuture`, `gleamc_sched_run`, the task list (`gleamc_task_spawn` /
-`gleamc_tasks_drain`) and the `gleamc_uv_*` wrappers. libuv is required; there
-is no synchronous fallback.
+- the frame holds the locals plus a `state`, a pending `fut` and a `result`;
+- the `_step(frame) -> i1` switches on `state`. At a suspension it stores the
+  pending future and the resume state and returns "not done"; the resume block
+  reads the awaited value (`Gleamc_uv_await_*`) and releases the future; at a
+  return it stores the result and returns "done";
+- the wrapper allocates the frame, stores the arguments, and drives the step
+  through `gleamc_sched_run`, which waits on the future (the libuv loop) and
+  re-enters the step. The wrapper owns the frame and releases it after reading
+  the result — the step suppresses `OpDrop(frame)` so the frame outlives the
+  machine.
+
+`lower` ends the block at the suspension (`OpSuspend` + `Jmp(resume)`), so no
+separate CPS pass is needed. Locals live in the frame, so they survive the
+suspension. A tail call *inside* a suspending function is emitted as a plain
+call (the machine cannot keep the caller's frame across it).
+
+The runtime (`runtime/gleam_runtime.[ch]`) carries the scheduler: `GleamcFuture`,
+`gleamc_sched_run`, the task list (`gleamc_task_spawn` / `gleamc_tasks_drain`)
+and the `gleamc_uv_*` wrappers. libuv is required; there is no synchronous
+fallback.

@@ -23,13 +23,15 @@ pub fn frame_type_name(function_name: String) -> String {
 }
 
 /// Functions that must be worked through a heap frame: a closure captures one
-/// of their locals, so the locals cannot live on the native stack. Async is not
-/// part of this rule: a `Future` is a value awaited through the libuv loop, so
-/// the frame never needs to carry a suspension state.
+/// of their locals, or a local is live across a suspension. Both must survive a
+/// point where the native stack cannot be trusted, so they cannot be stack
+/// locals.
 pub fn machine_functions(module: ir.Module) -> List(String) {
   let ir.Module(functions) = module
   functions
-  |> list.filter(fn(function) { has_capture(function) })
+  |> list.filter(fn(function) {
+    has_capture(function) || has_suspend(function)
+  })
   |> list.map(fn(function) { function.name })
   |> list.sort(fn(a, b) { string.compare(a, b) })
 }
@@ -40,6 +42,17 @@ fn has_capture(function: ir.Function) -> Bool {
   list.any(op_list(function), fn(op) {
     case op {
       ir.OpClosure(_, _, captures, _, _) -> !list.is_empty(captures)
+      _ -> False
+    }
+  })
+}
+
+/// A function that suspends: a `Future` is awaited through the libuv loop, so a
+/// local live across the suspension must live in the frame.
+pub fn has_suspend(function: ir.Function) -> Bool {
+  list.any(op_list(function), fn(op) {
+    case op {
+      ir.OpSuspend(_, _, _) -> True
       _ -> False
     }
   })

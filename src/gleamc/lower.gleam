@@ -865,8 +865,13 @@ fn lower_suspend(b, args, builtin, dest_ty) {
   let #(fut, b2) = fresh_local(b1, "future", future_ty)
   let b3 = emit(b2, ir.OpBuiltin(fut, builtin, operands, future_ty))
   let #(dest, b4) = fresh_local(b3, "awaited", dest_ty)
-  let b5 = emit(b4, ir.OpSuspend(dest, ir.Var(fut), ""))
-  Ok(#(ir.Var(dest), b5))
+  // The suspension ends the block: the state machine yields here and resumes at
+  // `resume`. Ending the block in `lower` means `cps` is not needed.
+  let #(resume, b5) = new_label(b4, "await")
+  let b6 = emit(b5, ir.OpSuspend(dest, ir.Var(fut), resume))
+  let b7 = end_block(b6, ir.Jmp(resume))
+  let b8 = start_block(b7, resume)
+  Ok(#(ir.Var(dest), b8))
 }
 
 /// A top-level function used as a value becomes a function pointer.
