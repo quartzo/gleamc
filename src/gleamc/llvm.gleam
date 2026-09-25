@@ -52,6 +52,17 @@ type Ctx {
     /// Frame registers of every member of a dispatcher (`#(reg, fr_ty)`), so a
     /// member can release them all when the dispatcher returns.
     group_frames: List(#(String, String)),
+    /// Dispatcher only: the `alloca i8*` holding the heap return-stack head,
+    /// the members in index order, and the global block numbering used to
+    /// resume a caller after a non-tail member call.
+    ret_head: String,
+    members: List(String),
+    resume_labels: List(String),
+    resume_index: Dict(String, Int),
+    ret_ty_name: String,
+    /// Dispatcher only: `alloca <ret_ty>` used to carry a non-tail member
+    /// call's result from the return to the call site's resume block.
+    ret_val: String,
   )
 }
 
@@ -944,6 +955,12 @@ fn emit_function(
       group: dict.new(),
       frame: None,
       group_frames: [],
+      ret_head: "",
+      members: [],
+      resume_labels: [],
+      resume_index: dict.new(),
+      ret_ty_name: "",
+      ret_val: "",
     )
   let b = Builder(next: 0, lines: [])
   let b = emit_allocas(ctx, params, locals, b)
@@ -1220,6 +1237,12 @@ fn emit_machine_function(
       group: dict.new(),
       frame: Some(info),
       group_frames: [],
+      ret_head: "",
+      members: [],
+      resume_labels: [],
+      resume_index: dict.new(),
+      ret_ty_name: "",
+      ret_val: "",
     )
   // step
   let b = Builder(next: 0, lines: [])
@@ -1446,10 +1469,45 @@ fn emit_block_list(ctx: Ctx, blocks: List(ir.Block), b: Builder) {
     [block, ..rest] -> {
       let ir.Block(label, ops, term) = block
       let b = emit_line(b, "\n" <> block_name(ctx, label) <> ":")
-      let #(b, _) = emit_ops(ctx, ops, b)
-      let b = emit_term(ctx, term, b)
+      let b = case member_call_op(ctx, ops, term) {
+        Some(#(args, fun)) -> {
+          let init_ops = case list.reverse(ops) {
+            [_, ..rev] -> list.reverse(rev)
+            [] -> []
+          }
+          let #(b, _) = emit_ops(ctx, init_ops, b)
+          emit_machine_call(ctx, args, fun, label, b)
+        }
+        None -> {
+          let #(b, _) = emit_ops(ctx, ops, b)
+          emit_term(ctx, term, b)
+        }
+      }
       emit_block_list(ctx, rest, b)
     }
+  }
+}
+
+fn member_call_op(
+  ctx: Ctx,
+  ops: List(ir.Op),
+  term: ir.Terminator,
+) -> Option(#(List(ir.Operand), String)) {
+  case ctx.ret_head {
+    "" -> None
+    _ ->
+      case term {
+        ir.Jmp(_) ->
+          case list.last(ops) {
+            Ok(ir.OpCall(_, fun, args, _)) ->
+              case dict.has_key(ctx.group, fun) {
+                True -> Some(#(args, fun))
+                False -> None
+              }
+            _ -> None
+          }
+        _ -> None
+      }
   }
 }
 
@@ -1492,6 +1550,218 @@ fn emit_rebind(ctx: Ctx, target, args, b: Builder) -> Builder {
       }
     })
   emit_line(b, "  br label %" <> entry)
+}
+
+fn index_of_member(members: List(String), name: String, i: Int) -> Int {
+  case members {
+    [] -> 0
+    [head, ..tail] ->
+      case head == name {
+        True -> i
+        False -> index_of_member(tail, name, i + 1)
+      }
+  }
+}
+
+fn struct_gep(node: String, ty: String, index: Int, b: Builder) -> #(String, Builder) {
+  let #(p, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  "
+        <> p
+        <> " = getelementptr "
+        <> ty
+        <> ", "
+        <> ty
+        <> "* "
+        <> node
+        <> ", i32 0, i32 "
+        <> int.to_string(index),
+    )
+  #(p, b)
+}
+
+/// A non-tail call to another member of the same dispatcher. It must not use
+/// the native stack: push the caller's frames and its return address on the
+/// heap return-stack, point every member slot at a fresh frame, bind the
+/// arguments and jump to the callee's entry. The result is left in `%__ret_val`
+/// and picked up by the call site's resume block (`__rs<k>`).
+fn emit_machine_call(ctx: Ctx, args: List(ir.Operand), fun: String, block_label: String, b: Builder) -> Builder {
+  // Read the arguments while the caller's frames are still in the slots.
+  let #(b, arg_vals) =
+    list.fold(args, #(b, []), fn(acc, arg) {
+      let #(b, vals) = acc
+      let #(ty, v, b) = read_val(ctx, arg, b)
+      #(b, [#(ty, v), ..vals])
+    })
+  let arg_vals = list.reverse(arg_vals)
+  let n = list.length(ctx.members)
+  let caller_idx = index_of_member(ctx.members, ctx.fn_name, 0)
+  let resume_idx = case dict.get(ctx.resume_index, block_name(ctx, block_label)) {
+    Ok(i) -> i
+    Error(_) -> 0
+  }
+  let size = 24 + n * 8
+  let #(raw, b) = fresh(b)
+  let b =
+    emit_line(b, "  " <> raw <> " = call i8* @gleamc_alloc0(i64 " <> int.to_string(size) <> ")")
+  let #(node, b) = fresh(b)
+  let b =
+    emit_line(b, "  " <> node <> " = bitcast i8* " <> raw <> " to " <> ctx.ret_ty_name <> "*")
+  let #(p, b) = struct_gep(node, ctx.ret_ty_name, 0, b)
+  let b = emit_line(b, "  store i64 " <> int.to_string(caller_idx) <> ", i64* " <> p)
+  let #(p, b) = struct_gep(node, ctx.ret_ty_name, 1, b)
+  let b = emit_line(b, "  store i64 " <> int.to_string(resume_idx) <> ", i64* " <> p)
+  let #(head, b) = fresh(b)
+  let b = emit_line(b, "  " <> head <> " = load i8*, i8** " <> ctx.ret_head)
+  let #(p, b) = struct_gep(node, ctx.ret_ty_name, 2, b)
+  let b = emit_line(b, "  store i8* " <> head <> ", i8** " <> p)
+  let b =
+    list.fold(
+      list.index_map(ctx.group_frames, fn(pair, index) { #(pair, index) }),
+      b,
+      fn(b, item) {
+        let #(#(slot, fr_ty), index) = item
+        let #(f, b) = fresh(b)
+        let b = emit_line(b, "  " <> f <> " = load " <> fr_ty <> "*, " <> fr_ty <> "** " <> slot)
+        let #(fp, b) = fresh(b)
+        let b = emit_line(b, "  " <> fp <> " = bitcast " <> fr_ty <> "* " <> f <> " to i8*")
+        let #(gp, b) = struct_gep(node, ctx.ret_ty_name, 3 + index, b)
+        emit_line(b, "  store i8* " <> fp <> ", i8** " <> gp)
+      },
+    )
+  let #(pushed, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  " <> pushed <> " = bitcast " <> ctx.ret_ty_name <> "* " <> node <> " to i8*",
+    )
+  let b = emit_line(b, "  store i8* " <> pushed <> ", i8** " <> ctx.ret_head)
+  let b =
+    list.fold(ctx.group_frames, b, fn(b, pair) {
+      let #(slot, fr_ty) = pair
+      let #(raw, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> raw
+            <> " = call i8* @gleamc_alloc0(i64 ptrtoint ("
+            <> fr_ty
+            <> "* getelementptr ("
+            <> fr_ty
+            <> ", "
+            <> fr_ty
+            <> "* null, i32 1) to i64))",
+        )
+      let #(nf, b) = fresh(b)
+      let b = emit_line(b, "  " <> nf <> " = bitcast i8* " <> raw <> " to " <> fr_ty <> "*")
+      emit_line(b, "  store " <> fr_ty <> "* " <> nf <> ", " <> fr_ty <> "** " <> slot)
+    })
+  let target = case dict.get(ctx.group, fun) {
+    Ok(t) -> t
+    Error(_) -> #("", [], "", None)
+  }
+  let #(_, params, entry, frame) = target
+  let b =
+    list.fold(
+      list.index_map(arg_vals, fn(pair, index) { #(pair, index) }),
+      b,
+      fn(b, item) {
+        let #(#(ty, v), index) = item
+        case list_at(params, index) {
+          Ok(pname) ->
+            case frame {
+              Some(#(fr_ty, fr_reg, fields)) ->
+                case dict.get(fields, pname) {
+                  Ok(slot) -> {
+                    let #(ptr, b) = frame_gep(fr_reg, fr_ty, slot, b)
+                    emit_line(b, "  store " <> ty <> " " <> v <> ", " <> ty <> "* " <> ptr)
+                  }
+                  Error(_) -> b
+                }
+              None -> b
+            }
+          Error(_) -> b
+        }
+      },
+    )
+  emit_line(b, "  br label %" <> entry)
+}
+
+/// Returns from a dispatcher member: pops the heap return-stack when this was a
+/// non-tail call (restoring the caller's frames and jumping to its call site),
+/// otherwise releases the frames and returns to the dispatcher's caller.
+fn emit_machine_return(ctx: Ctx, value: ir.Operand, b: Builder) -> Builder {
+  let #(_, v, b) = read_val(ctx, value, b)
+  emit_machine_return_val(ctx, v, b)
+}
+
+/// Like `emit_machine_return`, but the result is already an SSA value (e.g. the
+/// result of a tail call to a non-member).
+fn emit_machine_return_val(ctx: Ctx, v: String, b: Builder) -> Builder {
+  let ret_s = llvm_ty(ctx.ret, ctx.recursive)
+  let uid = int.to_string(b.next)
+  let done = "__ret_done_" <> uid
+  let pop = "__ret_pop_" <> uid
+  let #(head, b) = fresh(b)
+  let b = emit_line(b, "  " <> head <> " = load i8*, i8** " <> ctx.ret_head)
+  let #(isnull, b) = fresh(b)
+  let b = emit_line(b, "  " <> isnull <> " = icmp eq i8* " <> head <> ", null")
+  let b =
+    emit_line(b, "  br i1 " <> isnull <> ", label %" <> done <> ", label %" <> pop)
+  let b = emit_line(b, "\n" <> pop <> ":")
+  let #(node, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  " <> node <> " = bitcast i8* " <> head <> " to " <> ctx.ret_ty_name <> "*",
+    )
+  let b = emit_group_frame_release(ctx, b)
+  let b =
+    list.fold(
+      list.index_map(ctx.group_frames, fn(pair, index) { #(pair, index) }),
+      b,
+      fn(b, item) {
+        let #(#(slot, fr_ty), index) = item
+        let #(gp, b) = struct_gep(node, ctx.ret_ty_name, 3 + index, b)
+        let #(fp, b) = fresh(b)
+        let b = emit_line(b, "  " <> fp <> " = load i8*, i8** " <> gp)
+        let #(f, b) = fresh(b)
+        let b = emit_line(b, "  " <> f <> " = bitcast i8* " <> fp <> " to " <> fr_ty <> "*")
+        emit_line(b, "  store " <> fr_ty <> "* " <> f <> ", " <> fr_ty <> "** " <> slot)
+      },
+    )
+  let #(npt, b) = struct_gep(node, ctx.ret_ty_name, 2, b)
+  let #(next, b) = fresh(b)
+  let b = emit_line(b, "  " <> next <> " = load i8*, i8** " <> npt)
+  let b = emit_line(b, "  store i8* " <> next <> ", i8** " <> ctx.ret_head)
+  let b =
+    emit_line(b, "  store " <> ret_s <> " " <> v <> ", " <> ret_s <> "* " <> ctx.ret_val)
+  let #(rp, b) = struct_gep(node, ctx.ret_ty_name, 1, b)
+  let #(rute, b) = fresh(b)
+  let b = emit_line(b, "  " <> rute <> " = load i64, i64* " <> rp)
+  let b =
+    emit_line(b, "  call void @Gleamc_rc_release(i8* " <> head <> ", i8* null)")
+  let arms =
+    list.index_map(ctx.resume_labels, fn(label, index) {
+      " i64 " <> int.to_string(index) <> ", label %" <> label
+    })
+  let b =
+    emit_line(
+      b,
+      "  switch i64 "
+        <> rute
+        <> ", label %"
+        <> done
+        <> " [ "
+        <> string.join(arms, " ")
+        <> " ]",
+    )
+  let b = emit_line(b, "\n" <> done <> ":")
+  let b = emit_group_frame_release(ctx, b)
+  emit_line(b, "  ret " <> ret_s <> " " <> v)
 }
 
 /// Rebinds an indirect tail call inside a dispatcher: the closure's code names
@@ -1585,11 +1855,9 @@ fn emit_indirect_call(ctx: Ctx, code: String, env: String, args, ret_s: String, 
       "  " <> r <> " = call " <> ret_s <> " " <> code <> "(" <> callargs <> ")",
     )
   case dict.is_empty(ctx.group) {
-    // Inside a dispatcher: return the value (releasing the member frames).
-    False -> {
-      let b = emit_group_frame_release(ctx, b)
-      emit_line(b, "  ret " <> ret_s <> " " <> r)
-    }
+    // Inside a dispatcher: pop the return-stack if this member was called
+    // (otherwise release its frames and return the value).
+    False -> emit_machine_return_val(ctx, r, b)
     True ->
       case ctx.frame {
         Some(FrameInfo(fr_ty, fr_reg, _, _, _, result_idx, _)) ->
@@ -1619,6 +1887,24 @@ fn emit_indirect_call(ctx: Ctx, code: String, env: String, args, ret_s: String, 
 
 fn local_ptr(ctx: Ctx, name: String) -> String {
   "%l." <> ctx.prefix <> safe(name)
+}
+
+/// The address of a local. In a dispatcher member the frame lives in a mutable
+/// slot that a call/return can change, so the pointer must be recomputed from
+/// the slot at each access; elsewhere the pre-emitted `%l.<name>` GEP is fine.
+fn local_addr(ctx: Ctx, name: String, b: Builder) -> #(String, Builder) {
+  case ctx.ret_head {
+    "" -> #(local_ptr(ctx, name), b)
+    _ ->
+      case ctx.frame {
+        Some(FrameInfo(fr_ty, fr_reg, fields, _, _, _, _)) ->
+          case dict.get(fields, name) {
+            Ok(index) -> frame_gep(fr_reg, fr_ty, index, b)
+            Error(_) -> #(local_ptr(ctx, name), b)
+          }
+        None -> #(local_ptr(ctx, name), b)
+      }
+  }
 }
 
 /// Emits a frame field `getelementptr` as an instruction and returns its SSA
@@ -2150,12 +2436,9 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
     }
     ir.OpEnvGet(dest, env_ty, index, ty) -> {
       let ty_s = llvm_ty(ty, ctx.recursive)
+      let #(envp, b) = local_addr(ctx, "__env", b)
       let #(envraw, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  " <> envraw <> " = load i8*, i8** " <> local_ptr(ctx, "__env"),
-        )
+      let b = emit_line(b, "  " <> envraw <> " = load i8*, i8** " <> envp)
       let #(ep, b) = fresh(b)
       let b =
         emit_line(
@@ -2374,13 +2657,9 @@ fn emit_term(ctx: Ctx, term: ir.Terminator, b: Builder) {
     }
     ir.Ret(value) -> {
       case dict.is_empty(ctx.group) {
-        // A dispatcher member: release the member frames, then return the value.
-        False -> {
-          let ret_ty = llvm_ty(ctx.ret, ctx.recursive)
-          let #(_, v, b) = read_val(ctx, value, b)
-          let b = emit_group_frame_release(ctx, b)
-          emit_line(b, "  ret " <> ret_ty <> " " <> v)
-        }
+        // A dispatcher member: pop the heap return-stack if this was a non-tail
+        // call, otherwise release the member frames and return the value.
+        False -> emit_machine_return(ctx, value, b)
         True ->
           case ctx.frame {
             Some(FrameInfo(fr_ty, fr_reg, _, _, _, result_idx, _)) ->
@@ -2440,50 +2719,90 @@ fn emit_term(ctx: Ctx, term: ir.Terminator, b: Builder) {
                     <> arg_list
                     <> ")",
                 )
-              let b = emit_group_frame_release(ctx, b)
-              emit_line(b, "  ret " <> ret_s <> " " <> r)
+              emit_machine_return_val(ctx, r, b)
             }
             True ->
               case ctx.frame {
                 // Inside a machine: call the target and finish the step with its
                 // result stored in the frame (the caller resumes the machine).
-                Some(FrameInfo(fr_ty, fr_reg, _fields, _, _, result_idx, _)) -> {
-                  let ret_s = llvm_ty(ctx.ret, ctx.recursive)
-                  let #(b, arg_list) = read_args(ctx, args, b)
-                  let #(r, b) = fresh(b)
-                  let b =
-                    emit_line(
-                      b,
-                      "  "
-                        <> r
-                        <> " = call "
-                        <> ret_s
-                        <> " @Gleamc_"
-                        <> fun
-                        <> "("
-                        <> arg_list
-                        <> ")",
-                    )
-                  case is_nil_type(ctx.ret) {
-                    True -> emit_line(b, "  ret i1 true")
+                Some(FrameInfo(fr_ty, fr_reg, fields, state_idx, _, result_idx, _)) ->
+                  case fun == ctx.fn_name {
+                    // Self tail call: rebind the frame's parameters, restart the
+                    // step (state 0) and tell the scheduler to loop. Re-entering
+                    // the wrapper would run the scheduler again on the native
+                    // stack and defeat tail-call elimination.
+                    True -> {
+                      let #(b, vals) =
+                        list.fold(
+                          list.index_map(args, fn(arg, index) { #(arg, index) }),
+                          #(b, []),
+                          fn(acc, item) {
+                            let #(b, vals) = acc
+                            let #(arg, index) = item
+                            let #(ty, v, b) = read_val(ctx, arg, b)
+                            #(b, [#(ty, v, index), ..vals])
+                          },
+                        )
+                      let b =
+                        list.fold(vals, b, fn(b, item) {
+                          let #(ty, v, index) = item
+                          case list_at(ctx.params, index) {
+                            Ok(pname) ->
+                              case dict.get(fields, pname) {
+                                Ok(slot) -> {
+                                  let #(ptr, b) = frame_gep(fr_reg, fr_ty, slot, b)
+                                  emit_line(
+                                    b,
+                                    "  store " <> ty <> " " <> v <> ", " <> ty <> "* " <> ptr,
+                                  )
+                                }
+                                Error(_) -> b
+                              }
+                            Error(_) -> b
+                          }
+                        })
+                      let #(sp, b) = frame_gep(fr_reg, fr_ty, state_idx, b)
+                      let b = emit_line(b, "  store i32 0, i32* " <> sp)
+                      emit_line(b, "  ret i1 false")
+                    }
                     False -> {
-                      let #(result_ptr, b) = frame_gep(fr_reg, fr_ty, result_idx, b)
+                      let ret_s = llvm_ty(ctx.ret, ctx.recursive)
+                      let #(b, arg_list) = read_args(ctx, args, b)
+                      let #(r, b) = fresh(b)
                       let b =
                         emit_line(
                           b,
-                          "  store "
-                            <> ret_s
-                            <> " "
+                          "  "
                             <> r
-                            <> ", "
+                            <> " = call "
                             <> ret_s
-                            <> "* "
-                            <> result_ptr,
+                            <> " @Gleamc_"
+                            <> fun
+                            <> "("
+                            <> arg_list
+                            <> ")",
                         )
-                      emit_line(b, "  ret i1 true")
+                      case is_nil_type(ctx.ret) {
+                        True -> emit_line(b, "  ret i1 true")
+                        False -> {
+                          let #(result_ptr, b) = frame_gep(fr_reg, fr_ty, result_idx, b)
+                          let b =
+                            emit_line(
+                              b,
+                              "  store "
+                                <> ret_s
+                                <> " "
+                                <> r
+                                <> ", "
+                                <> ret_s
+                                <> "* "
+                                <> result_ptr,
+                            )
+                          emit_line(b, "  ret i1 true")
+                        }
+                      }
                     }
                   }
-                }
                 None ->
                   case fun == ctx.fn_name {
                     True ->
@@ -2558,19 +2877,10 @@ fn read_val(ctx: Ctx, operand: ir.Operand, b: Builder) {
     ir.Var(name) -> {
       let ty = local_type(ctx.by_name, name)
       let ty_s = llvm_ty(ty, ctx.recursive)
+      let #(ptr, b) = local_addr(ctx, name, b)
       let #(tmp, b) = fresh(b)
       let b =
-        emit_line(
-          b,
-          "  "
-            <> tmp
-            <> " = load "
-            <> ty_s
-            <> ", "
-            <> ty_s
-            <> "* "
-            <> local_ptr(ctx, name),
-        )
+        emit_line(b, "  " <> tmp <> " = load " <> ty_s <> ", " <> ty_s <> "* " <> ptr)
       #(ty_s, tmp, b)
     }
     ir.Lit(value) -> read_literal(ctx, value, b)
@@ -2625,17 +2935,8 @@ fn store_local(
   val: String,
   b: Builder,
 ) -> Builder {
-  emit_line(
-    b,
-    "  store "
-      <> ty_s
-      <> " "
-      <> val
-      <> ", "
-      <> ty_s
-      <> "* "
-      <> local_ptr(ctx, dest),
-  )
+  let #(ptr, b) = local_addr(ctx, dest, b)
+  emit_line(b, "  store " <> ty_s <> " " <> val <> ", " <> ty_s <> "* " <> ptr)
 }
 
 fn operand_type(by_name: Dict(String, Type), operand: ir.Operand) -> Type {
@@ -2904,13 +3205,14 @@ fn emit_builtin_call(ctx: Ctx, dest, builtin, args, ret_ty, b) {
   let arg_list = string.join(list.reverse(rev_parts), ", ")
   case sret {
     True -> {
+      let #(destp, b) = local_addr(ctx, dest, b)
       let b =
         emit_line(
           b,
           "  call void @"
           <> name
           <> "(ptr sret(%GleamcFileResult) "
-          <> local_ptr(ctx, dest)
+          <> destp
           <> case arg_list {
             "" -> ""
             _ -> ", " <> arg_list
@@ -4521,6 +4823,64 @@ fn emit_group(
       let FrameInfo(fr_ty, fr_reg, _, _, _, _, _) = info
       #(fr_reg, fr_ty)
     })
+  let member_names =
+    list.map(indexed, fn(entry) {
+      let #(_, _, _, _, name, _, _) = entry
+      name
+    })
+  // Every non-tail call to a member gets a resume block, indexed so the heap
+  // return-stack can jump back to it.
+  let sites =
+    list.flat_map(indexed, fn(entry) {
+      let #(function, member_index, prefix, _, _, _, info) = entry
+      let FrameInfo(fr_ty, _, fields, _, _, _, _) = info
+      let ir.Function(_, _, _, blocks, _) = function
+      list.filter_map(blocks, fn(block) {
+        let ir.Block(label, ops, term) = block
+        case list.last(ops) {
+          Ok(ir.OpCall(dest, fun, _, _)) ->
+            case dict.has_key(group_map, fun) {
+              True ->
+                case term {
+                  ir.Jmp(resume) -> {
+                    let names = block_names_prefixed(blocks, prefix)
+                    let resume_prefixed = case dict.get(names, resume) {
+                      Ok(name) -> name
+                      Error(_) -> ""
+                    }
+                    let call_prefixed = case dict.get(names, label) {
+                      Ok(name) -> name
+                      Error(_) -> label
+                    }
+                    Ok(
+                      #(
+                        prefix,
+                        fr_ty,
+                        member_index,
+                        dict.get(fields, dest),
+                        resume_prefixed,
+                        call_prefixed,
+                      ),
+                    )
+                  }
+                  _ -> Error(Nil)
+                }
+              False -> Error(Nil)
+            }
+          _ -> Error(Nil)
+        }
+      })
+    })
+  let resume_labels =
+    list.index_map(sites, fn(_, index) { "__rs" <> int.to_string(index) })
+  let resume_index =
+    sites
+    |> list.index_map(fn(site, index) {
+      let #(_, _, _, _, _, block_label) = site
+      #(block_label, index)
+    })
+    |> dict.from_list
+  let ret_ty_name = "%__ret_" <> gid
 
   // dispatcher
   let b = Builder(next: 0, lines: [])
@@ -4554,6 +4914,11 @@ fn emit_group(
         emit_line(b, "  " <> init <> " = bitcast i8* " <> raw <> " to " <> fr_ty <> "*")
       emit_line(b, "  store " <> fr_ty <> "* " <> init <> ", " <> fr_ty <> "** " <> fr_reg)
     })
+  // Heap return-stack head (null = at the dispatcher's tail) and the slot that
+  // carries a non-tail call's result back to its call site.
+  let b = emit_line(b, "  %__ret = alloca i8*")
+  let b = emit_line(b, "  store i8* null, i8** %__ret")
+  let b = emit_line(b, "  %__ret_val = alloca " <> ret_s)
   let member_ctxs =
     list.map(indexed, fn(entry) {
       let #(function, _, prefix, entry_label, name, params, info) = entry
@@ -4575,6 +4940,12 @@ fn emit_group(
         group: group_map,
         frame: Some(info),
         group_frames: group_frames,
+        ret_head: "%__ret",
+        members: member_names,
+        resume_labels: resume_labels,
+        resume_index: resume_index,
+        ret_ty_name: ret_ty_name,
+        ret_val: "%__ret_val",
       )
     })
   let b =
@@ -4665,7 +5036,65 @@ fn emit_group(
       let #(b, _) = emit_block_list(ctx, blocks, b)
       b
     })
-  let dispatcher = string.join(list.reverse(b.lines), "\n") <> "\n}\n"
+  // Resume blocks for non-tail member calls: pick the result up from
+  // `%__ret_val`, store it into the caller's frame and jump back.
+  let b =
+    list.fold(
+      list.index_map(sites, fn(site, index) { #(site, index) }),
+      b,
+      fn(b, item) {
+        let #(#(_, fr_ty, member_index, dest_slot, resume_prefixed, _), index) = item
+        let b = emit_line(b, "\n__rs" <> int.to_string(index) <> ":")
+        let b = case dest_slot {
+          Ok(slot) -> {
+            let #(val, b) = fresh(b)
+            let b =
+              emit_line(
+                b,
+                "  " <> val <> " = load " <> ret_s <> ", " <> ret_s <> "* %__ret_val",
+              )
+            let #(fk, b) = fresh(b)
+            let b =
+              emit_line(
+                b,
+                "  "
+                  <> fk
+                  <> " = load "
+                  <> fr_ty
+                  <> "*, "
+                  <> fr_ty
+                  <> "** %__frp_m"
+                  <> int.to_string(member_index),
+              )
+            let #(dp, b) = fresh(b)
+            let b =
+              emit_line(
+                b,
+                "  "
+                  <> dp
+                  <> " = getelementptr "
+                  <> fr_ty
+                  <> ", "
+                  <> fr_ty
+                  <> "* "
+                  <> fk
+                  <> ", i32 0, i32 "
+                  <> int.to_string(slot),
+              )
+            emit_line(b, "  store " <> ret_s <> " " <> val <> ", " <> ret_s <> "* " <> dp)
+          }
+          Error(_) -> b
+        }
+        emit_line(b, "  br label %" <> resume_prefixed)
+      },
+    )
+  let record_decl =
+    ret_ty_name
+    <> " = type { i64, i64, i8*"
+    <> string.repeat(", i8*", list.length(member_names))
+    <> " }"
+  let dispatcher =
+    record_decl <> "\n" <> string.join(list.reverse(b.lines), "\n") <> "\n}\n"
   let wrappers =
     list.map(indexed, fn(entry) {
       let #(function, index, _, _, _, _, _) = entry
