@@ -7,8 +7,8 @@ import gleam/list
 import gleam/result
 import gleamc/ast.{
   type Definition, type Module, type Type, CustomType, DConst, DCustomType,
-  DFunction, DImport, DTypeAlias, Function, Module, TApp, TBool, TFloat, TFun,
-  TInt, TNamed, TNil, TString, TTuple, TVar, Variant,
+  DExternal, DFunction, DImport, DTypeAlias, External, Function, Module, TApp,
+  TBool, TFloat, TFun, TInt, TNamed, TNil, TString, TTuple, TVar, Variant,
 }
 
 pub fn expand(module: Module) -> Result(Module, String) {
@@ -52,6 +52,18 @@ fn expand_definition(definition, aliases) -> Result(Definition, String) {
       )
       use ret <- result.try(expand_type(ret, aliases, []))
       Ok(DFunction(Function(is_pub, name, params, ret, body, line)))
+    }
+    DExternal(external) -> {
+      let External(is_pub, name, params, ret, target, symbol, line) = external
+      use params <- result.try(
+        list.try_map(params, fn(param) {
+          let #(param_name, ty) = param
+          use ty <- result.try(expand_type(ty, aliases, []))
+          Ok(#(param_name, ty))
+        }),
+      )
+      use ret <- result.try(expand_type(ret, aliases, []))
+      Ok(DExternal(External(is_pub, name, params, ret, target, symbol, line)))
     }
     DCustomType(custom) -> {
       let CustomType(is_pub, name, generics, variants, is_opaque) = custom

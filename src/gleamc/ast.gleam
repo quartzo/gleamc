@@ -90,6 +90,21 @@ pub type Function {
   )
 }
 
+/// An `@external(target, "symbol")` declaration: a function whose body is
+/// provided by the runtime for `target`. `gleamc` implements `native`; other
+/// targets are accepted syntactically and rejected if selected.
+pub type External {
+  External(
+    is_pub: Bool,
+    name: String,
+    params: List(#(String, Type)),
+    ret: Type,
+    target: String,
+    symbol: String,
+    line: Int,
+  )
+}
+
 pub type Variant {
   Variant(name: String, fields: List(#(String, Type)))
 }
@@ -110,6 +125,7 @@ pub type Import {
 
 pub type Definition {
   DFunction(Function)
+  DExternal(External)
   DConst(name: String, value: Expr)
   DCustomType(CustomType)
   DTypeAlias(is_pub: Bool, name: String, generics: List(String), ty: Type)

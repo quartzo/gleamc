@@ -12,7 +12,8 @@ import gleam/result
 import gleam/string
 import gleamc/ast.{
   type Expr, type Module, type Pattern, type Type, Arm, CustomType, DConst,
-  DCustomType, DFunction, DImport, DTypeAlias, EBinop, EBitArray, EBlock, EBool,
+  DCustomType, DExternal, DFunction, DImport, DTypeAlias, EBinop, EBitArray,
+  EBlock, EBool, External,
   ECall, ECase, EClosure, ECtor, EEnvGet, EField, EFloat, EInt, ELabelled,
   ELambda, ENil, EPanic, EString, ETuple, EUnop, EUpdate, EVar, Function, Let,
   Module, PAs, PBitArray, PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString,
@@ -58,6 +59,10 @@ fn collect(defs, signatures, ctors) {
   case defs {
     [] -> #(signatures, ctors)
     [DFunction(Function(_, name, params, ret, _, _)), ..rest] -> {
+      let signatures = dict.insert(signatures, name, Signature(params, ret))
+      collect(rest, signatures, ctors)
+    }
+    [DExternal(External(_, name, params, ret, _, _, _)), ..rest] -> {
       let signatures = dict.insert(signatures, name, Signature(params, ret))
       collect(rest, signatures, ctors)
     }

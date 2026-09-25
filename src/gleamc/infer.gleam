@@ -14,11 +14,12 @@ import gleam/result
 import gleam/string
 import gleamc/util
 import gleamc/ast.{
-  type CustomType, type Expr, type Function, type Module, type Pattern,
-  type Type, type Variant, Arm, CustomType, DCustomType, DFunction, EBinop,
-  EBitArray, EBlock, EBool, ECall, ECase, EClosure, ECtor, EEnvGet, EField,
-  EFloat, EInt, ELabelled, ELambda, ENil, EPanic, EString, ETuple, EUnop,
-  EUpdate, EVar, Function, Let, Module, PAs, PBitArray, PBool, PCtor, PFloat,
+  type CustomType, type Expr, type External, type Function, type Module,
+  type Pattern, type Type, type Variant, Arm, CustomType, DCustomType, DExternal,
+  DFunction, EBinop, EBitArray, EBlock, EBool, ECall, ECase, EClosure, ECtor,
+  EEnvGet, EField, EFloat, EInt, ELabelled, ELambda, ENil, EPanic, EString,
+  ETuple, EUnop, EUpdate, EVar, External, Function, Let, Module, PAs, PBitArray,
+  PBool, PCtor, PFloat,
   PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard, Stmt, Variant,
 }
 import gleamc/types.{
@@ -515,6 +516,16 @@ fn collect(definitions, st: St) {
             st,
           )
         }
+        DExternal(external) -> {
+          let #(scheme, id_map, st) = external_scheme(external, st)
+          #(
+            types_map,
+            ctors,
+            dict.insert(functions, external.name, scheme),
+            dict.insert(var_ids, external.name, id_map),
+            st,
+          )
+        }
         _ -> acc
       }
     },
@@ -579,7 +590,15 @@ fn variant_def(variant: Variant, mapping) -> VariantDef {
 
 fn function_scheme(function: Function, st: St) {
   let Function(_, _, params, ret, _, _) = function
-  let surface_vars = function_type_vars(function)
+  params_ret_scheme(params, ret, function_type_vars(function), st)
+}
+
+fn external_scheme(external: External, st: St) {
+  let External(_, _, params, ret, _, _, _) = external
+  params_ret_scheme(params, ret, external_type_vars(external), st)
+}
+
+fn params_ret_scheme(params, ret, surface_vars, st: St) {
   let #(mapping, param_ids, id_map, st) =
     list.fold(surface_vars, #(dict.new(), [], dict.new(), st), fn(acc, name) {
       let #(map, ids, id_map, st) = acc
@@ -610,6 +629,16 @@ fn function_scheme(function: Function, st: St) {
 
 fn function_type_vars(function: Function) -> List(String) {
   let Function(_, _, params, ret, _, _) = function
+  let from_params =
+    list.flat_map(params, fn(param) {
+      let #(_, surface) = param
+      type_vars_in(surface)
+    })
+  util.dedupe(list.append(from_params, type_vars_in(ret)))
+}
+
+fn external_type_vars(external: External) -> List(String) {
+  let External(_, _, params, ret, _, _, _) = external
   let from_params =
     list.flat_map(params, fn(param) {
       let #(_, surface) = param

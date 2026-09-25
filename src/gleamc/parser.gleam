@@ -5,10 +5,12 @@
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import gleamc/ast.{
-  type Expr, type Module, Arm, CustomType, DConst, DCustomType, DFunction,
-  DImport, DTypeAlias, EBinop, EBitArray, EBlock, EBool, ECall, ECase, ECtor,
-  EField, EFloat, EInt, ELabelled, ELambda, ENil, EPanic, EString, ETuple, EUnop,
+  type Expr, type Module, Arm, CustomType, DConst, DCustomType, DExternal,
+  DFunction, DImport, DTypeAlias, EBinop, EBitArray, EBlock, EBool, ECall, ECase,
+  ECtor, EField, EFloat, EInt, ELabelled, ELambda, ENil, EPanic, EString, ETuple,
+  EUnop, External,
   EUpdate, EVar, Function, Import, Let, Module, PAs, PBitArray, PBool, PCtor,
   PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard, Stmt, TApp,
   TBool, TFloat, TFun, TInt, TNamed, TNil, TString, TTuple, TVar, Variant,
@@ -155,8 +157,103 @@ fn definitions(tokens, acc) {
     Keyword("type") -> definition_type(tokens, False, False, acc)
     Keyword("opaque") ->
       definition_type(skip_newlines(drop_token(tokens)), False, True, acc)
+    Symbol("@") -> {
+      use #(target, symbol, rest) <- and_then(attribute(tokens))
+      let rest = skip_newlines(rest)
+      case peek(rest) {
+        Keyword("pub") -> {
+          let r = skip_newlines(drop_token(rest))
+          case peek(r) {
+            Keyword("fn") -> {
+              use #(ext, rest2) <- and_then(external_rest(
+                skip_newlines(drop_token(r)),
+                True,
+                target,
+                symbol,
+              ))
+              definitions(skip_newlines(rest2), [DExternal(ext), ..acc])
+            }
+            _ -> fail(r, "expected `fn` after `pub`")
+          }
+        }
+        Keyword("fn") -> {
+          use #(ext, rest2) <- and_then(external_rest(
+            skip_newlines(drop_token(rest)),
+            False,
+            target,
+            symbol,
+          ))
+          definitions(skip_newlines(rest2), [DExternal(ext), ..acc])
+        }
+        _ -> fail(rest, "expected a function declaration after an attribute")
+      }
+    }
     _ ->
       fail(tokens, "expected a declaration (`import`, `pub fn`, `fn`, `type`)")
+  }
+}
+
+/// `@external(target, "symbol")` (or `@external(target, "module", "function")`).
+/// Returns `#(target, symbol, rest)`.
+fn attribute(tokens) {
+  use rest <- and_then(expect_symbol(tokens, "@"))
+  use #(name, rest1) <- and_then(expect_name(rest))
+  case name {
+    "external" -> {
+      use rest2 <- and_then(expect_symbol(skip_newlines(rest1), "("))
+      use #(args, rest3) <- and_then(attribute_args(skip_newlines(rest2), []))
+      use rest4 <- and_then(expect_symbol(skip_newlines(rest3), ")"))
+      case args {
+        [target, ..parts] ->
+          Ok(#(target, string.join(parts, "."), rest4))
+        [] -> fail(rest1, "@external expects a target and a symbol")
+      }
+    }
+    _ -> fail(rest1, "unknown attribute `@" <> name <> "`")
+  }
+}
+
+fn attribute_args(tokens, acc) {
+  let tokens = skip_newlines(tokens)
+  case peek(tokens) {
+    NameKind(_) -> {
+      use #(name, rest) <- and_then(expect_name(tokens))
+      attribute_args_more(rest, [name, ..acc])
+    }
+    StringKind(_) -> {
+      let #(value, rest) = case tokens {
+        [Token(StringKind(v), _, _), ..rest] -> #(v, rest)
+        _ -> #("", tokens)
+      }
+      attribute_args_more(rest, [value, ..acc])
+    }
+    _ -> Ok(#(list.reverse(acc), tokens))
+  }
+}
+
+fn attribute_args_more(tokens, acc) {
+  let tokens = skip_newlines(tokens)
+  case peek(tokens) {
+    Symbol(",") ->
+      attribute_args(skip_newlines(drop_token(tokens)), acc)
+    _ -> Ok(#(list.reverse(acc), tokens))
+  }
+}
+
+/// A bodyless `@external` function declaration.
+fn external_rest(tokens, is_pub, target, symbol) {
+  let line = case tokens {
+    [Token(_, at_line, _), ..] -> at_line
+    [] -> 0
+  }
+  use #(name, rest) <- and_then(expect_name(tokens))
+  use rest1 <- and_then(expect_symbol(rest, "("))
+  use #(ps, rest2) <- and_then(params(rest1, []))
+  let #(ret, rest3) = parse_optional_return(skip_newlines(rest2))
+  let rest4 = skip_newlines(rest3)
+  case peek(rest4) {
+    Symbol("{") -> fail(rest4, "@external functions must not have a body")
+    _ -> Ok(#(External(is_pub, name, ps, ret, target, symbol, line), rest4))
   }
 }
 

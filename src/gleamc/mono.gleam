@@ -14,8 +14,8 @@ import gleam/string
 import gleamc/util
 import gleamc/ast.{
   type Arm, type CustomType, type Expr, type Function, type Module, type Pattern,
-  type Type, type Variant, Arm, CustomType, DCustomType, DFunction, EBinop,
-  EBitArray, EBlock,
+  type Type, type Variant, Arm, CustomType, DCustomType, DExternal, DFunction,
+  EBinop, EBitArray, EBlock,
   EBool, ECall, ECase, EClosure, ECtor, EEnvGet, EField, EFloat, EInt, ELabelled,
   ELambda, ENil, EPanic, EString, ETuple, EUnop, EUpdate, EVar, Function, Let,
   Module, PAs, PBitArray, PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString,
@@ -37,7 +37,21 @@ pub fn monomorphize(module: Module) -> Result(Module, String) {
     })
   let type_defs = list.map(sorted_types, fn(custom) { DCustomType(custom) })
   let fn_defs = list.map(state.fn_out, fn(function) { DFunction(function) })
-  Ok(Module(list.append(type_defs, list.reverse(fn_defs))))
+  // `@external` declarations have no body to specialise; keep them verbatim.
+  let Module(definitions) = resolved
+  let external_defs =
+    list.filter(definitions, fn(def) {
+      case def {
+        DExternal(_) -> True
+        _ -> False
+      }
+    })
+  Ok(Module(
+    list.append(
+      type_defs,
+      list.append(list.reverse(fn_defs), external_defs),
+    ),
+  ))
 }
 
 // ---------------------------------------------------------------------------
