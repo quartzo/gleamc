@@ -2567,43 +2567,49 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
       }
       #(b, Nil)
     }
-    // Async suspension. The scheduler (`gleamc_sched_run`) owns the loop:
-    // until the machine lowering lands, await the future inline so the
-    // program still runs correctly.
-    ir.OpSuspend(_dest, fut, resume) -> {
-      case ctx.frame {
-        // Inside a machine: hand the future to the scheduler and yield.
-        Some(FrameInfo(fr_ty, fr_reg, _, state_idx, fut_idx, _, block_index)) -> {
-          let #(fty, v, b) = read_val(ctx, fut, b)
-          let #(fut_ptr, b) = frame_gep(fr_reg, fr_ty, fut_idx, b)
-          let b =
-            emit_line(
-              b,
-              "  store " <> fty <> " " <> v <> ", " <> fty <> "* " <> fut_ptr,
-            )
-          let resume_idx = case dict.get(block_index, resume) {
-            Ok(found) -> found
-            Error(_) -> 0
+    // `await`: the future is a value; drive it with the libuv loop (the
+    // runtime accessors call `gleamc_future_wait`) and read the result. This is
+    // an ordinary value operation — the machine (tail calls) never sees async.
+    ir.OpSuspend(dest, fut, _resume) -> {
+      let #(_, v, b) = read_val(ctx, fut, b)
+      let dest_ty = local_type(ctx.by_name, dest)
+      let b = case is_nil_type(dest_ty) {
+        True -> emit_line(b, "  call void @Gleamc_uv_await_nil(i8* " <> v <> ")")
+        False ->
+          case dest_ty {
+            TNamed("BitArray") -> {
+              let #(val, b) = fresh(b)
+              let b =
+                emit_line(
+                  b,
+                  "  "
+                    <> val
+                    <> " = call %GleamcBitArray @Gleamc_uv_await_bytes(i8* "
+                    <> v
+                    <> ")",
+                )
+              store_local(ctx, dest, "%GleamcBitArray", val, b)
+            }
+            _ -> {
+              let b =
+                emit_line(b, "  call void @Gleamc_uv_await_nil(i8* " <> v <> ")")
+              let #(val, b) = fresh(b)
+              let b =
+                emit_line(
+                  b,
+                  "  "
+                    <> val
+                    <> " = call i64 @Gleamc_uv_result(i8* "
+                    <> v
+                    <> ")",
+                )
+              store_local(ctx, dest, "i64", val, b)
+            }
           }
-          let #(state_ptr, b) = frame_gep(fr_reg, fr_ty, state_idx, b)
-          let b =
-            emit_line(
-              b,
-              "  store i32 "
-                <> int.to_string(resume_idx)
-                <> ", i32* "
-                <> state_ptr,
-            )
-          let b = emit_line(b, "  ret i1 false")
-          #(b, Nil)
-        }
-        None -> {
-          let #(_, v, b) = read_val(ctx, fut, b)
-          let b =
-            emit_line(b, "  call void @Gleamc_uv_await_nil(i8* " <> v <> ")")
-          #(b, Nil)
-        }
       }
+      let b =
+        emit_line(b, "  call void @Gleamc_rc_release(i8* " <> v <> ", i8* null)")
+      #(b, Nil)
     }
     ir.OpFrameNew(_, _) -> #(b, Nil)
     ir.OpFrameGet(dest, _frame, index, ty) ->

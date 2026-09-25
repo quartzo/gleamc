@@ -73,7 +73,10 @@ pub fn plan(module: ir.Module) -> Plan {
       list.flat_map(functions, fn(function) { tail_edges(function) }),
       callback_edges(functions),
     )
-  let groups = mutual_groups(names, edges)
+  // `main` is the entry point and can never be a dispatcher member, so it is
+  // kept out of the tail-call grouping (otherwise it would drag a dispatchable
+  // cycle into a non-dispatched group).
+  let groups = mutual_groups(names, edges, ["main"])
   let #(states, entries) = number_states(functions)
   let frames =
     list.map(functions, fn(function) {
@@ -95,13 +98,15 @@ pub fn plan(module: ir.Module) -> Plan {
   )
 }
 
-/// The functions that must be emitted as state machines (they can suspend),
-/// in deterministic order. This is the single membership rule, shared by the
-/// planner and by any earlier layer that needs it.
+/// The functions that need a heap frame because a closure captures it, in
+/// deterministic order. This is the single membership rule, shared by the
+/// planner and by any earlier layer that needs it. Async is not part of it: a
+/// `Future` is a value awaited through the libuv loop, so the machine never
+/// sees it.
 pub fn machines(module: ir.Module) -> List(String) {
   let ir.Module(functions) = module
   functions
-  |> list.filter(fn(function) { has_suspend(function) || has_capture(function) })
+  |> list.filter(fn(function) { has_capture(function) })
   |> list.map(fn(function) { function.name })
   |> list.sort(fn(a, b) { string.compare(a, b) })
 }
@@ -168,19 +173,6 @@ fn op_list(function: ir.Function) -> List(ir.Op) {
   list.flat_map(blocks, fn(block) {
     let ir.Block(_, ops, _) = block
     ops
-  })
-}
-
-fn has_suspend(function: ir.Function) -> Bool {
-  let ir.Function(_, _, _, blocks, _) = function
-  list.any(blocks, fn(block) {
-    let ir.Block(_, ops, _) = block
-    list.any(ops, fn(op) {
-      case op {
-        ir.OpSuspend(_, _, _) -> True
-        _ -> False
-      }
-    })
   })
 }
 
@@ -353,82 +345,86 @@ fn code_to_name(code: String) -> String {
 // mutual groups (SCCs of the tail-call graph)
 // ---------------------------------------------------------------------------
 
-fn mutual_groups(names: List(String), edges: List(Edge)) -> List(Group) {
-  let adjacency = group_adjacency(edges)
-  let reach =
-    list.fold(names, dict.new(), fn(acc, name) {
-      dict.insert(acc, name, reachable(name, adjacency, dict.new()))
-    })
-  let members =
-    list.filter(names, fn(name) {
-      case dict.get(reach, name) {
-        Ok(reached) ->
-          list.any(dict.keys(reached), fn(other) {
-            other != name && reaches(other, name, reach)
-          })
-        Error(_) -> False
+fn mutual_groups(
+  names: List(String),
+  edges: List(Edge),
+  excluded: List(String),
+) -> List(Group) {
+  // Group membership is "must be emitted in the same dispatcher as". A tail
+  // call `a -> b` can only become a `br` if `b` shares `a`'s dispatcher, and
+  // that holds whichever way the edge points, so the relation is undirected:
+  // group by weakly-connected components. Grouping by strongly-connected
+  // components only keeps cycles together, leaving acyclic tail-call chains as
+  // native calls between dispatchers — which is what grows the stack.
+  let excluded_set =
+    dict.from_list(list.map(excluded, fn(name) { #(name, True) }))
+  let allowed = list.filter(names, fn(name) { !dict.has_key(excluded_set, name) })
+  let name_set =
+    dict.from_list(list.map(allowed, fn(name) { #(name, True) }))
+  let adjacency =
+    list.fold(edges, dict.new(), fn(acc, edge) {
+      let Edge(caller, callee) = edge
+      case dict.has_key(name_set, caller), dict.has_key(name_set, callee) {
+        True, True -> {
+          let acc =
+            dict.insert(acc, caller, [callee, ..neighbours(acc, caller)])
+          dict.insert(acc, callee, [caller, ..neighbours(acc, callee)])
+        }
+        _, _ -> acc
       }
     })
-  // Assign each name to the group of the first member that reaches it and is
-  // reached by it; iterate in `names` order for determinism.
   let #(groups, _seen) =
-    list.fold(members, #([], dict.new()), fn(acc, name) {
+    list.fold(allowed, #([], dict.new()), fn(acc, name) {
       let #(groups, seen) = acc
       case dict.get(seen, name) {
         Ok(_) -> #(groups, seen)
         Error(_) -> {
+          let reached = component(adjacency, [name], dict.new())
           let group =
-            list.filter(members, fn(other) { mutually(name, other, reach) })
+            list.filter(allowed, fn(other) { dict.has_key(reached, other) })
           let seen =
             list.fold(group, seen, fn(seen, member) {
               dict.insert(seen, member, True)
             })
-          #([group, ..groups], seen)
+          case list.length(group) > 1 {
+            True -> #([group, ..groups], seen)
+            False -> #(groups, seen)
+          }
         }
       }
     })
   list.map(list.reverse(groups), fn(group) { Group(group, []) })
 }
 
-fn mutually(a, b, reach) -> Bool {
-  a == b || reaches(a, b, reach) && reaches(b, a, reach)
-}
-
-fn reaches(a, b, reach) -> Bool {
-  case dict.get(reach, a) {
-    Ok(reached) ->
-      case dict.get(reached, b) {
-        Ok(_) -> True
-        Error(_) -> False
-      }
-    Error(_) -> False
+fn neighbours(adjacency: Dict(String, List(String)), name: String) -> List(String) {
+  case dict.get(adjacency, name) {
+    Ok(found) -> found
+    Error(_) -> []
   }
 }
 
-/// Caller -> callees adjacency, built once (avoids re-scanning the edge list
-/// at every step of the reachability DFS, which made it O(V^2 * E)).
-fn group_adjacency(edges: List(Edge)) -> Dict(String, List(String)) {
-  list.fold(edges, dict.new(), fn(acc, edge) {
-    let Edge(caller, callee) = edge
-    let existing = case dict.get(acc, caller) {
-      Ok(found) -> found
-      Error(_) -> []
-    }
-    dict.insert(acc, caller, [callee, ..existing])
-  })
-}
-
-fn reachable(name, adjacency, seen) -> Dict(String, Bool) {
-  case dict.get(seen, name) {
-    Ok(_) -> seen
-    Error(_) -> {
-      let seen = dict.insert(seen, name, True)
-      let next = case dict.get(adjacency, name) {
-        Ok(found) -> found
-        Error(_) -> []
+/// Every name reachable from `worklist` over the undirected adjacency (the set
+/// of names in the same weakly-connected component). Iterative, so it does not
+/// add a recursion of its own to the compiler.
+fn component(
+  adjacency: Dict(String, List(String)),
+  worklist: List(String),
+  seen: Dict(String, Bool),
+) -> Dict(String, Bool) {
+  case worklist {
+    [] -> seen
+    [name, ..rest] ->
+      case dict.get(seen, name) {
+        Ok(_) -> component(adjacency, rest, seen)
+        Error(_) -> {
+          let seen = dict.insert(seen, name, True)
+          let worklist =
+            list.fold(neighbours(adjacency, name), rest, fn(acc, next) {
+              [next, ..acc]
+            })
+          component(adjacency, worklist, seen)
+        }
       }
-      list.fold(next, seen, fn(acc, callee) { reachable(callee, adjacency, acc) })
-    }
   }
 }
 

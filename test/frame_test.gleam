@@ -27,19 +27,10 @@ pub fn frame_captured_test() {
   assert captured
 }
 
-const timer_source = "import gleam/io
-
-pub fn main() {
-  io.println(\"start\")
-  let _ = time.timer(5)
-  io.println(\"end\")
-}
-"
-
-/// A suspension makes `main` a machine function.
+/// A capturing closure makes its function a heap-frame machine. Async does
+/// not: a `Future` is a value awaited through the libuv loop.
 pub fn frame_machine_test() {
-  let assert Ok(module) = pipeline.compile_to_ir(timer_source)
+  let assert Ok(module) = pipeline.compile_to_ir(capture_source)
   let machines = frame.machine_functions(module)
-  assert !list.is_empty(machines)
-  assert list.contains(machines, "main")
+  assert list.contains(machines, "make")
 }
