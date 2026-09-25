@@ -110,6 +110,11 @@ fn rewrite_op(op: ir.Op, clones: Dict(String, String)) {
   case op {
     ir.OpClosure(dest, code, captures, env_ty, fn_ty) ->
       ir.OpClosure(dest, rewrite_code(code, clones), captures, env_ty, fn_ty)
+    ir.OpMachineStart(fut, fun, args, dest) ->
+      case dict.get(clones, fun) {
+        Ok(clone) -> ir.OpMachineStart(fut, clone, args, dest)
+        Error(_) -> op
+      }
     _ -> op
   }
 }
@@ -119,6 +124,11 @@ fn rewrite_term(term: ir.Terminator, clones: Dict(String, String)) {
     ir.Tailcall(fun, args) ->
       case dict.get(clones, fun) {
         Ok(clone) -> ir.Tailcall(clone, args)
+        Error(_) -> term
+      }
+    ir.TailMachine(fun, args) ->
+      case dict.get(clones, fun) {
+        Ok(clone) -> ir.TailMachine(clone, args)
         Error(_) -> term
       }
     _ -> term

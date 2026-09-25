@@ -441,7 +441,7 @@ fn insert_blocks(
   let resume_defs =
     list.fold(blocks, dict.new(), fn(acc, block) {
       case block.term {
-        ir.Suspend(_, dest, resume) -> dict.insert(acc, resume, dest)
+        ir.Suspend(_, dest, resume, _) -> dict.insert(acc, resume, dest)
         _ -> acc
       }
     })
@@ -618,7 +618,8 @@ fn successors(term: ir.Terminator) -> List(String) {
     ir.Ret(_) -> []
     ir.Tailcall(_, _) -> []
     ir.TailcallIndirect(_, _) -> []
-    ir.Suspend(_, _, resume) -> [resume]
+    ir.TailMachine(_, _) -> []
+    ir.Suspend(_, _, resume, _) -> [resume]
     ir.Unreachable -> []
   }
 }
@@ -1048,9 +1049,16 @@ fn transferred_set(term: ir.Terminator, handles, modes, ffi) {
     // function value itself, so the function value is released by its owner.
     ir.TailcallIndirect(_, args) ->
       sets_from(handle_names(args, handles))
+    // The delegated callee receives the owned arguments (the backend retains
+    // them); the flow must not drop them here.
+    ir.TailMachine(fun, args) ->
+      sets_from(handle_names(
+        ir.tailcall_owning_modes(fun, args, modes, ffi),
+        handles,
+      ))
     // The pending future is handed to the driver and released by the machine on
     // resume, so the flow does not drop it at the suspension.
-    ir.Suspend(fut, _, _) -> sets_from(handle_names([fut], handles))
+    ir.Suspend(fut, _, _, _) -> sets_from(handle_names([fut], handles))
     _ -> dict.new()
   }
 }

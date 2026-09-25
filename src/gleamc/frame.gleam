@@ -30,7 +30,7 @@ pub fn machine_functions(module: ir.Module) -> List(String) {
   let ir.Module(functions) = module
   functions
   |> list.filter(fn(function) {
-    has_capture(function) || has_suspend(function)
+    has_capture(function) || has_suspend(function) || has_tail_machine(function)
   })
   |> list.map(fn(function) { function.name })
   |> list.sort(fn(a, b) { string.compare(a, b) })
@@ -53,7 +53,21 @@ pub fn has_suspend(function: ir.Function) -> Bool {
   let ir.Function(_, _, _, blocks, _) = function
   list.any(blocks, fn(block) {
     case block.term {
-      ir.Suspend(_, _, _) -> True
+      ir.Suspend(_, _, _, _) -> True
+      _ -> False
+    }
+  })
+}
+
+/// A function that is async only by a tail call: its body ends in a
+/// `TailMachine` (it delegates to another machine) but has no `Suspend` of its
+/// own. It must still be emitted as a machine so callers can start it as a task
+/// and so the delegation runs.
+pub fn has_tail_machine(function: ir.Function) -> Bool {
+  let ir.Function(_, _, _, blocks, _) = function
+  list.any(blocks, fn(block) {
+    case block.term {
+      ir.TailMachine(_, _) -> True
       _ -> False
     }
   })
@@ -335,6 +349,11 @@ fn rewrite_op(op: ir.Op, repl) -> ir.Op {
     ir.OpCopy(d, s, ty) -> ir.OpCopy(d, sub(s, repl), ty)
     ir.OpCallIndirect(d, f, args, rt) ->
       ir.OpCallIndirect(d, sub(f, repl), subs(args, repl), rt)
+    // A machine start reads frame-field arguments too; substitute them with the
+    // `OpFrameGet` temps so the original local is dead after its frame store
+    // (otherwise ownership retains it a second time). `fut`/`dest` are names.
+    ir.OpMachineStart(fut, fun, args, dest) ->
+      ir.OpMachineStart(fut, fun, subs(args, repl), dest)
     _ -> op
   }
 }
@@ -346,7 +365,11 @@ fn rewrite_term(term: ir.Terminator, repl) -> ir.Terminator {
     ir.Tailcall(f, args) -> ir.Tailcall(f, subs(args, repl))
     ir.TailcallIndirect(f, args) ->
       ir.TailcallIndirect(sub(f, repl), subs(args, repl))
-    ir.Suspend(fut, dest, resume) -> ir.Suspend(sub(fut, repl), dest, resume)
+    ir.Suspend(fut, dest, resume, machine) ->
+      ir.Suspend(sub(fut, repl), dest, resume, machine)
+    // A delegated tail call reads frame-field arguments; substitute them like a
+    // direct tail call so ownership does not retain the parameter spuriously.
+    ir.TailMachine(f, args) -> ir.TailMachine(f, subs(args, repl))
     _ -> term
   }
 }
@@ -397,7 +420,7 @@ pub fn suspend_live_vars(function: ir.Function) -> List(String) {
     list.flat_map(blocks, fn(block) {
       let ir.Block(label, _ops, term) = block
       case term {
-        ir.Suspend(_, _, _) -> {
+        ir.Suspend(_, _, _, _) -> {
           // Everything live out of the suspension block, plus the future.
           let base = case dict.get(live_out, label) {
             Ok(found) -> found
@@ -412,11 +435,15 @@ pub fn suspend_live_vars(function: ir.Function) -> List(String) {
 }
 
 /// The frame fields of `function`: captured variables plus variables live at a
-/// suspension.
+/// suspension. A machine's parameters are always stored in its frame by the
+/// wrapper / `OpMachineStart`, so the frame owns (and must drop) them too.
 pub fn frame_field_names(function: ir.Function) -> List(String) {
-  dedupe(
-    list.append(captured_vars(function), suspend_live_vars(function)),
-  )
+  let ir.Function(_, params, _, _, _) = function
+  let base = list.append(captured_vars(function), suspend_live_vars(function))
+  case has_suspend(function) || has_tail_machine(function) {
+    True -> dedupe(list.append(params, base))
+    False -> dedupe(base)
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -855,7 +855,7 @@ GleamcFuture* Gleamc_std_time_timer(int64_t ms) {
 }
 
 /* Scheduler task list (spawn). */
-#define GLEAMC_TASKS_MAX 64
+#define GLEAMC_TASKS_MAX 4096
 static struct {
     bool (*step)(void*);
     void* frame;
@@ -910,6 +910,195 @@ int32_t gleamc_tasks_drain(void) {
     }
     return 0;
 }
+
+/* ------------------------------------------------------------------ */
+/* Cooperative driver.                                                 */
+/*                                                                     */
+/* One loop drives every machine: an async call starts the callee as a */
+/* task and suspends on a future that completes when the callee does,  */
+/* so control always returns to this loop (no per-wrapper `sched_run`).*/
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    bool (*step)(void*);
+    void* frame;
+    GleamcFuture** fut_slot;
+    /* Copies the machine's result out of its frame into the caller's slot
+     * before the frame is released; NULL for a nil result. */
+    void (*copy_result)(void*, void*);
+    void* result_dst;
+    /* Releases the values owned by the frame (the generated `__frame_*_drop`);
+     * `gleamc_release` only frees the cell, so the driver must run this first. */
+    void (*frame_drop)(void*);
+    /* Completed when the machine finishes. */
+    GleamcFuture* done;
+    bool finished;
+    /* Set while this task's `step` is on the C stack, so a nested
+     * `gleamc_run_until` (a synchronous call into an async closure) never
+     * re-enters a task that is already running. */
+    bool running;
+} GleamcTask2;
+
+static GleamcTask2 gleamc_tasks2[GLEAMC_TASKS_MAX];
+static int gleamc_tasks2_n = 0;
+/* Nesting depth of the driver: > 0 means a synchronous call from inside a
+ * machine is driving the loop for its own completion future. Nested runs never
+ * compact the task table (they must not move a running task). */
+static int gleamc_run_depth = 0;
+
+/* A tail call delegates the current task to the callee: the step records the
+ * next machine here and returns "suspended"; `gleamc_run` retargets the task
+ * instead of waiting, so a tail-call chain keeps a constant number of tasks. */
+static GleamcTask2 gleamc_delegate;
+static bool gleamc_delegated = false;
+
+void gleamc_task_tail(bool (*step)(void*), void* frame,
+                      void (*copy_result)(void*, void*),
+                      GleamcFuture** fut_slot,
+                      void (*frame_drop)(void*)) {
+    gleamc_delegate.step = step;
+    gleamc_delegate.frame = frame;
+    gleamc_delegate.copy_result = copy_result;
+    gleamc_delegate.fut_slot = fut_slot;
+    gleamc_delegate.frame_drop = frame_drop;
+    gleamc_delegated = true;
+}
+
+static GleamcFuture* gleamc_future_new(void) {
+    GleamcFuture* f = (GleamcFuture*)gleamc_alloc(sizeof(GleamcFuture));
+    f->deadline = 0;
+    f->done = false;
+    f->has_error = false;
+    f->error_code = 0;
+    f->value_i = 0;
+    f->value_p = NULL;
+    f->uv_armed = false;
+    return f;
+}
+
+GleamcFuture* gleamc_task_start(bool (*step)(void*), void* frame,
+                                GleamcFuture** fut_slot,
+                                void (*copy_result)(void*, void*),
+                                void* result_dst,
+                                void (*frame_drop)(void*)) {
+    GleamcFuture* done = gleamc_future_new();
+    if (gleamc_tasks2_n >= GLEAMC_TASKS_MAX) {
+        fprintf(stderr, "gleamc: task overflow (%d)\n", GLEAMC_TASKS_MAX);
+        /* `frame_drop` releases `frame` itself (it ends in an rc_release). */
+        if (frame_drop != NULL) frame_drop(frame);
+        else gleamc_release(frame);
+        done->done = true;
+        return done;
+    }
+    GleamcTask2* t = &gleamc_tasks2[gleamc_tasks2_n++];
+    t->step = step;
+    t->frame = frame;
+    t->fut_slot = fut_slot;
+    t->copy_result = copy_result;
+    t->result_dst = result_dst;
+    t->frame_drop = frame_drop;
+    t->done = done;
+    t->finished = false;
+    t->running = false;
+    return done;
+}
+
+void gleamc_run_until(GleamcFuture* target) {
+    void* loop = gleamc_uv_loop();
+    int nested = gleamc_run_depth++;
+    for (;;) {
+        if (target != NULL && target->done) break;
+        if (target == NULL && gleamc_tasks2_n == 0) break;
+        int progressed = 0;
+        int have_uv = 0;
+        int64_t next_deadline = 0;
+        for (int i = 0; i < gleamc_tasks2_n; i++) {
+            GleamcTask2* t = &gleamc_tasks2[i];
+            if (t->finished) {
+                /* A nested run only marks tasks finished (it must not move a
+                 * running task); the outermost run compacts them. */
+                if (!nested) {
+                    gleamc_tasks2[i] = gleamc_tasks2[gleamc_tasks2_n - 1];
+                    gleamc_tasks2_n--;
+                    i--;
+                }
+                continue;
+            }
+            if (t->running) continue;
+            /* A suspended task is only re-stepped once its pending future is
+             * done. */
+            GleamcFuture* pending = t->fut_slot != NULL ? *t->fut_slot : NULL;
+            if (pending != NULL && !pending->done) {
+                if (pending->uv_armed) {
+                    have_uv = 1;
+                } else if (pending->deadline > 0) {
+                    if (next_deadline == 0 || pending->deadline < next_deadline)
+                        next_deadline = pending->deadline;
+                }
+                continue;
+            }
+            t->running = true;
+            int done = t->step(t->frame);
+            t->running = false;
+            if (done) {
+                if (t->copy_result != NULL && t->result_dst != NULL)
+                    t->copy_result(t->frame, t->result_dst);
+                if (t->done != NULL) t->done->done = true;
+                /* `frame_drop` releases the frame (it ends in an rc_release). */
+                if (t->frame_drop != NULL) t->frame_drop(t->frame);
+                else gleamc_release(t->frame);
+                t->finished = true;
+                if (!nested) {
+                    gleamc_tasks2[i] = gleamc_tasks2[gleamc_tasks2_n - 1];
+                    gleamc_tasks2_n--;
+                    i--;
+                }
+            } else if (gleamc_delegated) {
+                /* Tail call: reuse this task for the callee's machine. */
+                t->step = gleamc_delegate.step;
+                t->frame = gleamc_delegate.frame;
+                t->copy_result = gleamc_delegate.copy_result;
+                t->fut_slot = gleamc_delegate.fut_slot;
+                t->frame_drop = gleamc_delegate.frame_drop;
+                gleamc_delegated = false;
+            } else {
+                /* It suspended: note the future it is now waiting on. */
+                pending = t->fut_slot != NULL ? *t->fut_slot : NULL;
+                if (pending == NULL || pending->done) {
+                    /* Already runnable again: keep the driver going. */
+                    progressed = 1;
+                } else if (pending->uv_armed) {
+                    have_uv = 1;
+                } else if (pending->deadline > 0) {
+                    if (next_deadline == 0 || pending->deadline < next_deadline)
+                        next_deadline = pending->deadline;
+                }
+            }
+            progressed = 1;
+            if (target != NULL && target->done) break;
+        }
+        if (target != NULL && target->done) break;
+        if (progressed) continue;
+        if (have_uv) {
+            uv_run((uv_loop_t*)loop, UV_RUN_ONCE);
+        } else if (next_deadline > 0) {
+            int64_t now = (int64_t)gleamc_now_ms();
+            if (next_deadline > now) gleamc_sleep_ms(next_deadline - now);
+            for (int i = 0; i < gleamc_tasks2_n; i++) {
+                GleamcTask2* t = &gleamc_tasks2[i];
+                if (t->finished) continue;
+                GleamcFuture* f = t->fut_slot != NULL ? *t->fut_slot : NULL;
+                if (f != NULL && !f->done && !f->uv_armed && f->deadline > 0)
+                    f->done = true;
+            }
+        } else {
+            break;  /* no progress possible */
+        }
+    }
+    gleamc_run_depth--;
+}
+
+void gleamc_run(void) { gleamc_run_until(NULL); }
 
 bool gleamc_sched_run(bool (*step)(void* frame), void* frame,
                       GleamcFuture** fut_slot) {

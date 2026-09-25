@@ -322,6 +322,20 @@ void gleamc_task_spawn(bool (*step)(void*), void* frame,
                        GleamcFuture** fut_slot);
 int32_t gleamc_tasks_drain(void);
 
+/* Cooperative driver: starts a machine as a task and returns a future that
+ * completes when it finishes; `copy_result` moves the result out of the frame
+ * into `result_dst`. `gleamc_run` drives every task to completion. */
+GleamcFuture* gleamc_task_start(bool (*step)(void*), void* frame,
+                                GleamcFuture** fut_slot,
+                                void (*copy_result)(void*, void*),
+                                void* result_dst,
+                                void (*frame_drop)(void*));
+/* Drives tasks until `target` completes (or the table drains when `target` is
+ * NULL). Safe to call re-entrantly: a synchronous call into an async closure
+ * drives only up to its own completion future. */
+void gleamc_run_until(GleamcFuture* target);
+void gleamc_run(void);
+
 /* Host async surface (Vesper docs 09/11/14): starts return a Future,
  * `await` (Gleamc_uv_await_*) drives the scheduler to completion. */
 GleamcFuture* Gleamc_uv_fs_open(GleamcString path, int64_t flags, int64_t mode);

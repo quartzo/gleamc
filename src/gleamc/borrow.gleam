@@ -56,11 +56,13 @@ fn callers_map(functions) -> Dict(String, List(String)) {
           list.filter_map(ops, fn(op) {
             case op {
               ir.OpCall(_, fun, _, _) -> Ok(fun)
+              ir.OpMachineStart(_, fun, _, _) -> Ok(fun)
               _ -> Error(Nil)
             }
           })
         let from_term = case term {
           ir.Tailcall(fun, _) -> [fun]
+          ir.TailMachine(fun, _) -> [fun]
           _ -> []
         }
         list.append(from_ops, from_term)
@@ -86,8 +88,24 @@ fn tail_targets(functions) -> Dict(String, List(String)) {
   list.fold(functions, dict.new(), fn(acc, function) {
     let ir.Function(_, _, _, blocks, _) = function
     list.fold(blocks, acc, fn(acc, block) {
-      let ir.Block(_, _, term) = block
+      let ir.Block(_, ops, term) = block
+      let acc =
+        list.fold(ops, acc, fn(acc, op) {
+          case op {
+            ir.OpMachineStart(_, fun, _, _) ->
+              case dict.get(params_by_name, fun) {
+                Ok(params) -> dict.insert(acc, fun, params)
+                Error(_) -> acc
+              }
+            _ -> acc
+          }
+        })
       case term {
+        ir.TailMachine(fun, _) ->
+          case dict.get(params_by_name, fun) {
+            Ok(params) -> dict.insert(acc, fun, params)
+            Error(_) -> acc
+          }
         ir.Tailcall(fun, _) ->
           case dict.get(params_by_name, fun) {
             Ok(params) -> dict.insert(acc, fun, params)

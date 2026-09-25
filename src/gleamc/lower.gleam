@@ -867,7 +867,7 @@ fn lower_suspend(b, args, builtin, dest_ty) {
   let #(dest, b4) = fresh_local(b3, "awaited", dest_ty)
   // The suspension is a terminator: control yields and resumes at `resume`.
   let #(resume, b5) = new_label(b4, "await")
-  let b6 = end_block(b5, ir.Suspend(ir.Var(fut), dest, resume))
+  let b6 = end_block(b5, ir.Suspend(ir.Var(fut), dest, resume, False))
   let b7 = start_block(b6, resume)
   Ok(#(ir.Var(dest), b7))
 }

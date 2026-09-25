@@ -61,6 +61,16 @@ pub type Op {
   OpRetain(src: String, ty: Type)
   /// -1 on the local at its death.
   OpDrop(src: String, ty: Type)
+  /// Starts the machine of the async function `fun` with `args` as a task on the
+  /// cooperative driver, binding the future that completes when it finishes to
+  /// `fut`. The machine writes its result into `result_dest`. Emitted by the
+  /// async pass; the following suspension waits for it.
+  OpMachineStart(
+    fut: String,
+    fun: String,
+    args: List(Operand),
+    result_dest: String,
+  )
   /// Defines the function's frame: a composite, reference-counted heap cell
   /// holding the variables that must survive a jump (captured by a closure or
   /// live across a suspension). Fields are read/written with `OpFrameGet` and
@@ -80,10 +90,16 @@ pub type Terminator {
   Tailcall(fun: String, args: List(Operand))
   /// Tail call through a function value: the callee is `fval` (an operand).
   TailcallIndirect(fval: Operand, args: List(Operand))
+  /// Tail call to the async function `fun`: the running machine delegates its
+  /// task (step, frame, result copy) to `fun` and returns to the driver, so a
+  /// chain of async tail calls keeps a constant number of tasks.
+  TailMachine(fun: String, args: List(Operand))
   /// Async suspension point: control yields the pending `fut` to the driver and
   /// resumes at block `resume` once it completes, binding the future's value to
-  /// the local `dest`. `lower` creates the resume block.
-  Suspend(fut: Operand, dest: String, resume: String)
+  /// the local `dest`. `machine` distinguishes awaiting a started machine (the
+  /// result is already in `dest`, so the backend only releases the future) from
+  /// awaiting a host future (the value is read from it).
+  Suspend(fut: Operand, dest: String, resume: String, machine: Bool)
   Unreachable
 }
 
@@ -133,6 +149,7 @@ pub fn op_dest(op: Op) -> Result(String, Nil) {
     OpCallIndirect(dest, _, _, _) -> Ok(dest)
     OpRetain(_, _) -> Error(Nil)
     OpDrop(_, _) -> Error(Nil)
+    OpMachineStart(fut, _, _, _) -> Ok(fut)
     OpFrameNew(dest, _) -> Ok(dest)
     OpFrameGet(dest, _, _, _) -> Ok(dest)
     OpFrameSet(_, _, _) -> Error(Nil)
@@ -166,6 +183,7 @@ pub fn op_reads(op: Op) -> List(Operand) {
     OpCallIndirect(_, fval, args, _) -> [fval, ..args]
     OpRetain(src, _) -> [Var(src)]
     OpDrop(src, _) -> [Var(src)]
+    OpMachineStart(_, _, args, _) -> args
     OpFrameNew(_, _) -> []
     OpFrameGet(_, frame, _, _) -> [frame]
     OpFrameSet(frame, _, value) -> [frame, value]
@@ -176,6 +194,7 @@ pub fn op_reads(op: Op) -> List(Operand) {
 pub fn op_owning(op: Op) -> List(Operand) {
   case op {
     OpCall(_, _, args, _) -> args
+    OpMachineStart(_, _, args, _) -> args
     OpCtor(_, _, _, args, _) -> args
     OpTuple(_, elems, _) -> elems
     OpBitArray(_, elems, _) -> elems
@@ -219,6 +238,11 @@ pub fn op_owning_modes(
         Error(_) -> args
       }
     OpCallIndirect(_, _, args, _) -> args
+    OpMachineStart(_, fun, args, _) ->
+      case dict.get(fn_modes, fun) {
+        Ok(modes) -> owned_args(args, modes)
+        Error(_) -> args
+      }
     OpCtor(_, _, _, args, _) -> args
     OpTuple(_, elems, _) -> elems
     OpBitArray(_, elems, _) -> elems
@@ -259,7 +283,8 @@ pub fn term_reads(term: Terminator) -> List(Operand) {
     Ret(value) -> [value]
     Tailcall(_, args) -> args
     TailcallIndirect(fval, args) -> [fval, ..args]
-    Suspend(fut, _, _) -> [fut]
+    TailMachine(_, args) -> args
+    Suspend(fut, _, _, _) -> [fut]
     Unreachable -> []
   }
 }
@@ -457,6 +482,15 @@ fn op_text(op: Op) -> String {
       <> describe_type(ty)
     OpRetain(src, ty) -> "    retain " <> src <> " : " <> describe_type(ty)
     OpDrop(src, ty) -> "    drop " <> src <> " : " <> describe_type(ty)
+    OpMachineStart(fut, fun, args, result_dest) ->
+      "    "
+      <> fut
+      <> " = machinestart "
+      <> fun
+      <> "("
+      <> string.join(list.map(args, operand_text), ", ")
+      <> ") -> "
+      <> result_dest
     OpFrameNew(dest, frame_ty) ->
       "    " <> dest <> " = framenew " <> frame_ty
     OpFrameGet(dest, frame, index, ty) ->
@@ -496,7 +530,13 @@ fn term_text(term: Terminator) -> String {
       <> "("
       <> string.join(list.map(args, operand_text), ", ")
       <> ")"
-    Suspend(fut, dest, resume) ->
+    TailMachine(fun, args) ->
+      "tailmachine "
+      <> fun
+      <> "("
+      <> string.join(list.map(args, operand_text), ", ")
+      <> ")"
+    Suspend(fut, dest, resume, _machine) ->
       "suspend " <> operand_text(fut) <> " -> " <> dest <> " @" <> resume
     Unreachable -> "unreachable"
   }

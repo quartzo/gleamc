@@ -9,6 +9,7 @@ import gleam/io
 import gleam/list
 import gleam/result
 import gleamc/aliases
+import gleamc/async
 import gleamc/ffi
 import gleamc/ast.{type CustomType, type Module, DCustomType, Module}
 import gleamc/checker
@@ -93,6 +94,10 @@ fn cascade(modules: List(#(String, Module))) {
     lower.describe_error,
   ))
   let t = mark("lower", t)
+  // Make suspension explicit at every async call: the caller starts the callee
+  // as a task and suspends on its completion, so one driver owns the uv loop.
+  let ir_module = async.normalize(ir_module)
+  let t = mark("async", t)
   // Materialize each machine function's frame as an explicit IR value before
   // ownership, so ownership can schedule its release (see docs/frame-environment.md).
   let ir_module = frame.materialize(ir_module)
