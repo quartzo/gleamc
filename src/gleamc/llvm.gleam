@@ -488,6 +488,9 @@ fn header() -> String {
   <> "declare %GleamcString @Gleamc_float_to_string(double)\n"
   <> "declare %GleamcString @Gleamc_bool_to_string(i1)\n"
   <> "declare %GleamcString @Gleamc_string_show(%GleamcString)\n"
+  <> "declare i64 @Gleamc_hash_string(%GleamcString)\n"
+  <> "declare i64 @Gleamc_hash_i64(i64)\n"
+  <> "declare i64 @Gleamc_hash_f64(double)\n"
   <> "declare void @Gleamc_panic(%GleamcString)\n"
   <> "declare i32 @Gleamc_io_debug(%GleamcString)\n"
   <> "declare i32 @memcmp(i8*, i8*, i64)\n"
@@ -2521,6 +2524,67 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
           let b = store_local(ctx, dest, "%GleamcString", r, b)
           #(b, Nil)
         }
+        "gleamc.hash" -> {
+          let first = first_arg(args)
+          let oty = operand_type(ctx.by_name, first)
+          let #(_, v, b) = read_val(ctx, first, b)
+          let #(r, b) = case oty {
+            TString -> {
+              let #(r, b) = fresh(b)
+              let b =
+                emit_line(
+                  b,
+                  "  "
+                    <> r
+                    <> " = call i64 @Gleamc_hash_string(%GleamcString "
+                    <> v
+                    <> ")",
+                )
+              #(r, b)
+            }
+            ast.TInt -> {
+              let #(r, b) = fresh(b)
+              let b =
+                emit_line(b, "  " <> r <> " = call i64 @Gleamc_hash_i64(i64 " <> v <> ")")
+              #(r, b)
+            }
+            ast.TFloat -> {
+              let #(r, b) = fresh(b)
+              let b =
+                emit_line(
+                  b,
+                  "  " <> r <> " = call i64 @Gleamc_hash_f64(double " <> v <> ")",
+                )
+              #(r, b)
+            }
+            ast.TBool -> {
+              let #(z, b) = fresh(b)
+              let b = emit_line(b, "  " <> z <> " = zext i1 " <> v <> " to i64")
+              let #(r, b) = fresh(b)
+              let b =
+                emit_line(b, "  " <> r <> " = call i64 @Gleamc_hash_i64(i64 " <> z <> ")")
+              #(r, b)
+            }
+            _ -> {
+              // Structural keys (tuples, lists, custom types): hash the
+              // canonical `inspect` text. Equal values share a hash.
+              let #(s, b) = inspect_val(ctx.recursive, ctx.lits, oty, v, b)
+              let #(r, b) = fresh(b)
+              let b =
+                emit_line(
+                  b,
+                  "  "
+                    <> r
+                    <> " = call i64 @Gleamc_hash_string(%GleamcString "
+                    <> s
+                    <> ")",
+                )
+              #(r, b)
+            }
+          }
+          let b = store_local(ctx, dest, "i64", r, b)
+          #(b, Nil)
+        }
         "io.debug" -> {
           let first = first_arg(args)
           let oty = operand_type(ctx.by_name, first)
@@ -3455,7 +3519,11 @@ fn emit_builtin_call(ctx: Ctx, dest, builtin, args, ret_ty, b) {
 
 fn special_builtin(name: String) -> Bool {
   case name {
-    "gleamc.show" | "io.debug" | "gleamc.key_compare" | "panic" -> True
+    "gleamc.show"
+    | "gleamc.hash"
+    | "io.debug"
+    | "gleamc.key_compare"
+    | "panic" -> True
     _ -> False
   }
 }

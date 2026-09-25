@@ -88,3 +88,6 @@ erl_crash.dump
 /src/*.c
 /src/selfhost
 /src/selfhost_debug
+
+# bench artifacts
+/bench/dictbench

@@ -1,10 +1,9 @@
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/order
-import gleam/string
 
 // A persistent hash array mapped trie (HAMT), 32-way (5 bits per level). Keys
-// are hashed from `string.inspect`; collisions are chained. This replaces the
+// are hashed natively (`gleamc.hash`, FNV-1a); collisions are chained. This replaces the
 // previous sorted-list implementation, whose O(n) `get`/`insert` made building
 // a large dict (e.g. the monomorphiser's tables) quadratic.
 
@@ -411,18 +410,7 @@ fn entries(node: Node(k, v), acc: List(#(k, v))) -> List(#(k, v)) {
 // ---------------------------------------------------------------------------
 
 fn hash_key(key: a) -> Int {
-  hash_codepoints(string.to_utf_codepoints(string.inspect(key)), 5381)
-}
-
-fn hash_codepoints(codepoints, hash) {
-  case codepoints {
-    [] -> hash
-    [cp, ..rest] ->
-      hash_codepoints(
-        rest,
-        { hash * 33 + string.utf_codepoint_to_int(cp) } % 2147483647,
-      )
-  }
+  gleamc.hash(key)
 }
 
 fn index(hash, level) -> Int {

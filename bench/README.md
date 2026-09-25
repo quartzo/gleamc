@@ -30,6 +30,10 @@ Inputs:
   one run. The native and BEAM `.ll` are equivalent but their `%__frame_*`
   declaration order differs.
 
+`dictbench.gleam` is a standalone micro-benchmark of `gleam/dict` (100k
+String-keyed inserts + 100k gets); compile it with either toolchain and run
+`./bench/dictbench`.
+
 Requirements: `python3`, the official `gleam` toolchain (for `beam`), and a
 prebuilt `src/selfhost` (the script builds it if absent). Outputs (`.ll`) land
 next to the sources and are gitignored.

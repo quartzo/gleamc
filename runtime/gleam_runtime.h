@@ -100,6 +100,11 @@ GleamcString gleamc_string_lit(const char* data, size_t len);
 GleamcString gleamc_string_concat(GleamcString a, GleamcString b);
 bool gleamc_string_eq(GleamcString a, GleamcString b);
 
+/* FNV-1a key hash for `std/dict` (non-negative, 31-bit). */
+int64_t Gleamc_hash_string(GleamcString s);
+int64_t Gleamc_hash_i64(int64_t v);
+int64_t Gleamc_hash_f64(double v);
+
 #ifdef GLEAMC_RC_AUDIT
 #define gleamc_string_retain(s) Gleamc_rc_retain((s).data, "runtime")
 #define gleamc_string_release(s) Gleamc_rc_release((s).data, "runtime")

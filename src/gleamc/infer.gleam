@@ -733,6 +733,7 @@ fn builtins() -> Dict(String, Scheme) {
     Scheme([9001], Fun([Var(9001), Var(9001)], i)),
   )
   |> dict.insert("gleamc.show", Scheme([9002], Fun([Var(9002)], s)))
+  |> dict.insert("gleamc.hash", Scheme([9004], Fun([Var(9004)], i)))
   |> dict.insert("io.debug", Scheme([9003], Fun([Var(9003)], n)))
   |> dict.insert("int.to_float", Scheme(none, Fun([i], f)))
   |> dict.insert("string.compare_bytes", Scheme(none, Fun([s, s], i)))

@@ -233,6 +233,46 @@ GleamcString gleamc_string_concat(GleamcString a, GleamcString b) {
     return (GleamcString){buf, len};
 }
 
+/* FNV-1a over bytes, exposed as the `gleamc.hash` builtin used by `std/dict`.
+ * Returns a non-negative 31-bit value so the HAMT's base-32 index arithmetic
+ * stays in range. */
+static uint64_t gleamc_fnv1a(const uint8_t* data, size_t len) {
+    uint64_t h = 1469598103934665603ULL;
+    for (size_t i = 0; i < len; i++) {
+        h ^= data[i];
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+/* splitmix64 finalizer: FNV's low bits are weak, but the HAMT consumes the
+ * hash from the least-significant base-32 digit first, so avalanche the bits
+ * before returning (and keep the result non-negative). */
+static uint64_t gleamc_mix64(uint64_t x) {
+    x ^= x >> 30;
+    x *= 0xbf58476d1ce4e5b9ULL;
+    x ^= x >> 27;
+    x *= 0x94d049bb133111ebULL;
+    x ^= x >> 31;
+    return x & 0x3fffffffffffffffULL;
+}
+
+int64_t Gleamc_hash_string(GleamcString s) {
+    return (int64_t)gleamc_mix64(gleamc_fnv1a((const uint8_t*)s.data, s.len));
+}
+
+int64_t Gleamc_hash_i64(int64_t v) {
+    uint8_t b[8];
+    memcpy(b, &v, sizeof(v));
+    return (int64_t)gleamc_mix64(gleamc_fnv1a(b, sizeof(b)));
+}
+
+int64_t Gleamc_hash_f64(double v) {
+    uint8_t b[8];
+    memcpy(b, &v, sizeof(v));
+    return (int64_t)gleamc_mix64(gleamc_fnv1a(b, sizeof(b)));
+}
+
 bool gleamc_string_eq(GleamcString a, GleamcString b) {
     return a.len == b.len && (a.len == 0 || memcmp(a.data, b.data, a.len) == 0);
 }

@@ -1231,6 +1231,13 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         _ -> Error(CheckError("gleamc.show expects 1 argument"))
       }
     }
+    "gleamc", "hash" -> {
+      use _ <- result.try(infer_all(env, signatures, ctors, args))
+      case args {
+        [_] -> Ok(TInt)
+        _ -> Error(CheckError("gleamc.hash expects 1 argument"))
+      }
+    }
     "io", "debug" -> {
       use _ <- result.try(infer_all(env, signatures, ctors, args))
       case args {
