@@ -31,8 +31,10 @@ the `musttail` call is the last thing the activation does.
   prototypes but miscompiles a call whose arguments spill to the stack (a
   self-recursive `tailcc` function with seven `i64` arguments loops forever on
   x86-64), so it is not used;
-- the return type is returned in registers (`can_musttail`). A large aggregate
-  that the ABI lowers to an `sret` pointer aborts the backend under `musttail`.
+- a large aggregate return is emitted with an **explicit** `sret` out pointer
+  (`ptr sret(%R) %__out`) instead of the automatic ABI conversion. `musttail`
+  forbids the automatic form but forwards the explicit pointer unchanged, so
+  `Result`-returning recursion is constant-stack too (`ret_needs_sret`).
 
 Otherwise the call is a plain `call` + `ret`. In particular a
 `TailcallIndirect` is always a plain call: a local closure owns the frame the

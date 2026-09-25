@@ -944,12 +944,26 @@ fn emit_function(
     list.map(params, fn(param) {
       llvm_ty(local_type(by_name, param), recursive) <> " %arg." <> safe(param)
     })
+  let ret_s = llvm_ty(ret, recursive)
+  let sret = ret_needs_sret(ret, recursive)
+  let params_s = case sret {
+    True ->
+      "ptr sret(" <> ret_s <> ") %__out"
+      <> case args {
+        [] -> ""
+        _ -> ", " <> string.join(args, ", ")
+      }
+    False -> string.join(args, ", ")
+  }
   "define "
-  <> llvm_ty(ret, recursive)
+  <> case sret {
+    True -> "void"
+    False -> ret_s
+  }
   <> " @Gleamc_"
   <> name
   <> "("
-  <> string.join(args, ", ")
+  <> params_s
   <> ") {\n"
   <> string.join(lines, "\n")
   <> "\n}\n"
@@ -1179,9 +1193,31 @@ fn emit_frame_function(
     list.map(params, fn(param) {
       llvm_ty(local_type(by_name, param), recursive) <> " %arg." <> safe(param)
     })
+  let sret = ret_needs_sret(ret, recursive)
+  let params_s = case sret {
+    True ->
+      "ptr sret(" <> ret_ty <> ") %__out"
+      <> case args {
+        [] -> ""
+        _ -> ", " <> string.join(args, ", ")
+      }
+    False -> string.join(args, ", ")
+  }
   let b = Builder(next: 0, lines: [])
   let b =
-    emit_line(b, "define " <> ret_ty <> " @Gleamc_" <> name <> "(" <> string.join(args, ", ") <> ") {")
+    emit_line(
+      b,
+      "define "
+        <> case sret {
+          True -> "void"
+          False -> ret_ty
+        }
+        <> " @Gleamc_"
+        <> name
+        <> "("
+        <> params_s
+        <> ") {",
+    )
   let b =
     emit_line(
       b,
@@ -1309,7 +1345,14 @@ fn emit_exit_term(ctx: Ctx, term: ir.Terminator, drops: List(ir.Op), b: Builder)
       let ret_ty = llvm_ty(ctx.ret, ctx.recursive)
       let #(_, v, b) = read_val(ctx, value, b)
       let b = emit_drops(ctx, drops, b)
-      emit_line(b, "  ret " <> ret_ty <> " " <> v)
+      case ret_needs_sret(ctx.ret, ctx.recursive) {
+        True -> {
+          let b =
+            emit_line(b, "  store " <> ret_ty <> " " <> v <> ", ptr %__out")
+          emit_line(b, "  ret void")
+        }
+        False -> emit_line(b, "  ret " <> ret_ty <> " " <> v)
+      }
     }
     ir.Tailcall(fun, args) -> {
       let #(b, arg_list) = read_args(ctx, args, b)
@@ -1327,19 +1370,43 @@ fn emit_exit_term(ctx: Ctx, term: ir.Terminator, drops: List(ir.Op), b: Builder)
       let #(code, b) = extract_value(fn_s, fv, [0], b)
       let #(env, b) = extract_value(fn_s, fv, [1], b)
       let #(b, arg_list) = read_args(ctx, args, b)
-      let callargs = case arg_list {
-        "" -> "i8* " <> env
-        _ -> "i8* " <> env <> ", " <> arg_list
-      }
       let ret_s = llvm_ty(ctx.ret, ctx.recursive)
-      let #(r, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  " <> r <> " = call " <> ret_s <> " " <> code <> "(" <> callargs <> ")",
-        )
-      let b = emit_drops(ctx, drops, b)
-      emit_line(b, "  ret " <> ret_s <> " " <> r)
+      case ret_needs_sret(ctx.ret, ctx.recursive) {
+        True -> {
+          let b =
+            emit_line(
+              b,
+              "  call void "
+                <> code
+                <> "(ptr sret("
+                <> ret_s
+                <> ") %__out"
+                <> ", i8* "
+                <> env
+                <> case arg_list {
+                  "" -> ""
+                  _ -> ", " <> arg_list
+                }
+                <> ")",
+            )
+          let b = emit_drops(ctx, drops, b)
+          emit_line(b, "  ret void")
+        }
+        False -> {
+          let callargs = case arg_list {
+            "" -> "i8* " <> env
+            _ -> "i8* " <> env <> ", " <> arg_list
+          }
+          let #(r, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  " <> r <> " = call " <> ret_s <> " " <> code <> "(" <> callargs <> ")",
+            )
+          let b = emit_drops(ctx, drops, b)
+          emit_line(b, "  ret " <> ret_s <> " " <> r)
+        }
+      }
     }
     _ -> emit_term(ctx, term, b)
   }
@@ -1361,40 +1428,61 @@ fn emit_tail_call(
     True -> "musttail call "
     False -> "call "
   }
-  let #(r, b) = fresh(b)
-  let b =
-    emit_line(
-      b,
-      "  " <> r <> " = " <> marker <> ret_s <> " " <> callee <> "(" <> args <> ")",
-    )
-  emit_line(b, "  ret " <> ret_s <> " " <> r)
+  case ret_needs_sret(ctx.ret, ctx.recursive) {
+    True -> {
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> marker
+            <> "void "
+            <> callee
+            <> "(ptr sret("
+            <> ret_s
+            <> ") %__out"
+            <> case args {
+              "" -> ""
+              _ -> ", " <> args
+            }
+            <> ")",
+        )
+      emit_line(b, "  ret void")
+    }
+    False -> {
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> r <> " = " <> marker <> ret_s <> " " <> callee <> "(" <> args <> ")",
+        )
+      emit_line(b, "  ret " <> ret_s <> " " <> r)
+    }
+  }
 }
 
-/// Whether a value of `ty` can be returned through a `musttail` call. The ABI
-/// forbids a return type that lowers to an sret pointer (large aggregates);
-/// LLVM aborts the backend for those. Restricted to types the C ABI returns in
-/// registers.
-fn can_musttail(ty: Type, recursive: Dict(String, Bool)) -> Bool {
+/// Whether a return value of `ty` is lowered to an `sret` out pointer by the C
+/// ABI (a large aggregate). Such a value must be returned through an **explicit**
+/// sret parameter: `musttail` forbids the automatic sret conversion, but an
+/// explicit one is a plain pointer argument that can be forwarded unchanged.
+fn ret_needs_sret(ty: Type, recursive: Dict(String, Bool)) -> Bool {
   case ty {
-    ast.TInt | ast.TFloat | ast.TBool | ast.TNil -> True
-    TString -> True
-    TNamed("Nil") -> True
-    TNamed("BitArray") -> True
-    TNamed("void*") -> True
-    TNamed("Future") -> True
-    TNamed("Handle") -> True
-    ast.TFun(_, _) -> True
-    TNamed(name) -> is_recursive(recursive, name)
-    _ -> False
+    ast.TInt | ast.TFloat | ast.TBool | ast.TNil -> False
+    TString -> False
+    TNamed("Nil") -> False
+    TNamed("BitArray") -> False
+    TNamed("void*") | TNamed("Future") | TNamed("Handle") -> False
+    ast.TFun(_, _) -> False
+    TNamed(name) -> !is_recursive(recursive, name)
+    _ -> True
   }
 }
 
 /// Whether a direct tail call may be marked `musttail`. The default calling
 /// convention requires the caller and callee prototypes to match exactly, which
-/// only holds when both sides take the same parameter types (a self- or
-/// same-signature mutual call). The return type must also be register-returned.
+/// holds for self- and same-signature mutual recursion. Aggregate returns are
+/// passed as an explicit sret pointer, so they do not block `musttail`.
 fn musttail_ok(ctx: Ctx, fun: String) -> Bool {
-  can_musttail(ctx.ret, ctx.recursive) && prototype_matches(ctx, fun)
+  prototype_matches(ctx, fun)
 }
 
 fn prototype_matches(ctx: Ctx, fun: String) -> Bool {
@@ -1587,22 +1675,46 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
     ir.OpCall(dest, fun, args, ret_ty) -> {
       let #(b, arg_list) = read_args(ctx, args, b)
       let ret_s = llvm_ty(ret_ty, ctx.recursive)
-      let #(tmp, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  "
-            <> tmp
-            <> " = call "
-            <> ret_s
-            <> " @Gleamc_"
-            <> fun
-            <> "("
-            <> arg_list
-            <> ")",
-        )
-      let b = store_local(ctx, dest, ret_s, tmp, b)
-      #(b, Nil)
+      case ret_needs_sret(ret_ty, ctx.recursive) {
+        // The callee writes the aggregate into `dest`'s own slot.
+        True -> {
+          let #(destp, b) = local_addr(ctx, dest, b)
+          let b =
+            emit_line(
+              b,
+              "  call void @Gleamc_"
+                <> fun
+                <> "(ptr sret("
+                <> ret_s
+                <> ") "
+                <> destp
+                <> case arg_list {
+                  "" -> ""
+                  _ -> ", " <> arg_list
+                }
+                <> ")",
+            )
+          #(b, Nil)
+        }
+        False -> {
+          let #(tmp, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> tmp
+                <> " = call "
+                <> ret_s
+                <> " @Gleamc_"
+                <> fun
+                <> "("
+                <> arg_list
+                <> ")",
+            )
+          let b = store_local(ctx, dest, ret_s, tmp, b)
+          #(b, Nil)
+        }
+      }
     }
     ir.OpBuiltin(dest, builtin, args, ret_ty) -> {
       case builtin {
@@ -1991,26 +2103,51 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
       let #(env, b) = extract_value(fn_s, fv, [1], b)
       let #(b, arg_list) = read_args(ctx, args, b)
       let ret_s = llvm_ty(ret_ty, ctx.recursive)
-      let callargs = case arg_list {
-        "" -> "i8* " <> env
-        _ -> "i8* " <> env <> ", " <> arg_list
+      case ret_needs_sret(ret_ty, ctx.recursive) {
+        True -> {
+          let #(destp, b) = local_addr(ctx, dest, b)
+          let b =
+            emit_line(
+              b,
+              "  call void "
+                <> code
+                <> "(ptr sret("
+                <> ret_s
+                <> ") "
+                <> destp
+                <> ", i8* "
+                <> env
+                <> case arg_list {
+                  "" -> ""
+                  _ -> ", " <> arg_list
+                }
+                <> ")",
+            )
+          #(b, Nil)
+        }
+        False -> {
+          let callargs = case arg_list {
+            "" -> "i8* " <> env
+            _ -> "i8* " <> env <> ", " <> arg_list
+          }
+          let #(tmp, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> tmp
+                <> " = call "
+                <> ret_s
+                <> " "
+                <> code
+                <> "("
+                <> callargs
+                <> ")",
+            )
+          let b = store_local(ctx, dest, ret_s, tmp, b)
+          #(b, Nil)
+        }
       }
-      let #(tmp, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  "
-            <> tmp
-            <> " = call "
-            <> ret_s
-            <> " "
-            <> code
-            <> "("
-            <> callargs
-            <> ")",
-        )
-      let b = store_local(ctx, dest, ret_s, tmp, b)
-      #(b, Nil)
     }
     ir.OpBitArray(dest, elems, _ty) -> {
       let n = list.length(elems)
@@ -2634,16 +2771,25 @@ fn insert_fields(ty_s, base, fields, prefix: List(Int), index: Int, b) {
 fn code_ty(fn_ty: Type, recursive: Dict(String, Bool)) -> String {
   case fn_ty {
     ast.TFun(params, ret) -> {
-      let args = case params {
-        [] -> "i8*"
-        _ ->
-          "i8*, "
-          <> string.join(
-            list.map(params, fn(param) { llvm_ty(param, recursive) }),
-            ", ",
-          )
+      let gleam_args =
+        list.map(params, fn(param) { llvm_ty(param, recursive) })
+      case ret_needs_sret(ret, recursive) {
+        // The explicit out pointer comes first, then the closure environment.
+        True ->
+          "void (ptr, i8*"
+          <> case gleam_args {
+            [] -> ""
+            _ -> ", " <> string.join(gleam_args, ", ")
+          }
+          <> ")*"
+        False -> {
+          let args = case gleam_args {
+            [] -> "i8*"
+            _ -> "i8*, " <> string.join(gleam_args, ", ")
+          }
+          llvm_ty(ret, recursive) <> " (" <> args <> ")*"
+        }
       }
-      llvm_ty(ret, recursive) <> " (" <> args <> ")*"
     }
     _ -> "void ()*"
   }
@@ -2761,35 +2907,63 @@ fn wrapper_def(function: ir.Function, code: String, recursive) -> String {
       ", ",
     )
   let ret_s = llvm_ty(ret, recursive)
-  let lines = case ret_s {
-    "i32" ->
-      "  call "
-      <> ret_s
-      <> " @Gleamc_"
-      <> name
-      <> "("
-      <> args
-      <> ")\n  ret i32 0"
-    _ ->
-      "  %r = call "
-      <> ret_s
-      <> " @Gleamc_"
-      <> name
-      <> "("
-      <> args
-      <> ")\n  ret "
-      <> ret_s
-      <> " %r"
+  let sret = ret_needs_sret(ret, recursive)
+  let params_decl = case sret {
+    True ->
+      "ptr sret(" <> ret_s <> ") %out, i8* %env"
+      <> case decls {
+        [] -> ""
+        _ -> ", " <> string.join(decls, ", ")
+      }
+    False ->
+      "i8* %env"
+      <> case decls {
+        [] -> ""
+        _ -> ", " <> string.join(decls, ", ")
+      }
+  }
+  let call_args = case sret {
+    True ->
+      "ptr sret(" <> ret_s <> ") %out"
+      <> case args {
+        "" -> ""
+        _ -> ", " <> args
+      }
+    False -> args
+  }
+  let lines = case sret {
+    True -> "  call void @Gleamc_" <> name <> "(" <> call_args <> ")\n  ret void"
+    False ->
+      case ret_s {
+        "i32" ->
+          "  call "
+          <> ret_s
+          <> " @Gleamc_"
+          <> name
+          <> "("
+          <> args
+          <> ")\n  ret i32 0"
+        _ ->
+          "  %r = call "
+          <> ret_s
+          <> " @Gleamc_"
+          <> name
+          <> "("
+          <> args
+          <> ")\n  ret "
+          <> ret_s
+          <> " %r"
+      }
   }
   "define "
-  <> ret_s
+  <> case sret {
+    True -> "void"
+    False -> ret_s
+  }
   <> " @"
   <> code
-  <> "(i8* %env"
-  <> case decls {
-    [] -> ""
-    _ -> ", " <> string.join(decls, ", ")
-  }
+  <> "("
+  <> params_decl
   <> ") {\n"
   <> lines
   <> "\n}"

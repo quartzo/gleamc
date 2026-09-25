@@ -41,9 +41,13 @@ is now gone: functions are emitted one by one and tail calls use LLVM
   parameter, `reverse_helper` has 2). `musttail_ok` (in `llvm.gleam`) therefore
   checks `can_musttail(return)` **and** `prototype_matches(caller, callee)`;
   otherwise the call is plain.
-- **Return type.** A return type the ABI lowers to an sret pointer (large
-  aggregate) aborts the backend under `musttail`. `can_musttail` allows only
-  scalar/pointer/builtin/small types; everything else falls back to `call`.
+- **Return type: explicit sret.** A large aggregate return would normally be
+  lowered to an `sret` out pointer by the ABI, and `musttail` forbids that
+  automatic conversion (LLVM aborts the backend). Instead, functions whose
+  return needs sret are emitted with an **explicit** `ptr sret(%R) %__out`
+  parameter: the out pointer is a plain argument that a tail call forwards
+  unchanged, so self/same-signature recursion returning `Result` and friends is
+  constant-stack. Calls without a matching prototype still fall back to `call`.
 - **Indirect tail calls are plain calls.** A local closure owns the frame that
   the callee uses as its environment; releasing the closure before the call
   would free that frame early. `TailcallIndirect` is therefore emitted as
@@ -72,11 +76,12 @@ functions: pausing to the loop is the expected behaviour.
 
 - [ ] Async stage 2: `Suspend` terminator, `step` + wrapper in IR, delete
       `OpSuspend`.
-- [ ] Self-host under 8 MiB: the self-hosted compiler currently needs ~64 MiB
-      even for a tiny file. Different-arity tail calls (wrapper→helper) and
-      indirect continuations are plain calls, so their chains use the native
-      stack; closing the gap needs either constant-prototype shims, a
-      trampoline for the non-`musttail` calls, or smaller `-O0` frames.
+- [ ] Full self-host under 8 MiB. The explicit-sret change took the full
+      self-compile from >1 GiB to ~32 MiB, and a small file already compiles
+      under 8 MiB. The gap left is the tail calls that still are not `musttail`:
+      same-arity direct calls whose return type differs (impossible), different
+      arity (wrapper→helper), and the indirect CPS continuations. Those need
+      either a trampoline or prototype shims.
 - [ ] Update `docs/machine.md` / `docs/cascade.md` / `docs/frame-environment.md`
       (they still describe dispatchers, `plan`/`cps` and inline async).
 
@@ -85,5 +90,8 @@ functions: pausing to the loop is the expected behaviour.
 - `gleam test`: 147/0 (the 6 removed `plan` tests aside).
 - `scripts/diff.sh`: 61/61.
 - Constant-stack: direct, mutual and same-signature recursion at 1e6
-  iterations; `live blocks = 0` on the closure/frame reproducers.
-- Self-hosted compiler builds and runs (needs > 8 MiB).
+  iterations, including `Result`-returning functions (explicit sret);
+  `live blocks = 0` on the closure/frame reproducers.
+- Self-host: the first-generation compiler compiles a small file under
+  `ulimit -s 8192` and the whole compiler under `ulimit -s 32768`; the
+  second-generation binary compiles a small file under 8 MiB.
