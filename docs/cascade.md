@@ -19,10 +19,9 @@ source
   dce                 AST              -> AST          (prune unreachable)
   checker             AST              -> AST          (type-check; signatures, ctors)
   lower               AST              -> IR           (basic blocks; tail calls)
+  frame               IR               -> IR           (materialize heap frames)
   ownership           IR               -> IR           (borrow modes; retain/drop)
-  cps                 IR               -> IR           (split at suspensions and non-tail member calls)
-  plan                IR               -> Plan         (frames, groups, states)
-  backend             IR + Plan        -> LLVM IR
+  backend             IR               -> LLVM IR
 ```
 
 `src/gleamc/pipeline.gleam` is the single place that fixes this order. Everything
@@ -42,25 +41,26 @@ after `lower` speaks IR; IR is the only cross-layer currency.
 | `dce` | `dce.gleam` | AST | AST | remove functions unreachable from the entry | type-check |
 | `checker` | `checker.gleam`, `infer.gleam` | AST | AST + signatures + ctors | type-check; produce signatures/ctor info | insert runtime ops |
 | `lower` | `lower.gleam` | AST | `ir.Module` | emit blocks/ops; decide **tail position** (`Tailcall`, `TailcallIndirect`) | insert retain/drop |
+| `frame` | `frame.gleam` | IR | IR | materialize the heap frame of capture/suspend functions | insert retain/drop |
 | `ownership` | `ownership.gleam`, `borrow.gleam`, `ffi_modes.gleam`, `owned_clone.gleam` | IR | IR | classify parameters (`Borrow`/`Owned`); insert **all** `OpRetain`/`OpDrop` | create tail calls; know the backend |
-| `cps` | `cps.gleam` | IR | IR | split blocks at `OpSuspend` **and at non-tail calls between dispatcher members**, so control flow (suspend and member return) is explicit | insert retain/drop |
-| `plan` | `plan.gleam` | IR | `plan.Plan` | compute tail-call edges, mutual groups, frames, states | mutate the IR |
-| `llvm` | `llvm.gleam` | IR + Plan | LLVM IR text | render IR, dispatchers, state machines | invent retain/release or tail calls |
+| `llvm` | `llvm.gleam` | IR | LLVM IR text | render IR, `musttail` tail calls, frames | invent retain/release or tail calls |
 
 ## The contract (invariants)
 
 1. **Tail position is decided in `lower`.** No layer after `lower` creates a
-   `Tailcall`/`TailcallIndirect`; `cps` only splits, `plan` only plans, the
-   backends only render.
+   `Tailcall`/`TailcallIndirect`; `frame` only materializes frames, the backend
+   only renders. `musttail` is an emission choice, not a new tail call.
 2. **`ownership` is the sole producer of `OpRetain`/`OpDrop`.** The backends
    render them; they never synthesise a retain/release or a teardown. If a value
    needs a reference-count operation, it must be visible to `ownership`.
-3. **`plan` is pure and deterministic.** It reads the IR and an explicit
-   environment, changes no IR, and its output depends only on its input.
-4. **`mono` is the only layer that lifts lambdas.** Later layers see lifted
+3. **`mono` is the only layer that lifts lambdas.** Later layers see lifted
    functions, never `ELambda`.
-5. **Machine membership is a planning decision.** Which functions become state
-   machines / dispatchers belongs to `plan`; the backend consumes that decision.
+4. **Frame membership is a single rule.** `frame.machine_functions` names the
+   functions whose locals must live on the heap (a closure captures one of
+   them, or — when async is restored — one is live across a suspension). The
+   backend consumes that list. `plan.gleam`, the mutual tail-call dispatchers
+   and the heap return stack were removed; tail calls are `musttail` calls
+   (`tco-musttail-plan.md`).
 
 ## Artifacts and how to inspect them
 
@@ -68,33 +68,18 @@ after `lower` speaks IR; IR is the only cross-layer currency.
 |---|---|
 | AST (per layer) | not dumped |
 | IR after `ownership` | `gleam run -- <file> --ir` (writes `<file>.ir`) |
-| `plan.Plan` | `pipeline.compile_to_plan` / `plan.to_text` |
 | LLVM IR | `gleam run -- <file>` (writes `<file>.ll`) |
 | Behaviour vs the reference | `scripts/diff.sh` over `diffs/*.gleam` |
 
 Each artifact is the evidence for a diagnosis: an ownership problem is read off
-the `--ir` dump; a machine/grouping problem off the plan; a rendering problem off
-the `.ll`.
+the `--ir` dump; a rendering problem off the `.ll`.
 
 ## Known deviations (to fix)
 
-These are cases where the current code does not respect the contract above. They
-are listed so a change can move toward the contract instead of doubling down.
-
-- **Group eligibility still carries backend constraints.** State-machine
-  membership is now computed by `plan` (`plan.machines`) and consumed by the
-  backend. Mutual tail-call *groups* are also planned, but the backend still
-  filters them by emission constraints (matching return types, `group_ok`).
-  Those constraints should move into `plan` as well.
-- **Frame lifecycle is placed by the backend.** The frame is materialized in the
-  IR (`OpFrameNew`) and `ownership` schedules its reference counts and frame
-  claim; the backend emits the allocation and the frame drop at the machine
-  boundary (wrapper or dispatcher return). This is deliberate: the result
-  crosses the step/wrapper split inside the frame. See
-  [frame-environment.md](frame-environment.md).
-- **Non-tail calls between dispatcher members are still native calls.** `cps`
-  already splits the block at each such call (giving a resume label) and the
-  intended frame push/pop + heap return stack is specified in
-  [machine.md](machine.md). The backend still emits `call`/`ret` through the
-  member wrapper, so a call *into* the planned function from a member uses the
-  native stack; landing the heap return stack removes that.
+- **Async is lowered inline.** `await` drives the libuv loop synchronously with
+  `gleamc_future_wait` instead of suspending and handing the `Future` back to
+  the loop. Restoring the state machine is stage 2 of the musttail plan, and is
+  the intended home of `suspend_live_vars` in the frame.
+- **Frame lifecycle placement.** `OpFrameNew`/`OpDrop(frame)` are visible to
+  `ownership`; the backend still emits the allocation (`gleamc_alloc0`) and the
+  frame teardown symbol. See [frame-environment.md](frame-environment.md).

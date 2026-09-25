@@ -1,159 +1,57 @@
-# The CPS machine: tail calls and async
+# Tail calls and async
 
-Recursive Gleam code that ends in a call (for example a loop written with `use`)
-must run in constant stack, and asynchronous code must be able to suspend and
-resume. `gleamc` implements both with one idea: some functions are compiled not
-as ordinary C-style functions but as **states of a machine**, driven either by a
-dispatcher (tail calls) or by the scheduler (suspension). This document describes
-how those machines are planned and emitted.
+`gleamc` runs recursive Gleam code in constant native stack. Tail position is
+decided during lowering (see [cascade.md](cascade.md)): a call in tail position
+becomes an `ir.Tailcall` (known function) or `ir.TailcallIndirect` (function
+value). Everything else stays an `OpCall`/`OpCallIndirect`.
 
-## Where tail calls come from
+## Tail calls: `musttail`
 
-Tail position is known during lowering, so `lower` produces the terminators:
+There are no dispatchers, mutual groups or heap return stack. Each function is
+emitted on its own and a direct tail call becomes a `musttail` call followed by
+its `ret` (`llvm.gleam`, `emit_exit_term`/`emit_tail_call`):
 
-- a call to a known function in tail position becomes `Tailcall(fun, args)`;
-- a call through a function value in tail position becomes
-  `TailcallIndirect(fval, args)`.
+```llvm
+%r = musttail call <ret> @Gleamc_<fun>(args)
+ret <ret> %r
+```
 
-A normal call (whose result is still needed) stays an `OpCall`/`OpCallIndirect`.
+No instruction may sit between the call and the `ret`, so all cleanup — the
+trailing `OpDrop`s, including the frame release of a capture-only function — is
+emitted before the call, after the call's operands are loaded. In a
+capture-only function (`emit_frame_function`) the locals live in a heap frame
+that a closure may capture; the frame is released as an `OpDrop(__frame)` and
+the `musttail` call is the last thing the activation does.
 
-## Planning the machines
+`musttail` is only used when it is safe:
 
-`src/gleamc/plan.gleam` is a pure, deterministic planner over the owned IR. It
-computes:
+- the caller and callee use the default C calling convention and their
+  prototypes match (`prototype_matches`). This covers self-recursion and
+  same-signature mutual recursion. The `tailcc` convention allows mismatched
+  prototypes but miscompiles a call whose arguments spill to the stack (a
+  self-recursive `tailcc` function with seven `i64` arguments loops forever on
+  x86-64), so it is not used;
+- the return type is returned in registers (`can_musttail`). A large aggregate
+  that the ABI lowers to an `sret` pointer aborts the backend under `musttail`.
 
-- **tail-call edges**: `caller -> callee` for every `Tailcall`; and for a
-  `TailcallIndirect` whose function value is a statically known closure, an edge
-  to the underlying function;
-- **callback edges**: when a function `h` tail-calls one of its function-typed
-  parameters and a call site of `h` passes a closure whose code is statically
-  known, `h` may transfer control to that closure's code. This links a CPS
-  combinator such as `result.try` back to the continuation its caller supplied,
-  closing the tail-call cycle so it can be collapsed into direct branches;
-- **mutual groups**: the strongly connected components of the tail-call graph.
-  A group is a set of functions that call each other in tail position.
+Otherwise the call is a plain `call` + `ret`. In particular a
+`TailcallIndirect` is always a plain call: a local closure owns the frame the
+callee reads as its environment, so releasing it before the call (which
+`musttail` forces) would free that frame early.
 
-The planner also records each function's frame (its parameters and locals) and a
-global numbering of basic-block states. It changes no IR.
+The result: self and same-signature mutual recursion run in constant stack at
+any `-O`, including `-O0`.
 
-## The tail-call dispatcher
+## Async
 
-`llvm.gleam` turns each mutual group into a single function — the **dispatcher**
-(`emit_group`). The dispatcher:
+`await` is currently lowered inline: `time.timer` / `uv.fs_*` start a `Future`
+and `OpSuspend` drives the libuv loop synchronously with `gleamc_future_wait`.
+The intended behaviour is to **suspend and hand the future back to the loop**
+(the state machine of commit `80b62ff`), which the inline `4afd3d6` replaced.
+That restoration is stage 2 of the musttail plan and is not implemented yet;
+see [tco-musttail-plan.md](tco-musttail-plan.md).
 
-- gives every member its own **heap frame** (a `%__fr_m<idx>` = `gleamc_alloc0`
-  cell) holding that member's locals. The frame is a *value*, not a native
-  `alloca`: it can be captured and referenced across a suspension or a closure
-  (`frame-environment.md`). This is what lets a call "into the planned function"
-  avoid the native stack;
-- switches on a member index (`%__fn`) to the selected member's prologue, which
-  copies the incoming argument block into that member's frame;
-- for a member-to-member tail call, stores the arguments into the callee member's
-  frame and branches to its entry (`emit_rebind`) — no call, no stack growth;
-- for an indirect tail call inside the dispatcher, compares the closure's code
-  pointer against each member (`emit_indirect_switch`) and, on a match, rebinds
-  the closure's environment and the arguments into that member's frame and
-  branches there (`emit_indirect_rebind`). Anything else falls back to a plain
-  indirect call.
-
-Each member also keeps a thin wrapper with its original signature that packs its
-arguments, calls the dispatcher, and unpacks the result, so ordinary callers
-outside the group see a normal function (`wrapper_for_group`).
-
-The effect is that an arbitrarily long **tail-call** chain in a mutual group runs
-as branches inside a single dispatcher invocation, in constant stack.
-
-### Calls between members (non-tail)
-
-A member that needs another member's *result* cannot simply branch: it must
-resume where it left off. Lowering such a call as `call @Gleamc_<member>` would
-re-enter the dispatcher with a fresh native frame at every level and defeat the
-machine. Instead the frames are the stack:
-
-- `cps` **splits the block at every non-tail call to a member**, so a resume
-  label exists after the call, exactly as it does for `OpSuspend`;
-- the call becomes a **push + branch**: push a return record
-  `(caller member, caller frame, caller destination slot, resume label)` onto a
-  heap **return stack**, allocate a *fresh* frame for the callee (a member active
-  recursively therefore gets distinct frames), write the arguments into it and
-  branch to the callee's entry — the same rebind a tail call uses, plus the push;
-- the member's `Ret` becomes a **pop + branch**: if the return stack is not
-  empty, pop the record, restore the caller's frame, store the result into the
-  caller's destination slot and branch to the resume label; otherwise the
-  dispatcher returns normally.
-
-So entering the planned function never uses `call`/`ret`: the call stack is the
-heap and the native stack stays constant. The `cps` split is implemented; the
-backend `push`/`pop` is the part still landing.
-
-## The CPS split
-
-`src/gleamc/cps.gleam` makes control flow explicit in two places, both by
-**splitting a block so the continuation gets its own label** (the preceding
-segment ends in a `Jmp` to it):
-
-- **Suspension**: split at every `OpSuspend`, so each segment becomes a state the
-  state machine can re-enter. `OpSuspend(dest, fut, resume)` is the only op that
-  can yield. This applies to every function.
-- **Non-tail member calls**: inside a dispatcher member, split at every non-tail
-  call to another member of the same group, so the call has a resume label for
-  the heap return stack to jump back to. This applies only to group members
-  (`plan.dispatched_members`).
-
-`OpSuspend` is produced by `lower` for `await` (the `uv.*` and timer builtins).
-A block without suspension is left unchanged, so only functions that actually
-suspend become state machines.
-
-## The state-machine function
-
-A function that suspends is emitted as a **step machine**
-(`emit_machine_function` in `llvm.gleam`):
-
-- a frame type `%__frame_<fn>` holds all locals plus the machine fields: a
-  `state` index, a `fut` slot for the pending future, and (when the function
-  returns a value) a `result` slot;
-- `Gleamc_<fn>_step(frame) -> i1` reads the state index and switches to the
-  corresponding block. Returning `true` means the machine finished (the result,
-  if any, is in the frame); returning `false` means it suspended and the `fut`
-  slot points at the pending future;
-- the wrapper with the original signature allocates the frame, stores the
-  arguments, and drives the machine through `gleamc_sched_run`, then returns the
-  result. Locals live in the frame, so they survive a suspension.
-
-At a suspension point the step stores the future pointer in the frame and
-returns `false`; on resume, the block head reads the completed future's value
-into `dest` and releases the future (`emit_wake`).
-
-## Scheduler and futures
-
-The scheduler and futures live in `runtime/gleam_runtime.[ch]`.
-
-- `GleamcFuture` carries `deadline`, `done`, an error code, a scalar wake value
-  (`value_i`), a pointer wake value (`value_p`), and whether it is armed on the
-  libuv loop (`uv_armed`).
-- `gleamc_sched_run(step, frame, fut_slot)` repeatedly calls `step`; when a step
-  suspends it waits for the future — running the libuv loop for armed futures,
-  or sleeping until the deadline for timer futures — and then re-enters the step.
-- `gleamc_task_spawn` / `gleamc_tasks_drain` hold a small task table so spawned
-  machines are stepped cooperatively.
-
-libuv is required: every generated binary links `-luv`, and there is no
-synchronous fallback.
-
-## The async builtins
-
-The asynchronous surface is a small set of builtins, declared in
-`src/gleamc/ffi_modes.gleam`, whose `Future` is internal to the lowering:
-
-- `time.timer(ms)` and `time.timer_count(ms)` — a one-shot timer; `await` on the
-  returned future drives the loop until it fires.
-- `uv.fs_open`, `uv.fs_read`, `uv.fs_write`, `uv.fs_close`, `uv.fs_stat`,
-  `uv.fs_realpath`, `uv.fs_readdir`, `uv.fs_mkdir`, `uv.fs_rmdir`,
-  `uv.fs_rename`, `uv.fs_symlink`, `uv.fs_link`, `uv.fs_chmod`, `uv.fs_unlink`,
-  `uv.fs_cwd` — the file-system surface, all asynchronous.
-
-An `await` lowers to: create the future, `OpSuspend` it, and on resume read the
-value with the matching accessor (`Gleamc_uv_result` for scalars,
-`Gleamc_uv_await_bytes` for bit arrays, `Gleamc_uv_value_int` for value-carrying
-futures). The standard library (`std/simplifile.gleam`) is written against this
-surface, so no blocking disk call is used.
+The runtime (`runtime/gleam_runtime.[ch]`) already carries the pieces:
+`GleamcFuture`, `gleamc_sched_run`, the task list (`gleamc_task_spawn` /
+`gleamc_tasks_drain`) and the `gleamc_uv_*` wrappers. libuv is required; there
+is no synchronous fallback.
