@@ -18,11 +18,11 @@ import gleam/result
 import gleam/string
 import gleamc/ast.{
   type Definition, type Expr, type Module, type Pattern, type Statement,
-  type Type, Arm, CustomType, DCustomType, DFunction, DImport, DTypeAlias,
-  EBinop, EBitArray, EBlock, EBool, ECall, ECase, EClosure, ECtor, EEnvGet,
-  EField, EFloat, EInt, ELabelled, ELambda, ENil, EPanic, EString, ETuple, EUnop,
-  EUpdate, EVar, Function, Import, Let, Module, PAs, PBitArray, PCtor, PLabelled,
-  PTuple, PVar, Stmt, Variant,
+  type Type, Arm, CustomType, DCustomType, DExternal, DFunction, DImport,
+  DTypeAlias, EBinop, EBitArray, EBlock, EBool, ECall, ECase, EClosure, ECtor,
+  EEnvGet, EField, EFloat, EInt, ELabelled, ELambda, ENil, EPanic, EString,
+  ETuple, EUnop, EUpdate, EVar, External, Function, Import, Let, Module, PAs,
+  PBitArray, PCtor, PLabelled, PTuple, PVar, Stmt, Variant,
 }
 
 type Ctx {
@@ -258,6 +258,7 @@ fn module_function_names(defs) {
   list_filter_map(defs, fn(definition) {
     case definition {
       DFunction(function) -> Ok(function.name)
+      DExternal(external) -> Ok(external.name)
       _ -> Error(Nil)
     }
   })
@@ -512,6 +513,21 @@ fn rewrite_definition(definition, module, ctx) -> Definition {
           )
         }),
         is_opaque,
+      ))
+    }
+    DExternal(external) -> {
+      let External(is_pub, name, params, ret, target, symbol, line) = external
+      DExternal(External(
+        is_pub,
+        qualify(module, name),
+        list_map(params, fn(param) {
+          let #(param_name, ty) = param
+          #(param_name, resolve_type(ctx, module, ty))
+        }),
+        resolve_type(ctx, module, ret),
+        target,
+        symbol,
+        line,
       ))
     }
     _ -> definition

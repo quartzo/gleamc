@@ -12,8 +12,8 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleamc/ast.{
   type Arm, type Expr, type Function, type Module, type Pattern, type Statement,
-  type Type, Arm, DFunction, EBinop, EBitArray, EBlock, EBool, ECall, ECase,
-  EClosure, ECtor, EEnvGet, EField, EFloat, EInt, ELabelled, ELambda, ENil,
+  type Type, Arm, DExternal, DFunction, EBinop, EBitArray, EBlock, EBool, ECall,
+  ECase, EClosure, ECtor, EEnvGet, EField, EFloat, EInt, ELabelled, ELambda, ENil,
   EPanic, EString, ETuple, EUnop, EUpdate, EVar, Let, Module, PAs, PBitArray,
   PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard,
   Stmt, TBool, TFun, TInt, TNamed, TNil, TString, TTuple,
@@ -42,6 +42,8 @@ type Builder {
     tenv: List(#(String, Type)),
     signatures: Dict(String, checker.Signature),
     ctors: Dict(String, checker.CtorInfo),
+    /// Qualified name -> runtime symbol for `@external` declarations.
+    externals: Dict(String, String),
   )
 }
 
@@ -118,6 +120,13 @@ pub fn lower_module(
   ctors: Dict(String, checker.CtorInfo),
 ) -> Result(ir.Module, LowerError) {
   let Module(definitions) = module
+  let externals =
+    list.fold(definitions, dict.new(), fn(acc, definition) {
+      case definition {
+        DExternal(external) -> dict.insert(acc, external.name, external.symbol)
+        _ -> acc
+      }
+    })
   let functions =
     list.map(
       list.filter_map(definitions, fn(definition) {
@@ -126,7 +135,7 @@ pub fn lower_module(
           _ -> Error(Nil)
         }
       }),
-      fn(function) { lower_function(function, signatures, ctors) },
+      fn(function) { lower_function(function, signatures, ctors, externals) },
     )
   use functions <- result.try(sequence(functions))
   Ok(ir.Module(functions))
@@ -151,6 +160,7 @@ fn lower_function(
   function: Function,
   signatures,
   ctors,
+  externals,
 ) -> Result(ir.Function, LowerError) {
   let param_names =
     list.map(function.params, fn(param) {
@@ -183,6 +193,7 @@ fn lower_function(
       tenv: tenv,
       signatures: signatures,
       ctors: ctors,
+      externals: externals,
     )
   use b2 <- result.try(lower_tail_block(b, body_statements(function.body)))
   Ok(ir.Function(
@@ -780,24 +791,44 @@ fn lower_call(b, fun, args) -> Result(#(ir.Operand, Builder), LowerError) {
   let ret_ty = infer(b, ECall(fun, args))
   case fun {
     EVar(name) ->
-      case env_lookup(b.env, name) {
-        Ok(_) -> {
-          use #(fval, b1) <- result.try(lower_expr(b, EVar(name)))
-          use #(operands, b2) <- result.try(lower_args(b1, args))
-          let #(dest, b3) = fresh_local(b2, "callind", ret_ty)
-          Ok(#(
-            ir.Var(dest),
-            emit(b3, ir.OpCallIndirect(dest, fval, operands, ret_ty)),
-          ))
-        }
-        Error(_) -> {
+      case dict.get(b.externals, name) {
+        // `@external`: call the runtime symbol directly. The name has no dot,
+        // so the backend uses it verbatim instead of the `Gleamc_<module>_...`
+        // builtin convention.
+        Ok(symbol) -> {
           use #(operands, b1) <- result.try(lower_args(
             b,
             order_by_params(b, name, args),
           ))
-          let #(dest, b2) = fresh_local(b1, "call", ret_ty)
-          Ok(#(ir.Var(dest), emit(b2, ir.OpCall(dest, name, operands, ret_ty))))
+          let #(dest, b2) = fresh_local(b1, "ext", ret_ty)
+          Ok(#(
+            ir.Var(dest),
+            emit(b2, ir.OpBuiltin(dest, symbol, operands, ret_ty)),
+          ))
         }
+        Error(_) ->
+          case env_lookup(b.env, name) {
+            Ok(_) -> {
+              use #(fval, b1) <- result.try(lower_expr(b, EVar(name)))
+              use #(operands, b2) <- result.try(lower_args(b1, args))
+              let #(dest, b3) = fresh_local(b2, "callind", ret_ty)
+              Ok(#(
+                ir.Var(dest),
+                emit(b3, ir.OpCallIndirect(dest, fval, operands, ret_ty)),
+              ))
+            }
+            Error(_) -> {
+              use #(operands, b1) <- result.try(lower_args(
+                b,
+                order_by_params(b, name, args),
+              ))
+              let #(dest, b2) = fresh_local(b1, "call", ret_ty)
+              Ok(#(
+                ir.Var(dest),
+                emit(b2, ir.OpCall(dest, name, operands, ret_ty)),
+              ))
+            }
+          }
       }
     EField(EVar(module), name) -> {
       let builtin = module <> "." <> name

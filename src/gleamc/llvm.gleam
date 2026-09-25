@@ -907,7 +907,7 @@ fn builtin_decls(
         ir.OpBuiltin(_, builtin, args, ret_ty) ->
           case
             special_builtin(builtin)
-            || runtime_declared("Gleamc_" <> string.replace(builtin, ".", "_"))
+            || runtime_declared(builtin_symbol(builtin))
           {
             True -> Error(Nil)
             False -> Ok(builtin_decl(builtin, ret_ty, args, by_name, recursive))
@@ -3392,6 +3392,9 @@ fn runtime_declared(name: String) -> Bool {
     | "Gleamc_string_compare_bytes"
     | "gleamc_string_concat"
     | "gleamc_string_eq"
+    | "Gleamc_hash_string"
+    | "Gleamc_hash_i64"
+    | "Gleamc_hash_f64"
     | "Gleamc_bit_array_eq"
     | "Gleamc_bit_array_new"
     | "Gleamc_bit_array_from_bytes"
@@ -3420,8 +3423,18 @@ fn builtin_arg_ty(by_name, recursive, arg) -> String {
   }
 }
 
+/// The C symbol for a builtin name. A dotted name (`io.println`) is a compiler
+/// builtin mapped to `Gleamc_io_println`; a name with no dot is an `@external`
+/// symbol, used verbatim.
+fn builtin_symbol(builtin: String) -> String {
+  case string.contains(builtin, ".") {
+    True -> "Gleamc_" <> string.replace(builtin, ".", "_")
+    False -> builtin
+  }
+}
+
 fn builtin_decl(builtin, ret_ty, args, by_name, recursive) -> String {
-  let name = "Gleamc_" <> string.replace(builtin, ".", "_")
+  let name = builtin_symbol(builtin)
   let arg_str =
     string.join(
       list.map(args, fn(arg) { builtin_arg_ty(by_name, recursive, arg) }),
@@ -3449,7 +3462,7 @@ fn builtin_decl(builtin, ret_ty, args, by_name, recursive) -> String {
 }
 
 fn emit_builtin_call(ctx: Ctx, dest, builtin, args, ret_ty, b) {
-  let name = "Gleamc_" <> string.replace(builtin, ".", "_")
+  let name = builtin_symbol(builtin)
   let ret_s = llvm_ty(ret_ty, ctx.recursive)
   let sret = is_file_result(ret_ty)
   let #(b, rev_parts) =

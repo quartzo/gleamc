@@ -235,7 +235,10 @@ pub fn op_owning_modes(
     OpBuiltin(_, name, args, _) ->
       case dict.get(ffi, name) {
         Ok(ffi_modes.FfiSig(modes, _)) -> owned_args(args, modes)
-        Error(_) -> args
+        // An `@external` (a bare symbol, no dot) borrows its arguments; the
+        // runtime takes its own references. Unknown dotted builtins would be a
+        // bug (the mode table must cover every builtin).
+        Error(_) -> []
       }
     OpCallIndirect(_, _, args, _) -> args
     OpMachineStart(_, fun, args, _) ->
