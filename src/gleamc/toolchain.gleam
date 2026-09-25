@@ -1,7 +1,10 @@
 //// C toolchain driver: compiler selection, flags and invocation.
 ////
-//// Design decision: `clang -O0` in the dev loop (with `mold` for linking),
-//// `clang/gcc -O3 -march=native` on release.
+//// Design decision: `clang -O1` in the dev loop (with `mold` for linking),
+//// `clang/gcc -O3 -march=native` on release. `-O0` is deliberately avoided:
+//// the backend emits one `alloca` per local and relies on `mem2reg` (part of
+//// the `-O1` pipeline) to turn them into SSA registers. Without it every local
+//// stays in memory and the generated functions' stack frames balloon.
 
 import gleam/list
 import gleam/string
@@ -25,7 +28,7 @@ pub fn default_cc() -> String {
 
 fn opt_flag(mode: Mode) -> String {
   case mode {
-    Debug -> "-O0"
+    Debug -> "-O1"
     Release -> "-O3 -march=native"
   }
 }

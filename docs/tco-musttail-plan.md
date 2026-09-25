@@ -1,7 +1,7 @@
 # Plan: drop the dispatchers, TCO with musttail, async explicit
 
-Status: dispatchers removed and `musttail` TCO landed (tests/diffs green).
-Async stage 2 and the 8 MiB self-host target remain.
+Status: dispatchers removed, `musttail` TCO landed, and the self-host runs
+under an 8 MiB stack (tests/diffs green). Async stage 2 remains.
 
 ## Context
 
@@ -72,18 +72,32 @@ resume)` **terminator** instead of the `OpSuspend` op, so `cps` is not needed
 and the backend has no async knowledge. `musttail` is not used for suspending
 functions: pausing to the loop is the expected behaviour.
 
+## The `-O0` frame problem and the `-O1` baseline
+
+`musttail` keeps *tail recursion* in constant stack, but the native stack was
+still dominated by codegen: the backend emits one `alloca` per local, and `-O0`
+runs neither `mem2reg` nor register allocation, so every local stays in memory
+and a huge function such as `llvm.emit_op` (688 source lines) reserves ~100 KB
+of spill slots per activation. That is a `-O0` artifact, not a tail-call one.
+
+The dev build now uses `clang -O1` (`toolchain.gleam`): the `-O1` pipeline runs
+`mem2reg` (allocas/join slots become SSA values and `phi` nodes) and the
+register allocator. `-O0` is deliberately avoided. This is the idiomatic LLVM
+stance — a naive frontend emits allocas and the optimizer builds SSA — and it
+took the full self-compile from ~32 MiB to under 8 MiB.
+
 ## Remaining
 
 - [ ] Async stage 2: `Suspend` terminator, `step` + wrapper in IR, delete
       `OpSuspend`.
-- [ ] Full self-host under 8 MiB. The explicit-sret change took the full
-      self-compile from >1 GiB to ~32 MiB, and a small file already compiles
-      under 8 MiB. The gap left is the tail calls that still are not `musttail`:
-      same-arity direct calls whose return type differs (impossible), different
-      arity (wrapper→helper), and the indirect CPS continuations. Those need
-      either a trampoline or prototype shims.
-- [ ] Update `docs/machine.md` / `docs/cascade.md` / `docs/frame-environment.md`
-      (they still describe dispatchers, `plan`/`cps` and inline async).
+- [ ] Split the giant `case` functions (`llvm.emit_op`, `frame.rewrite_op`,
+      `ir.op_text`, `checker.infer_builtin`, `mono.specialise_type`,
+      `mono.mono_pattern`) so each has few live values; today the `-O1`
+      register allocator hides their size, but smaller functions help compile
+      time and `-O0`.
+- [ ] (Optional) stop emitting allocas for single-def locals in the backend so
+      `-O0` is not memory-bound even without `mem2reg`. Redundant now that
+      `-O1` is the baseline.
 
 ## Validation
 
@@ -92,6 +106,5 @@ functions: pausing to the loop is the expected behaviour.
 - Constant-stack: direct, mutual and same-signature recursion at 1e6
   iterations, including `Result`-returning functions (explicit sret);
   `live blocks = 0` on the closure/frame reproducers.
-- Self-host: the first-generation compiler compiles a small file under
-  `ulimit -s 8192` and the whole compiler under `ulimit -s 32768`; the
+- Self-host: the compiler compiles itself under `ulimit -s 8192`, and the
   second-generation binary compiles a small file under 8 MiB.

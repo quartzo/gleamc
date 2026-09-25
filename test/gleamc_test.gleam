@@ -57,7 +57,7 @@ pub fn build_command_flags_test() {
   let cmd =
     toolchain.build_command("clang", toolchain.Debug, ["a.ll"], ["inc"], "out")
   assert string.contains(cmd, "clang")
-  assert string.contains(cmd, "-O0")
+  assert string.contains(cmd, "-O1")
   assert string.contains(cmd, "-Iinc")
   assert string.contains(cmd, "a.ll")
   assert string.contains(cmd, "-o out")
