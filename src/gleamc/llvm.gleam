@@ -598,6 +598,8 @@ fn llvm_ty(ty: Type, recursive: Dict(String, Bool)) -> String {
         True -> "%" <> name <> "*"
         False -> "%" <> name
       }
+    // `Buffer(a)` is a type-erased refcounted cell (opaque `void*`).
+    ast.TApp("Buffer", _) -> "i8*"
     ast.TApp(name, args) ->
       "%" <> name <> "_" <> string.join(list.map(args, mangle_type), "_")
     ast.TTuple(types) ->
@@ -5160,6 +5162,15 @@ fn rc_expr(
           b
         }
       }
+    }
+    // `Buffer(a)` is an opaque cell: retain/release the block (its own drop
+    // runs the per-element glue stored in the header).
+    ast.TApp("Buffer", _) -> {
+      let call = case which {
+        "retain" -> "Gleamc_buffer_retain"
+        _ -> "Gleamc_buffer_release"
+      }
+      emit_line(b, "  call void @" <> call <> "(i8* " <> reg <> ")")
     }
     TNamed(_) | ast.TTuple(_) -> {
       emit_line(

@@ -273,6 +273,87 @@ int64_t Gleamc_hash_f64(double v) {
     return (int64_t)gleamc_mix64(gleamc_fnv1a(b, sizeof(b)));
 }
 
+/* ------------------------------------------------------------------ */
+/* Buffer(a): a refcounted, fixed-length, copy-on-write array. Opaque  */
+/* to Gleam; the compiler supplies the element size and glue.          */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    size_t len;
+    size_t elem_size;
+    void (*elem_drop)(void*); /* in-place drop of one element, or NULL */
+} GleamcBufferHdr;
+
+static size_t gleamc_refcount_of(void* p) {
+    GleamcHdr* h = (GleamcHdr*)((uint8_t*)p - sizeof(GleamcHdr));
+    return (size_t)h->refcount;
+}
+
+/* Allocates a zero-filled buffer of `len` elements. `elem_drop` runs on each
+ * element when the buffer's last reference is released. */
+void* Gleamc_buffer_new(int64_t len, int64_t elem_size,
+                        void (*elem_drop)(void*)) {
+    if (len < 0) len = 0;
+    size_t n = (size_t)len;
+    size_t es = (size_t)elem_size;
+    GleamcBufferHdr* h =
+        (GleamcBufferHdr*)gleamc_alloc0(sizeof(GleamcBufferHdr) + n * es);
+    h->len = n;
+    h->elem_size = es;
+    h->elem_drop = elem_drop;
+    return h;
+}
+
+int64_t Gleamc_buffer_len(void* buf) {
+    return (int64_t)((GleamcBufferHdr*)buf)->len;
+}
+
+void* Gleamc_buffer_slot(void* buf, int64_t i) {
+    GleamcBufferHdr* h = (GleamcBufferHdr*)buf;
+    return (uint8_t*)h + sizeof(GleamcBufferHdr) + (size_t)i * h->elem_size;
+}
+
+void Gleamc_buffer_retain(void* buf) {
+    if (buf == NULL) return;
+    Gleamc_rc_retain(buf, NULL);
+}
+
+void Gleamc_buffer_release(void* buf) {
+    if (buf == NULL) return;
+    GleamcBufferHdr* h = (GleamcBufferHdr*)buf;
+    if (gleamc_refcount_of(buf) == 1 && h->elem_drop != NULL) {
+        for (size_t i = 0; i < h->len; i++)
+            h->elem_drop((uint8_t*)h + sizeof(GleamcBufferHdr) +
+                         i * h->elem_size);
+    }
+    Gleamc_rc_release(buf, NULL);
+}
+
+/* Copy-on-write: returns a buffer the caller owns. When the buffer is shared
+ * (rc > 1) a fresh copy is made with each element retained; when unique it is
+ * reused in place (a reference is added for the caller, whose old reference is
+ * released by ownership). */
+void* Gleamc_buffer_cow(void* buf, size_t elem_size,
+                        void (*elem_retain)(void*), void (*elem_drop)(void*)) {
+    GleamcBufferHdr* h = (GleamcBufferHdr*)buf;
+    if (gleamc_refcount_of(buf) > 1) {
+        GleamcBufferHdr* nh = (GleamcBufferHdr*)gleamc_alloc0(
+            sizeof(GleamcBufferHdr) + h->len * elem_size);
+        nh->len = h->len;
+        nh->elem_size = elem_size;
+        nh->elem_drop = elem_drop;
+        uint8_t* src = (uint8_t*)h + sizeof(GleamcBufferHdr);
+        uint8_t* dst = (uint8_t*)nh + sizeof(GleamcBufferHdr);
+        for (size_t i = 0; i < h->len; i++) {
+            memcpy(dst + i * elem_size, src + i * elem_size, elem_size);
+            if (elem_retain) elem_retain(dst + i * elem_size);
+        }
+        return nh;
+    }
+    Gleamc_rc_retain(buf, NULL);
+    return buf;
+}
+
 bool gleamc_string_eq(GleamcString a, GleamcString b) {
     return a.len == b.len && (a.len == 0 || memcmp(a.data, b.data, a.len) == 0);
 }

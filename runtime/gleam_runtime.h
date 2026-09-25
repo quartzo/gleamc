@@ -105,6 +105,17 @@ int64_t Gleamc_hash_string(GleamcString s);
 int64_t Gleamc_hash_i64(int64_t v);
 int64_t Gleamc_hash_f64(double v);
 
+/* Buffer(a): a refcounted, fixed-length, copy-on-write array. Opaque (`void*`);
+ * the compiler supplies the element size and retain/drop glue. */
+void* Gleamc_buffer_new(int64_t len, int64_t elem_size,
+                        void (*elem_drop)(void*));
+int64_t Gleamc_buffer_len(void* buf);
+void* Gleamc_buffer_slot(void* buf, int64_t i);
+void Gleamc_buffer_retain(void* buf);
+void Gleamc_buffer_release(void* buf);
+void* Gleamc_buffer_cow(void* buf, size_t elem_size,
+                        void (*elem_retain)(void*), void (*elem_drop)(void*));
+
 #ifdef GLEAMC_RC_AUDIT
 #define gleamc_string_retain(s) Gleamc_rc_retain((s).data, "runtime")
 #define gleamc_string_release(s) Gleamc_rc_release((s).data, "runtime")

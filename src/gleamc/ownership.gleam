@@ -118,6 +118,9 @@ fn needs_drop_seen(ty, fields_of, recursive, seen) -> Bool {
       })
     TFun(_, _) -> True
     TVar(_) -> False
+    // `Buffer(a)` is a refcounted cell that must be released even when its
+    // element type is trivial (e.g. `Buffer(Int)`).
+    TApp("Buffer", _) -> True
     TApp(_, args) ->
       list.any(args, fn(inner) {
         needs_drop_seen(inner, fields_of, recursive, seen)
