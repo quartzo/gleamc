@@ -41,15 +41,18 @@ global numbering of basic-block states. It changes no IR.
 `llvm.gleam` turns each mutual group into a single function — the **dispatcher**
 (`emit_group`). The dispatcher:
 
-- allocates the locals of **all** members of the group as one compound frame
-  (one `alloca` per local, prefixed per member);
+- gives every member its own **heap frame** (a `%__fr_m<idx>` = `gleamc_alloc0`
+  cell) holding that member's locals. The frame is a *value*, not a native
+  `alloca`: it can be captured and referenced across a suspension or a closure
+  (`frame-environment.md`). This is what lets a call "into the planned function"
+  avoid the native stack;
 - switches on a member index (`%__fn`) to the selected member's prologue, which
-  copies the incoming argument block into that member's slots;
+  copies the incoming argument block into that member's frame;
 - for a member-to-member tail call, stores the arguments into the callee member's
-  slots and branches to its entry (`emit_rebind`) — no call, no stack growth;
+  frame and branches to its entry (`emit_rebind`) — no call, no stack growth;
 - for an indirect tail call inside the dispatcher, compares the closure's code
   pointer against each member (`emit_indirect_switch`) and, on a match, rebinds
-  the closure's environment and the arguments into that member's slots and
+  the closure's environment and the arguments into that member's frame and
   branches there (`emit_indirect_rebind`). Anything else falls back to a plain
   indirect call.
 
@@ -57,16 +60,45 @@ Each member also keeps a thin wrapper with its original signature that packs its
 arguments, calls the dispatcher, and unpacks the result, so ordinary callers
 outside the group see a normal function (`wrapper_for_group`).
 
-The effect is that an arbitrarily long tail-call chain in a mutual group runs as
-branches inside one dispatcher frame, in constant stack.
+The effect is that an arbitrarily long **tail-call** chain in a mutual group runs
+as branches inside a single dispatcher invocation, in constant stack.
 
-## Suspension: the CPS split
+### Calls between members (non-tail)
 
-`src/gleamc/cps.gleam` makes suspension control flow explicit. It walks each
-function and **splits a block at every `OpSuspend`**, so each segment becomes its
-own block with a resume label; the preceding segment ends in a `Jmp` to the next.
-`OpSuspend(dest, fut, resume)` is the only op that can yield; after this pass,
-each yielded segment is a state the backend can re-enter.
+A member that needs another member's *result* cannot simply branch: it must
+resume where it left off. Lowering such a call as `call @Gleamc_<member>` would
+re-enter the dispatcher with a fresh native frame at every level and defeat the
+machine. Instead the frames are the stack:
+
+- `cps` **splits the block at every non-tail call to a member**, so a resume
+  label exists after the call, exactly as it does for `OpSuspend`;
+- the call becomes a **push + branch**: push a return record
+  `(caller member, caller frame, caller destination slot, resume label)` onto a
+  heap **return stack**, allocate a *fresh* frame for the callee (a member active
+  recursively therefore gets distinct frames), write the arguments into it and
+  branch to the callee's entry — the same rebind a tail call uses, plus the push;
+- the member's `Ret` becomes a **pop + branch**: if the return stack is not
+  empty, pop the record, restore the caller's frame, store the result into the
+  caller's destination slot and branch to the resume label; otherwise the
+  dispatcher returns normally.
+
+So entering the planned function never uses `call`/`ret`: the call stack is the
+heap and the native stack stays constant. The `cps` split is implemented; the
+backend `push`/`pop` is the part still landing.
+
+## The CPS split
+
+`src/gleamc/cps.gleam` makes control flow explicit in two places, both by
+**splitting a block so the continuation gets its own label** (the preceding
+segment ends in a `Jmp` to it):
+
+- **Suspension**: split at every `OpSuspend`, so each segment becomes a state the
+  state machine can re-enter. `OpSuspend(dest, fut, resume)` is the only op that
+  can yield. This applies to every function.
+- **Non-tail member calls**: inside a dispatcher member, split at every non-tail
+  call to another member of the same group, so the call has a resume label for
+  the heap return stack to jump back to. This applies only to group members
+  (`plan.dispatched_members`).
 
 `OpSuspend` is produced by `lower` for `await` (the `uv.*` and timer builtins).
 A block without suspension is left unchanged, so only functions that actually

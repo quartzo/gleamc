@@ -20,7 +20,7 @@ source
   checker             AST              -> AST          (type-check; signatures, ctors)
   lower               AST              -> IR           (basic blocks; tail calls)
   ownership           IR               -> IR           (borrow modes; retain/drop)
-  cps                 IR               -> IR           (split at suspension points)
+  cps                 IR               -> IR           (split at suspensions and non-tail member calls)
   plan                IR               -> Plan         (frames, groups, states)
   backend             IR + Plan        -> LLVM IR
 ```
@@ -43,7 +43,7 @@ after `lower` speaks IR; IR is the only cross-layer currency.
 | `checker` | `checker.gleam`, `infer.gleam` | AST | AST + signatures + ctors | type-check; produce signatures/ctor info | insert runtime ops |
 | `lower` | `lower.gleam` | AST | `ir.Module` | emit blocks/ops; decide **tail position** (`Tailcall`, `TailcallIndirect`) | insert retain/drop |
 | `ownership` | `ownership.gleam`, `borrow.gleam`, `ffi_modes.gleam`, `owned_clone.gleam` | IR | IR | classify parameters (`Borrow`/`Owned`); insert **all** `OpRetain`/`OpDrop` | create tail calls; know the backend |
-| `cps` | `cps.gleam` | IR | IR | split blocks at `OpSuspend`; make suspension explicit | insert retain/drop |
+| `cps` | `cps.gleam` | IR | IR | split blocks at `OpSuspend` **and at non-tail calls between dispatcher members**, so control flow (suspend and member return) is explicit | insert retain/drop |
 | `plan` | `plan.gleam` | IR | `plan.Plan` | compute tail-call edges, mutual groups, frames, states | mutate the IR |
 | `llvm` | `llvm.gleam` | IR + Plan | LLVM IR text | render IR, dispatchers, state machines | invent retain/release or tail calls |
 
@@ -92,3 +92,9 @@ are listed so a change can move toward the contract instead of doubling down.
   boundary (wrapper or dispatcher return). This is deliberate: the result
   crosses the step/wrapper split inside the frame. See
   [frame-environment.md](frame-environment.md).
+- **Non-tail calls between dispatcher members are still native calls.** `cps`
+  already splits the block at each such call (giving a resume label) and the
+  intended frame push/pop + heap return stack is specified in
+  [machine.md](machine.md). The backend still emits `call`/`ret` through the
+  member wrapper, so a call *into* the planned function from a member uses the
+  native stack; landing the heap return stack removes that.

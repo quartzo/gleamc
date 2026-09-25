@@ -19,7 +19,11 @@ Implemented:
   machine boundary (wrapper) or the dispatcher return.
 - Mutual tail-call **groups** are unified with the machine: every dispatcher
   member has its own heap frame (`%__fr_m<idx>`), so a member's frame is a
-  capturable environment and TCO still holds.
+  capturable environment and TCO still holds. Because the frame is a value and
+  not a native `alloca`, a call *into* the planned function is meant to be a
+  frame push + branch rather than a native `call`; see
+  [machine.md](machine.md) for the non-tail member-call mechanism (the heap
+  return stack) and its current status.
 - The generated IR contains no `__Env_*` type and no `env_drop`.
 
 ## Motivation
