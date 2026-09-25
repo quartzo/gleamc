@@ -18,7 +18,7 @@ import gleamc/ast.{
   ELambda, ENil, EPanic, EString, ETuple, EUnop, EUpdate, EVar, Function, Let,
   Module, PAs, PBitArray, PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString,
   PTuple, PVar, PWildcard, Stmt, TApp, TBool, TFloat, TFun, TInt, TNamed, TNil,
-  TString, TTuple, TVar, Variant,
+  TString, TTuple, TVar, Variant, buffer_elem_name, type_of_mangled,
 }
 
 pub type Signature {
@@ -231,6 +231,56 @@ fn infer_all(env, signatures, ctors, exprs) {
       use types <- result.try(infer_all(env, signatures, ctors, rest))
       Ok([ty, ..types])
     }
+  }
+}
+
+/// Like `infer_all` but each expression is inferred against the corresponding
+/// expected type. Used for labelled constructor fields so a result-polymorphic
+/// builtin (`buffer.new`) can adopt its element type from the field.
+fn infer_all_expect(env, signatures, ctors, expected, exprs) {
+  case expected, exprs {
+    [], [] -> Ok([])
+    [ty, ..tys], [expr, ..rest] -> {
+      use inferred <- result.try(infer_expect(env, signatures, ctors, ty, expr))
+      use types <- result.try(infer_all_expect(
+        env,
+        signatures,
+        ctors,
+        tys,
+        rest,
+      ))
+      Ok([inferred, ..types])
+    }
+    _, _ -> infer_all(env, signatures, ctors, exprs)
+  }
+}
+
+fn infer_expect(env, signatures, ctors, expected, expr) {
+  case expr {
+    ECall(EField(EVar("buffer"), "new"), args) ->
+      case buffer_elem_type(expected) {
+        Ok(_) -> {
+          use arg_types <- result.try(infer_all(env, signatures, ctors, args))
+          use _ <- result.try(check_types([TInt], arg_types, "in `buffer.new`"))
+          Ok(expected)
+        }
+        Error(_) -> infer(env, signatures, ctors, expr)
+      }
+    _ -> infer(env, signatures, ctors, expr)
+  }
+}
+
+/// The element type of a `Buffer`, in either the surface (`Buffer(a)`) or the
+/// monomorphised (`TNamed("Buffer_Int")`) representation.
+pub fn buffer_elem_type(ty: Type) -> Result(Type, Nil) {
+  case ty {
+    TApp("Buffer", [elem]) -> Ok(elem)
+    TNamed(name) ->
+      case buffer_elem_name(name) {
+        Ok(mangled) -> Ok(type_of_mangled(mangled))
+        Error(_) -> Error(Nil)
+      }
+    _ -> Error(Nil)
   }
 }
 
@@ -593,7 +643,13 @@ fn infer_ctor(env, signatures, ctors, name, args) {
           field_ty
         })
       use ordered <- result.try(order_args(field_names, name, args))
-      use arg_types <- result.try(infer_all(env, signatures, ctors, ordered))
+      use arg_types <- result.try(infer_all_expect(
+        env,
+        signatures,
+        ctors,
+        field_types,
+        ordered,
+      ))
       use _ <- result.try(check_types(
         field_types,
         arg_types,
@@ -810,6 +866,50 @@ fn set_slot(slots, index, value) {
 
 fn infer_builtin(env, signatures, ctors, module, name, args) {
   case module, name {
+    // `Buffer(a)`: the element type flows from the operand (`get`/`set`/`len`)
+    // or from the expected type at the call site (`new`, via `infer_expect`).
+    "buffer", "new" -> {
+      use arg_types <- result.try(infer_all(env, signatures, ctors, args))
+      use _ <- result.try(check_types([TInt], arg_types, "in `buffer.new`"))
+      Ok(TApp("Buffer", [TVar("__buffer_elem")]))
+    }
+    "buffer", "len" -> {
+      use arg_types <- result.try(infer_all(env, signatures, ctors, args))
+      case arg_types {
+        [buf] ->
+          case buffer_elem_type(buf) {
+            Ok(_) -> Ok(TInt)
+            Error(_) -> Error(CheckError("buffer.len expects a Buffer"))
+          }
+        _ -> Error(CheckError("buffer.len expects a Buffer"))
+      }
+    }
+    "buffer", "get" -> {
+      use arg_types <- result.try(infer_all(env, signatures, ctors, args))
+      case arg_types {
+        [buf, TInt] ->
+          case buffer_elem_type(buf) {
+            Ok(elem) -> Ok(elem)
+            Error(_) -> Error(CheckError("buffer.get expects (Buffer(a), Int)"))
+          }
+        _ -> Error(CheckError("buffer.get expects (Buffer(a), Int)"))
+      }
+    }
+    "buffer", "set" -> {
+      use arg_types <- result.try(infer_all(env, signatures, ctors, args))
+      case arg_types {
+        [buf, TInt, value] ->
+          case buffer_elem_type(buf) {
+            Ok(elem) -> {
+              use _ <- result.try(expect_ty(value, elem, "in `buffer.set`"))
+              Ok(buf)
+            }
+            Error(_) ->
+              Error(CheckError("buffer.set expects (Buffer(a), Int, a)"))
+          }
+        _ -> Error(CheckError("buffer.set expects (Buffer(a), Int, a)"))
+      }
+    }
     "io", "println" ->
       check_builtin(env, signatures, ctors, args, [TString], TNil, "io.println")
     "io", "print" ->

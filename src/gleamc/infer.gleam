@@ -763,6 +763,27 @@ fn builtins() -> Dict(String, Scheme) {
   )
   |> dict.insert("gleamc.show", Scheme([9002], Fun([Var(9002)], s)))
   |> dict.insert("gleamc.hash", Scheme([9004], Fun([Var(9004)], i)))
+  |> dict.insert(
+    "buffer.new",
+    Scheme([9005], Fun([i], Con("Buffer", [Var(9005)]))),
+  )
+  |> dict.insert(
+    "buffer.len",
+    Scheme([9006], Fun([Con("Buffer", [Var(9006)])], i)),
+  )
+  |> dict.insert(
+    "buffer.get",
+    Scheme([9007], Fun([Con("Buffer", [Var(9007)]), i], Var(9007))),
+  )
+  |> dict.insert(
+    "buffer.set",
+    Scheme(
+      [9008],
+      Fun([Con("Buffer", [Var(9008)]), i, Var(9008)], Con("Buffer", [
+        Var(9008),
+      ])),
+    ),
+  )
   |> dict.insert("io.debug", Scheme([9003], Fun([Var(9003)], n)))
   |> dict.insert("int.to_float", Scheme(none, Fun([i], f)))
   |> dict.insert("string.compare_bytes", Scheme(none, Fun([s, s], i)))

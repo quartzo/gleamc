@@ -11,7 +11,7 @@ import gleam/list
 import gleam/string
 import gleamc/ast.{
   type Type, TApp, TBool, TFloat, TFun, TInt, TNamed, TNil, TString, TTuple,
-  TVar,
+  TVar, buffer_elem_name,
 }
 import gleamc/borrow
 import gleamc/checker
@@ -126,18 +126,28 @@ fn needs_drop_seen(ty, fields_of, recursive, seen) -> Bool {
         needs_drop_seen(inner, fields_of, recursive, seen)
       })
     TNamed(name) ->
-      case dict.get(recursive, name) {
-        Ok(True) -> True
-        _ ->
-          case list.contains(seen, name) {
-            True -> False
-            False ->
-              case dict.get(fields_of, name) {
-                Error(_) -> False
-                Ok(fields) ->
-                  list.any(fields, fn(inner) {
-                    needs_drop_seen(inner, fields_of, recursive, [name, ..seen])
-                  })
+      case buffer_elem_name(name) {
+        // A monomorphised `Buffer(a)` (`TNamed("Buffer_<elem>")`).
+        Ok(_) -> True
+        Error(_) ->
+          case dict.get(recursive, name) {
+            Ok(True) -> True
+            _ ->
+              case list.contains(seen, name) {
+                True -> False
+                False ->
+                  case dict.get(fields_of, name) {
+                    Error(_) -> False
+                    Ok(fields) ->
+                      list.any(fields, fn(inner) {
+                        needs_drop_seen(
+                          inner,
+                          fields_of,
+                          recursive,
+                          [name, ..seen],
+                        )
+                      })
+                  }
               }
           }
       }

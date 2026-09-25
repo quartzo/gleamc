@@ -16,7 +16,7 @@ import gleamc/ast.{
   ECase, EClosure, ECtor, EEnvGet, EField, EFloat, EInt, ELabelled, ELambda, ENil,
   EPanic, EString, ETuple, EUnop, EUpdate, EVar, Let, Module, PAs, PBitArray,
   PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard,
-  Stmt, TBool, TFun, TInt, TNamed, TNil, TString, TTuple,
+  Stmt, TApp, TBool, TFun, TInt, TNamed, TNil, TString, TTuple, buffer_elem_name,
 }
 import gleamc/checker
 import gleamc/infer
@@ -561,7 +561,11 @@ fn lower_expr(
     }
     ECtor(name, args) -> {
       use ordered <- result.try(order_exprs(ctor_field_names(b, name), args))
-      use #(operands, b1) <- result.try(lower_args(b, ordered))
+      use #(operands, b1) <- result.try(lower_args_expect(
+        b,
+        ctor_field_types(b, name),
+        ordered,
+      ))
       let type_name = ctor_type_name(b, name)
       let ty = infer(b, expr)
       let #(dest, b2) = fresh_local(b1, "ctor", ty)
@@ -951,6 +955,64 @@ fn lower_args(b, exprs) -> Result(#(List(ir.Operand), Builder), LowerError) {
       use #(operands, b2) <- result.try(lower_args(b1, rest))
       Ok(#([operand, ..operands], b2))
     }
+  }
+}
+
+fn ctor_field_types(b: Builder, name) -> List(Type) {
+  case dict.get(b.ctors, name) {
+    Ok(checker.CtorInfo(_, fields)) ->
+      list.map(fields, fn(field) {
+        let #(_, ty) = field
+        ty
+      })
+    Error(_) -> []
+  }
+}
+
+fn lower_args_expect(b, expected, exprs) -> Result(
+  #(List(ir.Operand), Builder),
+  LowerError,
+) {
+  case expected, exprs {
+    [], [] -> Ok(#([], b))
+    [ty, ..tys], [expr, ..rest] -> {
+      use #(operand, b1) <- result.try(lower_expect(b, ty, expr))
+      use #(operands, b2) <- result.try(lower_args_expect(b1, tys, rest))
+      Ok(#([operand, ..operands], b2))
+    }
+    _, _ -> lower_args(b, exprs)
+  }
+}
+
+fn is_buffer_like(ty: Type) -> Bool {
+  case ty {
+    TApp("Buffer", _) -> True
+    TNamed(name) ->
+      case buffer_elem_name(name) {
+        Ok(_) -> True
+        Error(_) -> False
+      }
+    _ -> False
+  }
+}
+
+/// Like `lower_expr`, but a result-polymorphic builtin (`buffer.new`) adopts
+/// its element type from the expected type (a constructor field).
+fn lower_expect(b, expected, expr) -> Result(#(ir.Operand, Builder), LowerError) {
+  case expr {
+    ECall(EField(EVar("buffer"), "new"), args) ->
+      case is_buffer_like(expected) {
+        True -> {
+          use #(operands, b1) <- result.try(lower_args(b, args))
+          let #(dest, b2) = fresh_local(b1, "bufnew", expected)
+          Ok(#(
+            ir.Var(dest),
+            emit(b2, ir.OpBuiltin(dest, "buffer.new", operands, expected)),
+          ))
+        }
+        False -> lower_expr(b, expr)
+      }
+    _ -> lower_expr(b, expr)
   }
 }
 

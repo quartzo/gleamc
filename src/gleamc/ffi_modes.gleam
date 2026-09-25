@@ -143,6 +143,12 @@ pub fn table() -> Dict(String, FfiSig) {
   |> dict.insert("gleamc.key_compare", FfiSig([Borrow, Borrow], OwnedResult))
   |> dict.insert("gleamc.show", FfiSig([Borrow], OwnedResult))
   |> dict.insert("gleamc.hash", FfiSig([Borrow], OwnedResult))
+  // `Buffer(a)`: all arguments are borrowed; `set`'s value is retained by the
+  // runtime, so ownership never transfers.
+  |> dict.insert("buffer.new", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("buffer.len", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("buffer.get", FfiSig([Borrow, Borrow], OwnedResult))
+  |> dict.insert("buffer.set", FfiSig([Borrow, Borrow, Borrow], OwnedResult))
   |> dict.insert("io.debug", FfiSig([Borrow], OwnedResult))
   |> dict.insert("bit_array.is_utf8", FfiSig([Borrow], OwnedResult))
   |> dict.insert("host.run", FfiSig([Borrow], OwnedResult))

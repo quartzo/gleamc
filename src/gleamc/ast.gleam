@@ -1,6 +1,7 @@
 //// AST for the M1 Gleam subset.
 
 import gleam/option.{type Option}
+import gleam/string
 
 pub type Type {
   TInt
@@ -17,6 +18,29 @@ pub type Type {
   TTuple(List(Type))
   /// function type: `fn(Int) -> String`
   TFun(params: List(Type), ret: Type)
+}
+
+/// After monomorphisation an applied type is a mangled `TNamed`, e.g.
+/// `Buffer(Int)` becomes `TNamed("Buffer_Int")`. Returns the mangled element
+/// name (`"Int"`) when `type_name` names a `Buffer`.
+pub fn buffer_elem_name(type_name: String) -> Result(String, Nil) {
+  case string.starts_with(type_name, "Buffer_") {
+    True -> Ok(string.drop_start(type_name, 7))
+    False -> Error(Nil)
+  }
+}
+
+/// Rebuilds a type from its monomorphised mangled name: scalars map back to
+/// their primitive; anything else is a (specialised) named type.
+pub fn type_of_mangled(name: String) -> Type {
+  case name {
+    "Int" -> TInt
+    "Float" -> TFloat
+    "Bool" -> TBool
+    "String" -> TString
+    "Nil" -> TNil
+    other -> TNamed(other)
+  }
 }
 
 pub type Pattern {

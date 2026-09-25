@@ -231,6 +231,11 @@ pub fn emit(
       list.map(collect_wrappers(functions, recursive), fn(entry) { entry }),
       "\n\n",
     )
+  let buffer_seeds =
+    list.map(collect_buffer_elems(custom_types, functions), fn(elem) {
+      TNamed("Buffer_" <> surface_mangle(elem))
+    })
+  // `rc` glue is not emitted for `Buffer`: `rc_expr` releases the cell inline.
   let seeds =
     list.append(
       list.map(custom_types, fn(custom) {
@@ -239,9 +244,10 @@ pub fn emit(
       }),
       tuples,
     )
+  let glue_seeds = list.append(seeds, buffer_seeds)
   let eq_glue =
     string.join(
-      list.map(seeds, fn(ty) { emit_eq_glue(recursive, custom_types, ty) }),
+      list.map(glue_seeds, fn(ty) { emit_eq_glue(recursive, custom_types, ty) }),
       "\n\n",
     )
   let cmp_glue =
@@ -255,7 +261,9 @@ pub fn emit(
           emit_cmp_glue(recursive, custom_types, TNamed("BitArray")),
           emit_cmp_glue(recursive, custom_types, ast.TNil),
         ],
-        list.map(seeds, fn(ty) { emit_cmp_glue(recursive, custom_types, ty) }),
+        list.map(glue_seeds, fn(ty) {
+          emit_cmp_glue(recursive, custom_types, ty)
+        }),
       ),
       "\n\n",
     )
@@ -269,6 +277,16 @@ pub fn emit(
       }),
       "\n\n",
     )
+  let buffer_glue =
+    string.join(
+      list.map(
+        collect_buffer_elems(custom_types, functions),
+        fn(elem) {
+          emit_buffer_glue(lits, recursive, custom_types, fields_of, elem)
+        },
+      ),
+      "\n\n",
+    )
   let show_glue =
     string.join(
       list.append(
@@ -280,7 +298,7 @@ pub fn emit(
           emit_show_glue(recursive, custom_types, lits, TNamed("BitArray")),
           emit_show_glue(recursive, custom_types, lits, ast.TNil),
         ],
-        list.map(seeds, fn(ty) {
+        list.map(glue_seeds, fn(ty) {
           emit_show_glue(recursive, custom_types, lits, ty)
         }),
       ),
@@ -326,6 +344,8 @@ pub fn emit(
         eq_glue,
         "\n\n",
         rc_glue,
+        "\n\n",
+        buffer_glue,
         "\n\n",
         show_glue,
         "\n\n",
@@ -491,6 +511,12 @@ fn header() -> String {
   <> "declare i64 @Gleamc_hash_string(%GleamcString)\n"
   <> "declare i64 @Gleamc_hash_i64(i64)\n"
   <> "declare i64 @Gleamc_hash_f64(double)\n"
+  <> "declare i8* @Gleamc_buffer_new(i64, i64, void (i8*)*)\n"
+  <> "declare i64 @Gleamc_buffer_len(i8*)\n"
+  <> "declare i8* @Gleamc_buffer_slot(i8*, i64)\n"
+  <> "declare i8* @Gleamc_buffer_cow(i8*, i64, void (i8*)*, void (i8*)*)\n"
+  <> "declare void @Gleamc_buffer_retain(i8*)\n"
+  <> "declare void @Gleamc_buffer_release(i8*)\n"
   <> "declare void @Gleamc_panic(%GleamcString)\n"
   <> "declare i32 @Gleamc_io_debug(%GleamcString)\n"
   <> "declare i32 @memcmp(i8*, i8*, i64)\n"
@@ -594,9 +620,14 @@ fn llvm_ty(ty: Type, recursive: Dict(String, Bool)) -> String {
     ast.TVar(name) -> name
     TNamed("Nil") -> "i32"
     TNamed(name) ->
-      case is_recursive(recursive, name) {
-        True -> "%" <> name <> "*"
-        False -> "%" <> name
+      case ast.buffer_elem_name(name) {
+        // `Buffer(a)` is an opaque refcounted cell.
+        Ok(_) -> "i8*"
+        Error(_) ->
+          case is_recursive(recursive, name) {
+            True -> "%" <> name <> "*"
+            False -> "%" <> name
+          }
       }
     // `Buffer(a)` is a type-erased refcounted cell (opaque `void*`).
     ast.TApp("Buffer", _) -> "i8*"
@@ -2587,6 +2618,178 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
           let b = store_local(ctx, dest, "i64", r, b)
           #(b, Nil)
         }
+        "buffer.new" -> {
+          let elem = case buffer_elem(ret_ty) {
+            Ok(e) -> e
+            Error(_) -> ast.TNil
+          }
+          let #(_, n, b) = read_val(ctx, first_arg(args), b)
+          let sz = ty_size_expr(elem, ctx.recursive)
+          let #(h, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> h
+                <> " = call i8* @Gleamc_buffer_new(i64 "
+                <> n
+                <> ", i64 "
+                <> sz
+                <> ", "
+                <> buffer_glue_fp(elem, "drop")
+                <> ")",
+            )
+          let b = store_local(ctx, dest, "i8*", h, b)
+          #(b, Nil)
+        }
+        "buffer.len" -> {
+          let #(_, buf, b) = read_val(ctx, first_arg(args), b)
+          let #(r, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  " <> r <> " = call i64 @Gleamc_buffer_len(i8* " <> buf <> ")",
+            )
+          let b = store_local(ctx, dest, "i64", r, b)
+          #(b, Nil)
+        }
+        "buffer.get" -> {
+          let buf_arg = first_arg(args)
+          let #(_, buf, b) = read_val(ctx, buf_arg, b)
+          let elem = case buffer_elem(operand_type(ctx.by_name, buf_arg)) {
+            Ok(e) -> e
+            Error(_) -> ast.TNil
+          }
+          let elem_s = llvm_ty(elem, ctx.recursive)
+          let idx = case args {
+            [_, i, ..] -> i
+            _ -> ir.Lit(ir.LUnit)
+          }
+          let #(_, i, b) = read_val(ctx, idx, b)
+          let #(slot, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> slot
+                <> " = call i8* @Gleamc_buffer_slot(i8* "
+                <> buf
+                <> ", i64 "
+                <> i
+                <> ")",
+            )
+          let #(p, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  " <> p <> " = bitcast i8* " <> slot <> " to " <> elem_s <> "*",
+            )
+          let #(v, b) = fresh(b)
+          let b =
+            emit_line(b, "  " <> v <> " = load " <> elem_s <> ", " <> elem_s <> "* " <> p)
+          let b =
+            rc_expr(
+              ctx.lits,
+              ctx.recursive,
+              dict.new(),
+              "retain",
+              elem,
+              elem_s,
+              v,
+              "buffer",
+              b,
+            )
+          let b = store_local(ctx, dest, elem_s, v, b)
+          #(b, Nil)
+        }
+        "buffer.set" -> {
+          let buf_arg = first_arg(args)
+          let #(_, buf, b) = read_val(ctx, buf_arg, b)
+          let elem = case buffer_elem(operand_type(ctx.by_name, buf_arg)) {
+            Ok(e) -> e
+            Error(_) -> ast.TNil
+          }
+          let elem_s = llvm_ty(elem, ctx.recursive)
+          let idx = case args {
+            [_, i, ..] -> i
+            _ -> ir.Lit(ir.LUnit)
+          }
+          let value = case args {
+            [_, _, v, ..] -> v
+            _ -> ir.Lit(ir.LUnit)
+          }
+          let #(_, i, b) = read_val(ctx, idx, b)
+          let #(_, v, b) = read_val(ctx, value, b)
+          let sz = ty_size_expr(elem, ctx.recursive)
+          let #(nb, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> nb
+                <> " = call i8* @Gleamc_buffer_cow(i8* "
+                <> buf
+                <> ", i64 "
+                <> sz
+                <> ", "
+                <> buffer_glue_fp(elem, "retain")
+                <> ", "
+                <> buffer_glue_fp(elem, "drop")
+                <> ")",
+            )
+          let #(slot, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> slot
+                <> " = call i8* @Gleamc_buffer_slot(i8* "
+                <> nb
+                <> ", i64 "
+                <> i
+                <> ")",
+            )
+          let #(p, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  " <> p <> " = bitcast i8* " <> slot <> " to " <> elem_s <> "*",
+            )
+          let #(old, b) = fresh(b)
+          let b =
+            emit_line(b, "  " <> old <> " = load " <> elem_s <> ", " <> elem_s <> "* " <> p)
+          let b =
+            rc_expr(
+              ctx.lits,
+              ctx.recursive,
+              dict.new(),
+              "drop",
+              elem,
+              elem_s,
+              old,
+              "buffer",
+              b,
+            )
+          let b =
+            rc_expr(
+              ctx.lits,
+              ctx.recursive,
+              dict.new(),
+              "retain",
+              elem,
+              elem_s,
+              v,
+              "buffer",
+              b,
+            )
+          let b =
+            emit_line(
+              b,
+              "  store " <> elem_s <> " " <> v <> ", " <> elem_s <> "* " <> p,
+            )
+          let b = store_local(ctx, dest, "i8*", nb, b)
+          #(b, Nil)
+        }
         "io.debug" -> {
           let first = first_arg(args)
           let oty = operand_type(ctx.by_name, first)
@@ -3397,6 +3600,12 @@ fn runtime_declared(name: String) -> Bool {
     | "Gleamc_hash_string"
     | "Gleamc_hash_i64"
     | "Gleamc_hash_f64"
+    | "Gleamc_buffer_new"
+    | "Gleamc_buffer_len"
+    | "Gleamc_buffer_slot"
+    | "Gleamc_buffer_cow"
+    | "Gleamc_buffer_retain"
+    | "Gleamc_buffer_release"
     | "Gleamc_bit_array_eq"
     | "Gleamc_bit_array_new"
     | "Gleamc_bit_array_from_bytes"
@@ -3423,6 +3632,160 @@ fn builtin_arg_ty(by_name, recursive, arg) -> String {
     True -> "ptr byval(%GleamcFileResult)"
     False -> llvm_ty(ty, recursive)
   }
+}
+
+/// The element type of `Buffer(elem)`, if `ty` is one. After monomorphisation
+/// the type is `TNamed("Buffer_<elem>")`; before it is `TApp("Buffer", [..])`.
+fn buffer_elem(ty: Type) -> Result(Type, Nil) {
+  case ty {
+    ast.TApp("Buffer", [elem]) -> Ok(elem)
+    ast.TNamed(name) ->
+      case ast.buffer_elem_name(name) {
+        Ok(mangled) -> Ok(ast.type_of_mangled(mangled))
+        Error(_) -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
+}
+
+/// Monomorphisation's type mangling (`Int`, `List_Int`, ...), used to rebuild
+/// the `TNamed("Buffer_<elem>")` buffer type name from an element type.
+fn surface_mangle(ty: Type) -> String {
+  case ty {
+    ast.TInt -> "Int"
+    ast.TFloat -> "Float"
+    ast.TBool -> "Bool"
+    TString -> "String"
+    ast.TNil -> "Nil"
+    ast.TVar(name) -> name
+    TNamed(name) -> name
+    ast.TApp(name, args) ->
+      name <> "_" <> string.join(list.map(args, surface_mangle), "_")
+    ast.TTuple(types) ->
+      "t" <> string.join(list.map(types, surface_mangle), "_")
+    ast.TFun(params, ret) ->
+      "fn_"
+      <> string.join(list.map(params, surface_mangle), "_")
+      <> "_"
+      <> surface_mangle(ret)
+  }
+}
+
+fn buffer_rc(which: String, reg: String, b: Builder) -> Builder {
+  let call = case which {
+    "retain" -> "Gleamc_buffer_retain"
+    _ -> "Gleamc_buffer_release"
+  }
+  emit_line(b, "  call void @" <> call <> "(i8* " <> reg <> ")")
+}
+
+/// `sizeof(ty)` as an i64 constant expression (inlined into a call argument:
+/// a standalone `ptrtoint` of a constant expression is rejected by newer LLVM).
+fn ty_size_expr(ty: Type, recursive) -> String {
+  let ty_s = llvm_ty(ty, recursive)
+  "ptrtoint ("
+  <> ty_s
+  <> "* getelementptr ("
+  <> ty_s
+  <> ", "
+  <> ty_s
+  <> "* null, i32 1) to i64)"
+}
+
+fn buffer_glue_fp(elem: Type, which: String) -> String {
+  "void (i8*)* @Gleamc_Buffer_" <> mangle_glue(elem) <> "_" <> which
+}
+
+/// Every `Buffer(T)` element type appearing in the program (custom types,
+/// tuples, locals and return types), deduplicated.
+fn collect_buffer_elems(custom_types, functions) -> List(Type) {
+  let from_custom =
+    list.flat_map(custom_types, fn(custom) {
+      let ast.CustomType(_, _, _, variants, _) = custom
+      list.flat_map(variants, fn(variant) {
+        let ast.Variant(_, fields) = variant
+        list.flat_map(fields, fn(field) {
+          let #(_, ty) = field
+          buffer_elems_in(ty)
+        })
+      })
+    })
+  let from_fns =
+    list.flat_map(functions, fn(function) {
+      let ir.Function(_, _, ret, _, locals) = function
+      list.append(
+        buffer_elems_in(ret),
+        list.flat_map(locals, fn(local) {
+          let ir.Local(_, ty) = local
+          buffer_elems_in(ty)
+        }),
+      )
+    })
+  let all = list.append(from_custom, from_fns)
+  list.fold(all, dict.new(), fn(acc, ty) {
+    dict.insert(acc, mangle_glue(ty), ty)
+  })
+  |> dict.to_list
+  |> list.map(fn(pair) {
+    let #(_, ty) = pair
+    ty
+  })
+}
+
+fn buffer_elems_in(ty: Type) -> List(Type) {
+  case ty {
+    ast.TApp("Buffer", [elem]) -> list.append([elem], buffer_elems_in(elem))
+    ast.TNamed(name) ->
+      case ast.buffer_elem_name(name) {
+        Ok(mangled) -> {
+          let elem = ast.type_of_mangled(mangled)
+          list.append([elem], buffer_elems_in(elem))
+        }
+        Error(_) -> []
+      }
+    ast.TApp(_, args) -> list.flat_map(args, buffer_elems_in)
+    ast.TTuple(types) -> list.flat_map(types, buffer_elems_in)
+    ast.TFun(params, ret) ->
+      list.flat_map(list.append(params, [ret]), buffer_elems_in)
+    _ -> []
+  }
+}
+
+/// `void(i8*)` wrappers that load one element from a slot and retain/drop it,
+/// so `Gleamc_buffer_cow`/`new` can be handed generic element glue.
+fn emit_buffer_glue(lits, recursive, custom_types, fields_of, elem: Type) -> String {
+  list.append(
+    [emit_buffer_slot_glue(lits, recursive, custom_types, fields_of, "retain", elem)],
+    [emit_buffer_slot_glue(lits, recursive, custom_types, fields_of, "drop", elem)],
+  )
+  |> string.join("\n\n")
+}
+
+fn emit_buffer_slot_glue(
+  lits,
+  recursive,
+  _custom_types,
+  fields_of,
+  which: String,
+  elem: Type,
+) -> String {
+  let ty_s = llvm_ty(elem, recursive)
+  let name = "Gleamc_Buffer_" <> mangle_glue(elem) <> "_" <> which
+  let b = Builder(next: 0, lines: [])
+  let b = emit_line(b, "define void @" <> name <> "(i8* %slot) {")
+  let #(p, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  " <> p <> " = bitcast i8* %slot to " <> ty_s <> "*",
+    )
+  let #(v, b) = fresh(b)
+  let b = emit_line(b, "  " <> v <> " = load " <> ty_s <> ", " <> ty_s <> "* " <> p)
+  let b =
+    rc_expr(lits, recursive, fields_of, which, elem, ty_s, v, "buffer", b)
+  let b = emit_line(b, "  ret void")
+  let b = emit_line(b, "}")
+  string.join(list.reverse(b.lines), "\n") <> "\n"
 }
 
 /// The C symbol for a builtin name. A dotted name (`io.println`) is a compiler
@@ -3536,6 +3899,10 @@ fn special_builtin(name: String) -> Bool {
   case name {
     "gleamc.show"
     | "gleamc.hash"
+    | "buffer.new"
+    | "buffer.len"
+    | "buffer.get"
+    | "buffer.set"
     | "io.debug"
     | "gleamc.key_compare"
     | "panic" -> True
@@ -3932,7 +4299,15 @@ fn eq_body(recursive, custom_types, ty, ty_s, b) {
       #(b, Nil)
     }
     TNamed(type_name) ->
-      eq_named(recursive, custom_types, ty, type_name, ty_s, b)
+      case ast.buffer_elem_name(type_name) {
+        // A mutable COW cell: equality is reference identity.
+        Ok(_) -> {
+          let #(r, b) = fresh(b)
+          let b = emit_line(b, "  " <> r <> " = icmp eq i8* %a, %b")
+          #(emit_line(b, "  ret i1 " <> r), Nil)
+        }
+        Error(_) -> eq_named(recursive, custom_types, ty, type_name, ty_s, b)
+      }
     _ -> {
       let b = emit_line(b, "  ret i1 true")
       #(b, Nil)
@@ -4318,9 +4693,16 @@ fn show_body(recursive, custom_types, lits, ty, ty_s, b) {
       #(emit_line(b, "  ret %GleamcString " <> r), Nil)
     }
     TNamed(type_name) ->
-      case list_info(custom_types, type_name) {
-        Ok(info) -> show_list(recursive, lits, type_name, info, b)
-        Error(_) -> show_adt(recursive, custom_types, lits, type_name, ty_s, b)
+      case ast.buffer_elem_name(type_name) {
+        Ok(_) -> {
+          let #(r, b) = literal_struct(lits, "?", b)
+          #(emit_line(b, "  ret %GleamcString " <> r), Nil)
+        }
+        Error(_) ->
+          case list_info(custom_types, type_name) {
+            Ok(info) -> show_list(recursive, lits, type_name, info, b)
+            Error(_) -> show_adt(recursive, custom_types, lits, type_name, ty_s, b)
+          }
       }
     _ -> {
       let #(r, b) = literal_struct(lits, "?", b)
@@ -4711,7 +5093,22 @@ fn cmp_body(recursive, custom_types, ty, ty_s, b) {
       let b = emit_line(b, "  ret i32 " <> m)
       #(b, Nil)
     }
-    TNamed(type_name) -> cmp_named(recursive, custom_types, type_name, ty_s, b)
+    TNamed(type_name) ->
+      case ast.buffer_elem_name(type_name) {
+        // A mutable COW cell: order by reference identity.
+        Ok(_) -> {
+          let #(lt, b) = fresh(b)
+          let b = emit_line(b, "  " <> lt <> " = icmp ult i8* %a, %b")
+          let #(gt, b) = fresh(b)
+          let b = emit_line(b, "  " <> gt <> " = icmp ugt i8* %a, %b")
+          let #(neg, b) = fresh(b)
+          let b = emit_line(b, "  " <> neg <> " = select i1 " <> lt <> ", i32 -1, i32 0")
+          let #(r, b) = fresh(b)
+          let b = emit_line(b, "  " <> r <> " = select i1 " <> gt <> ", i32 1, i32 " <> neg)
+          #(emit_line(b, "  ret i32 " <> r), Nil)
+        }
+        Error(_) -> cmp_named(recursive, custom_types, type_name, ty_s, b)
+      }
     _ -> #(emit_line(b, "  ret i32 0"), Nil)
   }
 }
@@ -5165,14 +5562,23 @@ fn rc_expr(
     }
     // `Buffer(a)` is an opaque cell: retain/release the block (its own drop
     // runs the per-element glue stored in the header).
-    ast.TApp("Buffer", _) -> {
-      let call = case which {
-        "retain" -> "Gleamc_buffer_retain"
-        _ -> "Gleamc_buffer_release"
+    ast.TApp("Buffer", _) -> buffer_rc(which, reg, b)
+    TNamed(name) ->
+      case ast.buffer_elem_name(name) {
+        Ok(_) -> buffer_rc(which, reg, b)
+        Error(_) ->
+          emit_line(
+            b,
+            "  call void @"
+              <> rc_name(which, ty)
+              <> "("
+              <> ty_s
+              <> " "
+              <> reg
+              <> ")",
+          )
       }
-      emit_line(b, "  call void @" <> call <> "(i8* " <> reg <> ")")
-    }
-    TNamed(_) | ast.TTuple(_) -> {
+    ast.TTuple(_) -> {
       emit_line(
         b,
         "  call void @"
