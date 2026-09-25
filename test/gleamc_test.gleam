@@ -14,7 +14,7 @@ pub fn main() -> Nil {
 }
 
 /// End-to-end async base: `time.timer(ms)` is a real suspension driven by
-/// the libuv loop (frame + step + `gleamc_sched_run`).
+/// the libuv loop (frame + step + `gleamc_run_until`).
 pub fn async_timer_test() {
   let _ = ffi.run("mkdir -p /tmp/gleamc-test")
   let entry = "/tmp/gleamc-test/async_timer.gleam"

@@ -479,11 +479,9 @@ fn header() -> String {
   <> "declare i64 @Gleamc_uv_value_int(i8*)\n"
   <> "declare i64 @Gleamc_uv_result(i8*)\n"
   <> "declare %GleamcBitArray @Gleamc_uv_await_bytes(i8*)\n"
-  <> "declare i1 @gleamc_sched_run(i1 (i8*)*, i8*, i8**)\n"
   <> "declare i8* @gleamc_task_start(i1 (i8*)*, i8*, i8**, void (i8*, i8*)*, i8*, void (i8*)*)\n"
   <> "declare void @gleamc_task_tail(i1 (i8*)*, i8*, void (i8*, i8*)*, i8**, void (i8*)*)\n"
   <> "declare void @gleamc_run_until(i8*)\n"
-  <> "declare void @gleamc_run()\n"
   <> "declare %GleamcString @gleamc_string_lit(i8*, i64)\n"
   <> "declare %GleamcString @Gleamc_show_concat(%GleamcString, %GleamcString)\n"
   <> "declare %GleamcString @Gleamc_int_to_string(i64)\n"
@@ -924,8 +922,8 @@ fn machine_set(module: ir.Module) -> Dict(String, Bool) {
   |> list.fold(dict.new(), fn(acc, name) { dict.insert(acc, name, True) })
 }
 
-/// The functions that suspend: emitted as a `_step` + wrapper state machine
-/// driven by `gleamc_sched_run`.
+/// The functions emitted as a `_step` + wrapper state machine: those that
+/// suspend or that delegate to another machine (an async tail call).
 fn suspend_set(module: ir.Module) -> Dict(String, Bool) {
   let ir.Module(functions) = module
   list.fold(functions, dict.new(), fn(acc, function) {
@@ -1021,7 +1019,7 @@ fn emit_function(
 }
 
 // ---------------------------------------------------------------------------
-// state machine (Vesper `machine.py`): frame struct + step + sched_run wrapper
+// state machine: frame struct + step + driver wrapper
 // ---------------------------------------------------------------------------
 
 fn function_name(function: ir.Function) -> String {
@@ -1563,11 +1561,13 @@ fn emit_machine_tail(
   }
 }
 
-/// A function that suspends is a flat state machine: a `_step` that switches on
-/// a frame `state`, and a wrapper that drives it through `gleamc_sched_run`. A
-/// suspension hands the future to libuv and yields; the resume block reads the
-/// value. The wrapper owns the frame and releases it after reading the result
-/// (the step suppresses `OpDrop(frame)`).
+/// An async function is a flat state machine: a `_step` that switches on a
+/// frame `state`, and a wrapper that starts a task and drives it through
+/// `gleamc_run_until`. A suspension hands the future to libuv and yields; the
+/// resume block reads the value; a `TailMachine` delegates to another machine
+/// through `gleamc_task_tail`. The driver task owns the frame and runs its
+/// teardown when the machine finishes or delegates (the step suppresses
+/// `OpDrop(frame)`).
 fn emit_machine_function(
   function: ir.Function,
   recursive,
@@ -1802,7 +1802,7 @@ fn emit_copy_result(function: ir.Function, recursive: Dict(String, Bool), lits) 
 }
 
 /// Emits the `step` (switch on state) and the wrapper that drives it through
-/// `gleamc_sched_run`. Locals live in the frame, so they survive a suspension.
+/// `gleamc_run_until`. Locals live in the frame, so they survive a suspension.
 /// A function that only needs a heap frame (a closure captures its locals) but
 /// never suspends: allocate the frame, store the arguments, run the body once
 /// and return the value. No step/state/fut/scheduler.

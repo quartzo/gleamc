@@ -41,34 +41,52 @@ Otherwise the call is a plain `call` + `ret`. In particular a
 callee reads as its environment, so releasing it before the call (which
 `musttail` forces) would free that frame early.
 
+An **async** tail call is never a `musttail` call: the callee is a machine on a
+separate heap frame, so it becomes an `ir.TailMachine` delegation (see Async
+below). `musttail` is reserved for the fully-synchronous interior.
+
 The result: self and same-signature mutual recursion run in constant stack at
 any `-O`, including `-O0`.
 
 ## Async
 
 `time.timer` / `uv.fs_*` start a `Future`; `await` **suspends and hands the
-future back to the libuv loop**. A function containing an `ir.Suspend` is a heap
-frame function (`frame.machine_functions`) and is emitted as a flat state
-machine (`emit_machine_function`):
+future back to the driver**. A function is async if it reaches a host `Suspend`
+transitively (the `async` pass computes the fixpoint), so any function that calls
+an async function becomes async too. An async call is rewritten to start the
+callee as a task and suspend on its completion future:
+
+- `OpMachineStart(fut, callee, args, dest)` launches the callee's machine on the
+  cooperative driver and yields a completion future;
+- the terminator `ir.Suspend(fut, dest, resume, machine)` stores the future and
+  the resume state and returns "not done"; the resume block reads the awaited
+  value (`Gleamc_uv_await_*`) and releases the future.
+
+An **async tail call** becomes an `ir.TailMachine(fun, args)` terminator instead:
+it delegates the *running* task to the callee, so a tail-call chain keeps a
+constant number of tasks and C-stack frames.
+
+A machine is a flat state machine (`emit_machine_function`):
 
 - the frame holds the locals plus a `state`, a pending `fut` and a `result`;
 - the `_step(frame) -> i1` switches on `state`. At a suspension it stores the
-  pending future and the resume state and returns "not done"; the resume block
-  reads the awaited value (`Gleamc_uv_await_*`) and releases the future; at a
-  return it stores the result and returns "done";
-- the wrapper allocates the frame, stores the arguments, and drives the step
-  through `gleamc_sched_run`, which waits on the future (the libuv loop) and
-  re-enters the step. The wrapper owns the frame and releases it after reading
-  the result — the step suppresses `OpDrop(frame)` so the frame outlives the
-  machine.
+  pending future and the resume state and returns "not done"; at a `Ret` it
+  stores the result and returns "done"; at a `TailMachine` it releases this
+  frame, builds the callee frame and calls `gleamc_task_tail`;
+- the wrapper allocates the frame, stores the arguments, starts a task and calls
+  `gleamc_run_until(done)`. The driver owns the frame and runs its teardown
+  (`__frame_<fn>_drop`) when the task finishes or delegates; the step suppresses
+  `OpDrop(frame)`.
 
-The suspension is an `ir.Suspend(fut, dest, resume)` **terminator**: it ends
-the block, so no `cps` pass is needed, and it defines `dest` in the resume
-block. Locals live in the frame, so they survive the suspension. A tail call
-*inside* a suspending function is emitted as a plain call (the machine cannot
-keep the caller's frame across it).
+A function that is async only by a tail call has no `_step` of its own body but
+is still emitted as a machine so it can be started as a task and can delegate.
 
-The runtime (`runtime/gleam_runtime.[ch]`) carries the scheduler: `GleamcFuture`,
-`gleamc_sched_run`, the task list (`gleamc_task_spawn` / `gleamc_tasks_drain`)
-and the `gleamc_uv_*` wrappers. libuv is required; there is no synchronous
-fallback.
+One global driver (`gleamc_run_until`) runs every task on the libuv loop. It is
+**reentrant**: a synchronous call into an async closure (e.g. the continuation
+passed to `result.try`) drives only up to its own completion future, skips the
+task already running on the C stack, and does not compact the task table while
+nested.
+
+The runtime (`runtime/gleam_runtime.[ch]`) carries `GleamcFuture`,
+`gleamc_task_start` / `gleamc_task_tail` / `gleamc_run_until` and the
+`gleamc_uv_*` wrappers. libuv is required; there is no synchronous fallback.

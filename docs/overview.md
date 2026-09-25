@@ -73,9 +73,9 @@ The stages that matter most for correctness are:
 - `Block(label, ops, term)`.
 - `Op`: `OpConst`, `OpBinop`, `OpCall`, `OpBuiltin`, `OpCtor`, `OpField`,
   `OpTuple`, `OpCopy`, `OpClosure`, `OpEnvGet`, `OpCallIndirect`, `OpRetain`,
-  `OpDrop`, `OpSuspend`, …
+  `OpDrop`, `OpFrameNew`, `OpFrameGet`, `OpFrameSet`, `OpMachineStart`, …
 - `Terminator`: `Jmp`, `Branch`, `Ret`, `Tailcall`, `TailcallIndirect`,
-  `Unreachable`.
+  `Suspend`, `TailMachine`, `Unreachable`.
 
 Operands are either a local name (`Var`) or a literal (`Lit`). `OpRetain` and
 `OpDrop` are inserted only by the ownership pass; after that pass the IR is a

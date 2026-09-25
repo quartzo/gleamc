@@ -10,34 +10,39 @@ A frame is a **composite, reference-counted heap cell** for a function. It holds
 the variables that must survive a point where the native stack cannot be trusted:
 
 > a variable belongs in the frame **if and only if** it is **captured by a
-> closure** or **live across a suspension** (`OpSuspend`).
+> closure**, **live across a suspension** (`ir.Suspend`), or a **parameter of a
+> machine** (the wrapper / `OpMachineStart` place the arguments in the frame).
 
-Today only captures matter: async is still lowered inline (see
-[machine.md](machine.md)), so a suspension does not unwind the stack and is not
-part of frame membership. The `suspend_live_vars` rule is already implemented
-and returns to duty when the async state machine is restored.
+Async is a flat state machine (see [machine.md](machine.md)): a suspension
+returns control to the driver, so the native stack is not trusted across it and
+every variable live at a suspension lives in the frame. A machine frame also
+owns its parameters, because the wrapper stores them into the frame and the
+teardown releases them.
 
-Everything else — parameters and temporaries that are neither captured nor live
-across a suspension — stays a plain IR local. The rule is uniform over
-parameters and locals.
+Other parameters and temporaries of a non-async function stay plain IR locals.
+A capture-only frame function uses the same rule (captures only).
 
 ## Layers
 
 - `frame.materialize` (between `lower` and `ownership`) determines membership
-  (`frame.machine_functions`: functions with a capturing closure, or with a
-  suspension once async is restored), adds `OpFrameNew` at the entry of every
-  such function, and marks every capturing closure as a frame capture (`env_ty`
-  names the defining frame).
+  (`frame.machine_functions`: a capturing closure, a suspension, or an async
+  tail call), adds `OpFrameNew` at the entry of every such function, and marks
+  every capturing closure as a frame capture (`env_ty` names the defining
+  frame).
 - `ownership` sees the frame value as a handle: a capturing closure retains it
   (`OpClosure`), and the machine releases its own reference at every exit
-  (`OpDrop(frame)`, emitted at `Ret` and at tail calls).
-- The backend renders `OpFrameNew` as a `gleamc_alloc0` cell, field get/set as
-  GEP/load/store, and `OpDrop(frame)` as a call to the generated
-  `@__frame_<fn>_drop` teardown.
-- There is no dispatcher and no mutual tail-call group: tail calls are
-  `musttail` calls ([tco-musttail-plan.md](tco-musttail-plan.md)). A capture
-  function that tail-calls releases its frame before the call and the `musttail`
-  call is immediately followed by its `ret`.
+  (`OpDrop(frame)`, emitted at `Ret` and at async tail calls).
+- The backend renders field get/set as GEP/load/store and `OpDrop(frame)` as a
+  call to the generated `@__frame_<fn>_drop` teardown. `OpFrameNew` itself is a
+  no-op: the cell is allocated by the machine wrapper / `OpMachineStart`.
+- There is no dispatcher and no mutual tail-call group. A synchronous tail call
+  is a `musttail` call ([tco-musttail-plan.md](tco-musttail-plan.md)); a capture
+  function that tail-calls releases its frame before the call. An **async** tail
+  call is a `TailMachine` terminator that delegates the running task to the
+  callee ([machine.md](machine.md)).
+- A machine's frame is owned by its driver task, which runs the teardown when
+  the machine finishes or delegates. `copy_result` retains the result for the
+  caller and the teardown releases the frame's own reference to it.
 
 ## Motivation (kept)
 
@@ -56,4 +61,6 @@ teardown an ordinary composite drop.
   defining function returned, without dangling or leaking.
 - Nested captures read the right values.
 - Constant-stack recursion holds (`count(1_000_000)`, mutual recursion).
-- `gleam test` is green and `scripts/diff.sh` matches the official toolchain.
+- `leak_test.leak_get_files_frame_test` reports `live blocks = 0` for a recursive
+  async walk, and `gleam test` is green (`scripts/diff.sh` matches the official
+  toolchain; the compiler self-compiles under an 8 MiB stack).

@@ -854,62 +854,8 @@ GleamcFuture* Gleamc_std_time_timer(int64_t ms) {
     return f;
 }
 
-/* Scheduler task list (spawn). */
+/* Maximum number of live tasks on the cooperative driver. */
 #define GLEAMC_TASKS_MAX 4096
-static struct {
-    bool (*step)(void*);
-    void* frame;
-    GleamcFuture** fut_slot;
-    bool done;
-} gleamc_tasks[GLEAMC_TASKS_MAX];
-static int gleamc_tasks_n = 0;
-
-void gleamc_task_spawn(bool (*step)(void*), void* frame,
-                       GleamcFuture** fut_slot) {
-    /* The spawn site allocates the frame with rc=1 and TRANSFERS ownership
-     * to the scheduler (no extra retain); drain releases it. */
-    if (gleamc_tasks_n >= GLEAMC_TASKS_MAX) {
-        fprintf(stderr, "gleamc: task overflow (%d) — frame discarded\n",
-                GLEAMC_TASKS_MAX);
-        gleamc_release(frame);
-        return;
-    }
-    gleamc_tasks[gleamc_tasks_n].step = step;
-    gleamc_tasks[gleamc_tasks_n].frame = frame;
-    gleamc_tasks[gleamc_tasks_n].fut_slot = fut_slot;
-    gleamc_tasks[gleamc_tasks_n].done = false;
-    gleamc_tasks_n++;
-}
-
-int32_t gleamc_tasks_drain(void) {
-    while (gleamc_tasks_n > 0) {
-        int progressed = 0;
-        for (int i = 0; i < gleamc_tasks_n; i++) {
-            if (gleamc_tasks[i].done) continue;
-            if (gleamc_tasks[i].step(gleamc_tasks[i].frame)) {
-                gleamc_release(gleamc_tasks[i].frame);
-                gleamc_tasks[i] = gleamc_tasks[gleamc_tasks_n - 1];
-                gleamc_tasks_n--;
-                i--;
-                progressed = 1;
-                continue;
-            }
-            GleamcFuture* fut = *gleamc_tasks[i].fut_slot;
-            if (fut != NULL && !fut->done && fut->deadline > 0) {
-                int64_t now = (int64_t)gleamc_now_ms();
-                if (fut->deadline > now)
-                    gleamc_sleep_ms(fut->deadline - now);
-                fut->done = true;
-                progressed = 1;
-            }
-            if (fut != NULL && fut->uv_armed) progressed = 1;
-        }
-        if (!progressed && gleamc_tasks_n > 0) {
-            break;  /* no progress and no resolved future: avoid spinning */
-        }
-    }
-    return 0;
-}
 
 /* ------------------------------------------------------------------ */
 /* Cooperative driver.                                                 */
@@ -1096,34 +1042,6 @@ void gleamc_run_until(GleamcFuture* target) {
         }
     }
     gleamc_run_depth--;
-}
-
-void gleamc_run(void) { gleamc_run_until(NULL); }
-
-bool gleamc_sched_run(bool (*step)(void* frame), void* frame,
-                      GleamcFuture** fut_slot) {
-    void* loop = gleamc_uv_loop();
-    for (;;) {
-        if (step(frame)) {
-            /* Drain pending libuv close callbacks so handles (timers, ...) are
-             * released before the machine returns. */
-            uv_run((uv_loop_t*)loop, UV_RUN_NOWAIT);
-            return true;
-        }
-        GleamcFuture* fut = *fut_slot;
-        while (fut != NULL && !fut->done) {
-            /* Only scheduler-deadline futures sleep; libuv-armed ones are
-             * woken by their callback. */
-            if (!fut->uv_armed && fut->deadline > 0) {
-                int64_t now = (int64_t)gleamc_now_ms();
-                if (fut->deadline > now)
-                    gleamc_sleep_ms(fut->deadline - now);
-                fut->done = true;
-                break;
-            }
-            uv_run((uv_loop_t*)loop, UV_RUN_ONCE);
-        }
-    }
 }
 
 /* ------------------------------------------------------------------ */

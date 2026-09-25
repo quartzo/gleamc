@@ -64,15 +64,19 @@ consults the caller's borrowed parameters (`borrowed_params` in
 `ownership.gleam`).
 ## Async (stage 2, done)
 
-`await` suspends and hands the `Future` back to the libuv loop: a function with
-an `ir.Suspend(fut, dest, resume)` terminator is a heap frame function
-(`frame.has_suspend`) and is emitted as a `_step` + wrapper state machine
-(`emit_machine_function`), driven by `gleamc_sched_run`. `lower` emits the
-terminator, so no `cps` pass is needed and the op-`OpSuspend` code smell is
-gone. The wrapper owns the frame and releases it after reading the result; the
-step suppresses `OpDrop(frame)`. See [machine.md](machine.md#async).
+`await` suspends and hands the `Future` back to the driver: a function that
+reaches a host `ir.Suspend(fut, dest, resume, machine)` terminator is a heap
+frame function (a *machine*) and is emitted as a `_step` + wrapper state machine
+(`emit_machine_function`). An async call becomes `OpMachineStart` + `Suspend`;
+one global driver (`gleamc_run_until`) runs every task on the libuv loop and is
+reentrant across synchronous calls into async closures. `lower` emits the
+terminator, so no `cps` pass is needed. The task owns the frame and runs its
+teardown when the machine finishes or delegates. See
+[machine.md](machine.md#async).
 
-Still to refine: a tail call inside a suspending function is a plain call.
+An async tail call is an `ir.TailMachine` delegation: the running task is
+retargeted to the callee, so async tail recursion is constant-task.
+`musttail` is reserved for the fully-synchronous interior.
 
 ## The `-O0` frame problem and the `-O1` baseline
 

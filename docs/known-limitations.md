@@ -102,12 +102,11 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   library with no `main`, from the public API). Unused custom types are still
   emitted.
 - `fold_right` is not tail recursive (same as the official implementation).
-- libuv support is ported from Vesper: `GleamcFuture`, the state-machine
-  scheduler (`gleamc_sched_run`/`gleamc_task_spawn`/`gleamc_tasks_drain`), and
-  the `gleamc_uv_*` timer/file wrappers. libuv is required — the toolchain
-  always links `-luv` and the runtime has no synchronous fallback. The compiler
-  itself does not expose `async`/`await` yet; the file API uses the synchronous
-  `uv_fs_*` calls.
+- libuv support is ported from Vesper: `GleamcFuture`, the cooperative task
+  driver (`gleamc_task_start` / `gleamc_task_tail` / `gleamc_run_until`), and the
+  `gleamc_uv_*` timer/file wrappers. libuv is required — the toolchain always
+  links `-luv` and the runtime has no synchronous fallback. The compiler itself
+  does not expose `async`/`await` yet.
 
 ## Standard library coverage
 

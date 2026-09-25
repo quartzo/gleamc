@@ -8,7 +8,7 @@
 //// "start the callee as a task on the cooperative driver, then suspend on the
 //// future that completes when it does". The callee's result is copied straight
 //// into the caller's destination, so the caller never runs a nested loop: the
-//// one driver in `gleamc_run` owns the libuv loop.
+//// one driver in `gleamc_run_until` owns the libuv loop.
 
 import gleam/dict.{type Dict}
 import gleam/int

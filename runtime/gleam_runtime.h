@@ -305,8 +305,6 @@ typedef struct GleamcFuture {
 uint64_t gleamc_now_ms(void);
 void gleamc_sleep_ms(int64_t ms);
 GleamcFuture* Gleamc_std_time_timer(int64_t ms);
-bool gleamc_sched_run(bool (*step)(void* frame), void* frame,
-                      GleamcFuture** fut_slot);
 
 void gleamc_sched_poll(void);
 void* gleamc_uv_loop(void);
@@ -318,23 +316,24 @@ GleamcFuture* gleamc_uv_fs_read(void* loop, void* fd, int64_t n);
 GleamcFuture* gleamc_uv_fs_fstat(void* loop, void* fd);
 GleamcFuture* gleamc_uv_fs_close(void* loop, void* fd);
 
-void gleamc_task_spawn(bool (*step)(void*), void* frame,
-                       GleamcFuture** fut_slot);
-int32_t gleamc_tasks_drain(void);
-
 /* Cooperative driver: starts a machine as a task and returns a future that
  * completes when it finishes; `copy_result` moves the result out of the frame
- * into `result_dst`. `gleamc_run` drives every task to completion. */
+ * into `result_dst`, and `frame_drop` releases the frame's owned fields. */
 GleamcFuture* gleamc_task_start(bool (*step)(void*), void* frame,
                                 GleamcFuture** fut_slot,
                                 void (*copy_result)(void*, void*),
                                 void* result_dst,
                                 void (*frame_drop)(void*));
+/* Delegates the running task to `step` (async tail call); the driver retargets
+ * the task's step/frame/copy_result/fut_slot/frame_drop. */
+void gleamc_task_tail(bool (*step)(void*), void* frame,
+                      void (*copy_result)(void*, void*),
+                      GleamcFuture** fut_slot,
+                      void (*frame_drop)(void*));
 /* Drives tasks until `target` completes (or the table drains when `target` is
  * NULL). Safe to call re-entrantly: a synchronous call into an async closure
  * drives only up to its own completion future. */
 void gleamc_run_until(GleamcFuture* target);
-void gleamc_run(void);
 
 /* Host async surface (Vesper docs 09/11/14): starts return a Future,
  * `await` (Gleamc_uv_await_*) drives the scheduler to completion. */
