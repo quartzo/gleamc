@@ -133,12 +133,15 @@ pub fn lower_module(
 }
 
 fn sequence(results) {
+  sequence_loop(results, [])
+}
+
+fn sequence_loop(results, acc) {
   case results {
-    [] -> Ok([])
+    [] -> Ok(list.reverse(acc))
     [result, ..rest] -> {
       use value <- result.try(result)
-      use values <- result.try(sequence(rest))
-      Ok([value, ..values])
+      sequence_loop(rest, [value, ..acc])
     }
   }
 }

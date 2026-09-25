@@ -68,9 +68,20 @@ fn wander(pending, definitions, known, visited) {
             Ok(body) -> expr_refs(body, [])
             Error(_) -> []
           }
-          let next = list.filter(refs, fn(ref) { dict.has_key(known, ref) })
+          let next = refs_in_known(refs, known, [])
           wander(list.append(rest, next), definitions, known, visited)
         }
+      }
+  }
+}
+
+fn refs_in_known(refs, known, acc) {
+  case refs {
+    [] -> list.reverse(acc)
+    [ref, ..rest] ->
+      case dict.has_key(known, ref) {
+        True -> refs_in_known(rest, known, [ref, ..acc])
+        False -> refs_in_known(rest, known, acc)
       }
   }
 }

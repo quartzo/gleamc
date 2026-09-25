@@ -63,11 +63,7 @@ fn collect(defs, signatures, ctors) {
     }
     [DCustomType(custom), ..rest] -> {
       let CustomType(_, name, _generics, variants, _) = custom
-      let ctors =
-        list.fold(variants, ctors, fn(acc, variant) {
-          let Variant(variant_name, fields) = variant
-          dict.insert(acc, variant_name, CtorInfo(name, fields))
-        })
+      let ctors = add_variants(variants, name, ctors)
       collect(rest, signatures, ctors)
     }
     [DImport(_), ..rest] -> collect(rest, signatures, ctors)
@@ -79,11 +75,24 @@ fn collect(defs, signatures, ctors) {
 fn check_defs(defs, signatures, ctors) {
   case defs {
     [] -> Ok(Nil)
-    [DFunction(function), ..rest] -> {
-      use _ <- result.try(check_function(function, signatures, ctors))
-      check_defs(rest, signatures, ctors)
-    }
+    [DFunction(function), ..rest] ->
+      case check_function(function, signatures, ctors) {
+        Ok(_) -> check_defs(rest, signatures, ctors)
+        Error(_) as error -> error
+      }
     [_, ..rest] -> check_defs(rest, signatures, ctors)
+  }
+}
+
+fn add_variants(variants, ctorname, acc) {
+  case variants {
+    [] -> acc
+    [Variant(variant_name, fields), ..rest] ->
+      add_variants(
+        rest,
+        ctorname,
+        dict.insert(acc, variant_name, CtorInfo(ctorname, fields)),
+      )
   }
 }
 
