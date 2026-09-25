@@ -1044,9 +1044,10 @@ fn with_reg(info: FrameInfo, reg: String) -> FrameInfo {
 fn emit_group_frame_release(ctx: Ctx, b: Builder) -> Builder {
   list.fold(ctx.group_frames, b, fn(b, pair) {
     let #(reg, fr_ty) = pair
+    let #(base, b) = frame_base(reg, fr_ty, b)
     let #(p, b) = fresh(b)
     let b =
-      emit_line(b, "  " <> p <> " = bitcast " <> fr_ty <> "* " <> reg <> " to i8*")
+      emit_line(b, "  " <> p <> " = bitcast " <> fr_ty <> "* " <> base <> " to i8*")
     emit_line(
       b,
       "  call void @" <> frame_drop_sym(fr_ty) <> "(i8* " <> p <> ")",
@@ -1622,12 +1623,29 @@ fn local_ptr(ctx: Ctx, name: String) -> String {
 
 /// Emits a frame field `getelementptr` as an instruction and returns its SSA
 /// name (an inline GEP with a local base is not a valid LLVM operand).
+/// The current frame pointer for `base`. A dispatcher member keeps its frame in
+/// a mutable slot (`%__frp_m<idx>`, an `alloca <fr_ty>*`) so a call can push a
+/// fresh frame and the return can restore the caller's; a plain state machine
+/// passes the frame pointer directly.
+fn frame_base(base: String, fr_ty: String, b: Builder) -> #(String, Builder) {
+  case string.starts_with(base, "%__frp_") {
+    True -> {
+      let #(p, b) = fresh(b)
+      let b =
+        emit_line(b, "  " <> p <> " = load " <> fr_ty <> "*, " <> fr_ty <> "** " <> base)
+      #(p, b)
+    }
+    False -> #(base, b)
+  }
+}
+
 fn frame_gep(
   base: String,
   fr_ty: String,
   index: Int,
   b: Builder,
 ) -> #(String, Builder) {
+  let #(base, b) = frame_base(base, fr_ty, b)
   let #(reg, b) = fresh(b)
   let b =
     emit_line(
@@ -1654,7 +1672,8 @@ fn emit_frame_locals(ctx: Ctx, fr_ty: String, locals: List(ir.Local), b: Builder
     case ctx.frame {
       Some(FrameInfo(_, fr_reg, fields, _, _, _, _)) ->
         case dict.get(fields, name) {
-          Ok(index) ->
+          Ok(index) -> {
+            let #(base, b) = frame_base(fr_reg, fr_ty, b)
             emit_line(
               b,
               "  "
@@ -1664,10 +1683,11 @@ fn emit_frame_locals(ctx: Ctx, fr_ty: String, locals: List(ir.Local), b: Builder
                 <> ", "
                 <> fr_ty
                 <> "* "
-                <> fr_reg
+                <> base
                 <> ", i32 0, i32 "
                 <> int.to_string(index),
             )
+          }
           Error(_) -> b
         }
       None -> b
@@ -1892,11 +1912,12 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
         True ->
           case ctx.frame {
             Some(FrameInfo(fr_ty, fr_reg, _, _, _, _, _)) -> {
+              let #(base, b) = frame_base(fr_reg, fr_ty, b)
               let #(p, b) = fresh(b)
               let b =
                 emit_line(
                   b,
-                  "  " <> p <> " = bitcast " <> fr_ty <> "* " <> fr_reg <> " to i8*",
+                  "  " <> p <> " = bitcast " <> fr_ty <> "* " <> base <> " to i8*",
                 )
               #(
                 emit_line(
@@ -2067,11 +2088,12 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
         True ->
           case ctx.frame {
             Some(FrameInfo(fr_ty, fr_reg, _, _, _, _, _)) -> {
+              let #(base, b) = frame_base(fr_reg, fr_ty, b)
               let #(frp, b) = fresh(b)
               let b =
                 emit_line(
                   b,
-                  "  " <> frp <> " = bitcast " <> fr_ty <> "* " <> fr_reg <> " to i8*",
+                  "  " <> frp <> " = bitcast " <> fr_ty <> "* " <> base <> " to i8*",
                 )
               // Dropping the closure runs the frame's teardown.
               #(frp, "@" <> env_ty <> "_drop", b)
@@ -4472,7 +4494,9 @@ fn emit_group(
       let prefix = "m" <> int.to_string(index) <> "_"
       let ir.Function(name, params, _, blocks, _) = function
       let info = frame_info(function, recursive)
-      let fr_reg = "%__fr_m" <> int.to_string(index)
+      // A mutable slot holding this member's *current* frame pointer, so a
+      // call can push a fresh frame and the return can restore the caller's.
+      let fr_reg = "%__frp_m" <> int.to_string(index)
       #(
         function,
         index,
@@ -4510,6 +4534,7 @@ fn emit_group(
     list.fold(indexed, b, fn(b, entry) {
       let #(_, _, _, _, _, _, info) = entry
       let FrameInfo(fr_ty, fr_reg, _, _, _, _, _) = info
+      let b = emit_line(b, "  " <> fr_reg <> " = alloca " <> fr_ty <> "*")
       let #(raw, b) = fresh(b)
       let b =
         emit_line(
@@ -4524,10 +4549,10 @@ fn emit_group(
             <> fr_ty
             <> "* null, i32 1) to i64))",
         )
-      emit_line(
-        b,
-        "  " <> fr_reg <> " = bitcast i8* " <> raw <> " to " <> fr_ty <> "*",
-      )
+      let #(init, b) = fresh(b)
+      let b =
+        emit_line(b, "  " <> init <> " = bitcast i8* " <> raw <> " to " <> fr_ty <> "*")
+      emit_line(b, "  store " <> fr_ty <> "* " <> init <> ", " <> fr_ty <> "** " <> fr_reg)
     })
   let member_ctxs =
     list.map(indexed, fn(entry) {
