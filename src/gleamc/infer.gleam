@@ -22,6 +22,7 @@ import gleamc/ast.{
   PBool, PCtor, PFloat,
   PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard, Stmt, Variant,
 }
+import gleamc/texpr
 import gleamc/types.{
   type Scheme, type Subst, type Ty, Con, Fun, Rig, Scheme, Tup, Var,
 }
@@ -910,16 +911,28 @@ fn locate(line, name, message) {
 // ---------------------------------------------------------------------------
 
 pub fn infer(env: Env, st: St, expr: Expr) -> Result(#(Ty, St), InferError) {
+  use #(typed, st) <- result_try(infer_t(env, st, expr))
+  Ok(#(texpr.type_of(typed), st))
+}
+
+/// Elaborate a surface expression into a typed expression (`texpr.TExpr`).
+/// This is the single inference recursion: callers read types from the result
+/// instead of re-inferring.
+pub fn infer_t(
+  env: Env,
+  st: St,
+  expr: Expr,
+) -> Result(#(texpr.TExpr, St), InferError) {
   case expr {
-    EInt(_) -> Ok(#(Con("Int", []), st))
-    EFloat(_) -> Ok(#(Con("Float", []), st))
-    EString(_) -> Ok(#(Con("String", []), st))
-    EBool(_) -> Ok(#(Con("Bool", []), st))
-    ENil -> Ok(#(Con("Nil", []), st))
+    EInt(n) -> Ok(#(texpr.TInt(n, Con("Int", [])), st))
+    EFloat(f) -> Ok(#(texpr.TFloat(f, Con("Float", [])), st))
+    EString(s) -> Ok(#(texpr.TString(s, Con("String", [])), st))
+    EBool(b) -> Ok(#(texpr.TBool(b, Con("Bool", [])), st))
+    ENil -> Ok(#(texpr.TNil(Con("Nil", [])), st))
     EVar(name) -> infer_var(env, st, name)
     ETuple(elements) -> {
       use #(tys, st) <- result_try(infer_all(env, st, elements))
-      Ok(#(Tup(tys), st))
+      Ok(#(texpr.TTuple(tys, Tup(list.map(tys, texpr.type_of))), st))
     }
     ECtor(name, args) -> infer_ctor(env, st, name, args)
     ECall(fun, args) -> infer_call(env, st, fun, args)
@@ -928,43 +941,32 @@ pub fn infer(env: Env, st: St, expr: Expr) -> Result(#(Ty, St), InferError) {
     EBlock(statements) -> infer_block(env, st, statements)
     ECase(subject, arms) -> infer_case(env, st, subject, arms)
     EField(obj, name) -> infer_field(env, st, obj, name)
-    ELabelled(_, value) -> infer(env, st, value)
+    ELabelled(label, value) -> {
+      use #(typed, st) <- result_try(infer_t(env, st, value))
+      Ok(#(texpr.TLabelled(label, typed, texpr.type_of(typed)), st))
+    }
     ELambda(names, body) -> infer_lambda(env, st, names, body)
-    EClosure(_, _, _, fn_ty) -> Ok(#(convert(fn_ty, dict.new()), st))
-    EEnvGet(_, _, ty) -> Ok(#(convert(ty, dict.new()), st))
-    EPanic(_, _) -> {
+    EClosure(code, _, env_ty, fn_ty) -> {
+      let ty = convert(fn_ty, dict.new())
+      Ok(#(texpr.TClosure(code, [], env_ty, ty, ty), st))
+    }
+    EEnvGet(env_ty, index, ty) ->
+      Ok(#(texpr.TEnvGet(env_ty, index, convert(ty, dict.new())), st))
+    EPanic(message, _) -> {
       let #(ty, counter) = types.fresh(st.counter)
-      Ok(#(ty, St(..st, counter: counter)))
+      Ok(#(texpr.TPanic(message, ty), St(..st, counter: counter)))
     }
     EBitArray(elements) -> {
       use #(element_tys, st) <- result_try(infer_all(env, st, elements))
       use st <- result_try(unify_lists(
         list.repeat(Con("Int", []), list.length(element_tys)),
-        element_tys,
+        list.map(element_tys, texpr.type_of),
         st,
         "bit array segment",
       ))
-      Ok(#(Con("BitArray", []), st))
+      Ok(#(texpr.TBitArray(element_tys, Con("BitArray", [])), st))
     }
-    EUpdate(name, base, fields) ->
-      case dict.get(env.ctors, name) {
-        Error(_) -> Error(InferError("unknown record `" <> name <> "`"))
-        Ok(CtorDef(_, field_names, scheme)) -> {
-          use _ <- result_try(check_update_fields(fields, field_names))
-          let #(ctor_ty, st) = instantiate_ty(scheme, st)
-          let #(_, ret) = fun_parts(ctor_ty)
-          use #(base_ty, st) <- result_try(infer(env, st, base))
-          use st <- result_try(unify_st(ret, base_ty, st))
-          let args =
-            list.map(field_names, fn(field_name) {
-              case find_update_field(fields, field_name) {
-                Ok(value) -> value
-                Error(_) -> EField(base, field_name)
-              }
-            })
-          infer(env, st, ECtor(name, args))
-        }
-      }
+    EUpdate(name, base, fields) -> infer_update(env, st, name, base, fields)
   }
 }
 
@@ -1007,11 +1009,22 @@ fn infer_lambda(env, st: St, names, body) {
       )
     })
   let body_env = Env(..env, locals: merge_dicts(env.locals, lambda_locals))
-  use #(body_ty, st) <- result_try(infer(body_env, st, body))
-  Ok(#(Fun(list.reverse(param_tys), body_ty), st))
+  use #(body_t, st) <- result_try(infer_t(body_env, st, body))
+  Ok(#(
+    texpr.TLambda(
+      names,
+      body_t,
+      Fun(list.reverse(param_tys), texpr.type_of(body_t)),
+    ),
+    st,
+  ))
 }
 
-fn infer_var(env: Env, st: St, name: String) -> Result(#(Ty, St), InferError) {
+fn infer_var(
+  env: Env,
+  st: St,
+  name: String,
+) -> Result(#(texpr.TExpr, St), InferError) {
   let scheme = case dict.get(env.locals, name) {
     Ok(found) -> Ok(found)
     Error(_) -> dict.get(env.globals, name)
@@ -1019,7 +1032,7 @@ fn infer_var(env: Env, st: St, name: String) -> Result(#(Ty, St), InferError) {
   case scheme {
     Ok(found) -> {
       let #(ty, counter) = types.instantiate(found, st.counter)
-      Ok(#(ty, St(..st, counter: counter)))
+      Ok(#(texpr.TVar(name, ty), St(..st, counter: counter)))
     }
     Error(_) -> Error(InferError("unknown variable `" <> name <> "`"))
   }
@@ -1033,8 +1046,8 @@ fn infer_all_loop(env: Env, st: St, exprs, acc) {
   case exprs {
     [] -> Ok(#(list.reverse(acc), st))
     [expr, ..rest] ->
-      case infer(env, st, expr) {
-        Ok(#(ty, st)) -> infer_all_loop(env, st, rest, [ty, ..acc])
+      case infer_t(env, st, expr) {
+        Ok(#(typed, st)) -> infer_all_loop(env, st, rest, [typed, ..acc])
         Error(error) -> Error(error)
       }
   }
@@ -1048,8 +1061,13 @@ fn infer_ctor(env: Env, st: St, name, args) {
       let #(ctor_ty, st) = instantiate_ty(scheme, st)
       let #(param_tys, ret) = fun_parts(ctor_ty)
       use #(arg_tys, st) <- result_try(infer_all(env, st, args))
-      use st <- result_try(unify_lists(param_tys, arg_tys, st, name))
-      Ok(#(ret, st))
+      use st <- result_try(unify_lists(
+        param_tys,
+        list.map(arg_tys, texpr.type_of),
+        st,
+        name,
+      ))
+      Ok(#(texpr.TCtor(name, arg_tys, ret), st))
     }
   }
 }
@@ -1057,14 +1075,14 @@ fn infer_ctor(env: Env, st: St, name, args) {
 fn infer_call(env: Env, st: St, fun, args) {
   case fun {
     EVar(name) -> {
-      use #(fun_ty, st) <- result_try(infer_var(env, st, name))
-      infer_call_dispatch(env, st, fun_ty, args, name)
+      use #(fun_t, st) <- result_try(infer_var(env, st, name))
+      infer_call_dispatch(env, st, texpr.type_of(fun_t), fun_t, args, name)
     }
     EField(EVar(module), name) ->
       infer_call(env, st, EVar(module <> "." <> name), args)
     _ -> {
-      use #(fun_ty, st) <- result_try(infer(env, st, fun))
-      infer_call_dispatch(env, st, fun_ty, args, "call")
+      use #(fun_t, st) <- result_try(infer_t(env, st, fun))
+      infer_call_dispatch(env, st, texpr.type_of(fun_t), fun_t, args, "call")
     }
   }
 }
@@ -1072,26 +1090,35 @@ fn infer_call(env: Env, st: St, fun, args) {
 /// When the callee type is still a variable (e.g. calling a higher-order
 /// parameter), infer the arguments and unify the callee with their function
 /// type; otherwise the parameter types are known and can guide inference.
-fn infer_call_dispatch(env, st: St, fun_ty, args, ctx) {
+fn infer_call_dispatch(env, st: St, fun_ty, fun_t, args, ctx) {
   case types.resolve(fun_ty, st.subst) {
     Var(_) -> {
       use #(arg_tys, st) <- result_try(infer_all(env, st, args))
       let #(ret, counter) = types.fresh(st.counter)
       let st = St(..st, counter: counter)
-      use st <- result_try(unify_st(fun_ty, Fun(arg_tys, ret), st))
-      Ok(#(ret, st))
+      use st <- result_try(unify_st(
+        fun_ty,
+        Fun(list.map(arg_tys, texpr.type_of), ret),
+        st,
+      ))
+      Ok(#(texpr.TCall(fun_t, arg_tys, ret), st))
     }
     // Use the resolved type: a function bound by a pattern (e.g. a tuple
     // element) is still a variable that only the substitution resolves.
-    resolved -> infer_call_with(env, st, resolved, args, ctx)
+    resolved -> infer_call_with(env, st, resolved, fun_t, args, ctx)
   }
 }
 
-fn infer_call_with(env, st, fun_ty, args, ctx) {
+fn infer_call_with(env, st, fun_ty, fun_t, args, ctx) {
   let #(param_tys, ret) = fun_parts(fun_ty)
   use #(arg_tys, st) <- result_try(infer_args_expect(env, st, param_tys, args))
-  use st <- result_try(unify_lists(param_tys, arg_tys, st, ctx))
-  Ok(#(ret, st))
+  use st <- result_try(unify_lists(
+    param_tys,
+    list.map(arg_tys, texpr.type_of),
+    st,
+    ctx,
+  ))
+  Ok(#(texpr.TCall(fun_t, arg_tys, ret), st))
 }
 
 /// Infers call arguments against the callee's parameter types, so a lambda's
@@ -1100,25 +1127,25 @@ fn infer_args_expect(env, st, expected_list, args) {
   case args, expected_list {
     [], _ -> Ok(#([], st))
     [arg, ..rest], [expected, ..rest_expected] -> {
-      use #(arg_ty, st) <- result_try(infer_arg_expect(
+      use #(arg_t, st) <- result_try(infer_arg_expect(
         env,
         st,
         Some(expected),
         arg,
       ))
-      use st <- result_try(unify_st(expected, arg_ty, st))
-      use #(rest_tys, st) <- result_try(infer_args_expect(
+      use st <- result_try(unify_st(expected, texpr.type_of(arg_t), st))
+      use #(rest_t, st) <- result_try(infer_args_expect(
         env,
         st,
         rest_expected,
         rest,
       ))
-      Ok(#([arg_ty, ..rest_tys], st))
+      Ok(#([arg_t, ..rest_t], st))
     }
     [arg, ..rest], [] -> {
-      use #(arg_ty, st) <- result_try(infer(env, st, arg))
-      use #(rest_tys, st) <- result_try(infer_args_expect(env, st, [], rest))
-      Ok(#([arg_ty, ..rest_tys], st))
+      use #(arg_t, st) <- result_try(infer_t(env, st, arg))
+      use #(rest_t, st) <- result_try(infer_args_expect(env, st, [], rest))
+      Ok(#([arg_t, ..rest_t], st))
     }
   }
 }
@@ -1128,13 +1155,15 @@ fn infer_arg_expect(env, st, expected, arg) {
     ELambda(names, body), Some(Fun(param_tys, ret)) ->
       case list.length(names) == list.length(param_tys) {
         True -> infer_lambda_expect(env, st, names, body, param_tys, ret)
-        False -> infer(env, st, arg)
+        False -> infer_t(env, st, arg)
       }
-    ELabelled(_, value), _ -> {
-      use #(ty, st) <- result_try(infer_arg_expect(env, st, expected, value))
-      Ok(#(ty, st))
+    ELabelled(label, value), _ -> {
+      use #(value_t, st) <- result_try(
+        infer_arg_expect(env, st, expected, value),
+      )
+      Ok(#(texpr.TLabelled(label, value_t, texpr.type_of(value_t)), st))
     }
-    _, _ -> infer(env, st, arg)
+    _, _ -> infer_t(env, st, arg)
   }
 }
 
@@ -1145,41 +1174,48 @@ fn infer_lambda_expect(env, st, names, body, param_tys, ret) {
       dict.insert(acc, name, Scheme([], ty))
     })
   let body_env = Env(..env, locals: merge_dicts(env.locals, lambda_locals))
-  use #(body_ty, st) <- result_try(infer(body_env, st, body))
+  use #(body_t, st) <- result_try(infer_t(body_env, st, body))
   let _ = ret
-  Ok(#(Fun(param_tys, body_ty), st))
+  Ok(#(
+    texpr.TLambda(names, body_t, Fun(param_tys, texpr.type_of(body_t))),
+    st,
+  ))
 }
 
 fn infer_unop(env: Env, st: St, op, operand) {
-  use #(ty, st) <- result_try(infer(env, st, operand))
+  use #(operand_t, st) <- result_try(infer_t(env, st, operand))
+  let ty = texpr.type_of(operand_t)
   case op {
     "-" -> {
       // Negation is overloaded on Int and Float; resolve Float when known and
       // otherwise default to Int.
       case types.zonk(ty, st.subst) {
-        Con("Float", []) -> Ok(#(Con("Float", []), st))
+        Con("Float", []) ->
+          Ok(#(texpr.TUnop(op, operand_t, Con("Float", [])), st))
         _ -> {
           use st <- result_try(unify_st(Con("Int", []), ty, st))
-          Ok(#(Con("Int", []), st))
+          Ok(#(texpr.TUnop(op, operand_t, Con("Int", [])), st))
         }
       }
     }
     "-." -> {
       use st <- result_try(unify_st(Con("Float", []), ty, st))
-      Ok(#(Con("Float", []), st))
+      Ok(#(texpr.TUnop(op, operand_t, Con("Float", [])), st))
     }
     "!" -> {
       use st <- result_try(unify_st(Con("Bool", []), ty, st))
-      Ok(#(Con("Bool", []), st))
+      Ok(#(texpr.TUnop(op, operand_t, Con("Bool", [])), st))
     }
     _ -> Error(InferError("unknown unary operator `" <> op <> "`"))
   }
 }
 
 fn infer_binop(env: Env, st: St, op, left, right) {
-  use #(left_ty, st) <- result_try(infer(env, st, left))
-  use #(right_ty, st) <- result_try(infer(env, st, right))
-  case op {
+  use #(left_t, st) <- result_try(infer_t(env, st, left))
+  use #(right_t, st) <- result_try(infer_t(env, st, right))
+  let left_ty = texpr.type_of(left_t)
+  let right_ty = texpr.type_of(right_t)
+  use #(result_ty, st) <- result_try(case op {
     "+" | "-" | "*" | "/" | "%" ->
       unify_both(Con("Int", []), left_ty, right_ty, Con("Int", []), st)
     "+." | "-." | "*." | "/." ->
@@ -1197,7 +1233,8 @@ fn infer_binop(env: Env, st: St, op, left, right) {
     "&&" | "||" ->
       unify_both(Con("Bool", []), left_ty, right_ty, Con("Bool", []), st)
     _ -> Error(InferError("unknown operator `" <> op <> "`"))
-  }
+  })
+  Ok(#(texpr.TBinop(op, left_t, right_t, result_ty), st))
 }
 
 fn unify_both(operand_ty, left_ty, right_ty, result_ty, st) {
@@ -1207,19 +1244,35 @@ fn unify_both(operand_ty, left_ty, right_ty, result_ty, st) {
 }
 
 fn infer_block(env: Env, st: St, statements) {
+  infer_block_loop(env, st, statements, [], Con("Nil", []))
+}
+
+fn infer_block_loop(env, st, statements, acc, last_ty) {
   case statements {
-    [] -> Ok(#(Con("Nil", []), st))
-    [Stmt(expr)] -> infer(env, st, expr)
+    [] -> Ok(#(texpr.TBlock(list.reverse(acc), last_ty), st))
     [Let(pattern, value), ..rest] -> {
-      use #(value_ty, st) <- result_try(infer(env, st, value))
+      use #(value_t, st) <- result_try(infer_t(env, st, value))
+      let value_ty = texpr.type_of(value_t)
       use #(bound, st) <- result_try(bind_pattern(env, pattern, value_ty, st))
       let scheme = generalize_in(env, st, value_ty)
       let locals = bind_let(env.locals, pattern, bound, scheme)
-      infer_block(Env(..env, locals: locals), st, rest)
+      infer_block_loop(
+        Env(..env, locals: locals),
+        st,
+        rest,
+        [texpr.TLet(pattern, value_t), ..acc],
+        Con("Nil", []),
+      )
     }
     [Stmt(expr), ..rest] -> {
-      use #(_, st) <- result_try(infer(env, st, expr))
-      infer_block(env, st, rest)
+      use #(expr_t, st) <- result_try(infer_t(env, st, expr))
+      infer_block_loop(
+        env,
+        st,
+        rest,
+        [texpr.TStmt(expr_t), ..acc],
+        texpr.type_of(expr_t),
+      )
     }
   }
 }
@@ -1237,27 +1290,33 @@ fn bind_let(locals, pattern, bound, scheme) {
 }
 
 fn infer_case(env: Env, st: St, subject, arms) {
-  use #(subject_ty, st) <- result_try(infer(env, st, subject))
-  infer_arms(env, st, subject_ty, arms, None)
+  use #(subject_t, st) <- result_try(infer_t(env, st, subject))
+  use #(arms_t, result_ty, st) <- result_try(
+    infer_arms(env, st, texpr.type_of(subject_t), arms, [], None),
+  )
+  Ok(#(texpr.TCase(subject_t, arms_t, result_ty), st))
 }
 
-fn infer_arms(env: Env, st: St, subject_ty, arms, result_ty) {
+fn infer_arms(env: Env, st: St, subject_ty, arms, acc, result_ty) {
   case arms {
     [] ->
       case result_ty {
         None -> Error(InferError("`case` with no arms"))
-        Some(ty) -> Ok(#(ty, st))
+        Some(ty) -> Ok(#(list.reverse(acc), ty, st))
       }
     [Arm(pattern, guard, body), ..rest] -> {
       use #(bound, st) <- result_try(bind_pattern(env, pattern, subject_ty, st))
       let arm_env = Env(..env, locals: merge_dicts(env.locals, bound))
-      use st <- result_try(check_arm_guard(arm_env, st, guard))
-      use #(body_ty, st) <- result_try(infer(arm_env, st, body))
+      use #(guard_t, st) <- result_try(check_arm_guard(arm_env, st, guard))
+      use #(body_t, st) <- result_try(infer_t(arm_env, st, body))
+      let body_ty = texpr.type_of(body_t)
+      let arm = texpr.TArm(pattern, guard_t, body_t)
       case result_ty {
-        None -> infer_arms(env, st, subject_ty, rest, Some(body_ty))
+        None ->
+          infer_arms(env, st, subject_ty, rest, [arm, ..acc], Some(body_ty))
         Some(ty) -> {
           use st <- result_try(unify_st(ty, body_ty, st))
-          infer_arms(env, st, subject_ty, rest, Some(ty))
+          infer_arms(env, st, subject_ty, rest, [arm, ..acc], Some(ty))
         }
       }
     }
@@ -1266,36 +1325,37 @@ fn infer_arms(env: Env, st: St, subject_ty, arms, result_ty) {
 
 fn check_arm_guard(env: Env, st: St, guard) {
   case guard {
-    None -> Ok(st)
+    None -> Ok(#(None, st))
     Some(expr) -> {
-      use #(ty, st) <- result_try(infer(env, st, expr))
-      unify_st(Con("Bool", []), ty, st)
+      use #(expr_t, st) <- result_try(infer_t(env, st, expr))
+      use st <- result_try(unify_st(Con("Bool", []), texpr.type_of(expr_t), st))
+      Ok(#(Some(expr_t), st))
     }
   }
 }
 
 fn infer_field(env: Env, st: St, obj, name) {
-  use #(obj_ty, st) <- result_try(infer(env, st, obj))
-  case types.resolve(obj_ty, st.subst) {
+  use #(obj_t, st) <- result_try(infer_t(env, st, obj))
+  case types.resolve(texpr.type_of(obj_t), st.subst) {
     Con(type_name, args) -> {
       use field_ty <- result_try(field_type(env, type_name, args, name))
-      Ok(#(field_ty, st))
+      Ok(#(texpr.TField(obj_t, name, field_ty), st))
     }
-    Var(_) -> field_on_var(env, st, obj_ty, name)
+    Var(_) -> field_on_var(env, st, obj_t, name)
     _ -> Error(InferError("field access on a non-record value"))
   }
 }
 
 /// When the object type is still unknown, resolve it from the field name: if
 /// exactly one type has a field with that name, unify the object with it.
-fn field_on_var(env: Env, st: St, obj_ty, name) {
+fn field_on_var(env: Env, st: St, obj_t, name) {
   case unique_field_type_name(env, name) {
     Error(_) -> {
       // Ambiguous (or unknown): defer. The object type is usually resolved
       // later (e.g. by a record update) and the backend checker validates the
       // access against the concrete type.
       let #(field_ty, counter) = types.fresh(st.counter)
-      Ok(#(field_ty, St(..st, counter: counter)))
+      Ok(#(texpr.TField(obj_t, name, field_ty), St(..st, counter: counter)))
     }
     Ok(type_name) -> {
       let TypeDef(_, params, _) =
@@ -1303,9 +1363,61 @@ fn field_on_var(env: Env, st: St, obj_ty, name) {
         |> result.unwrap(TypeDef("", [], []))
       let #(vars, counter) = types.fresh_many(st.counter, list.length(params))
       let st = St(..st, counter: counter)
-      use st <- result_try(unify_st(obj_ty, Con(type_name, vars), st))
+      use st <- result_try(unify_st(
+        texpr.type_of(obj_t),
+        Con(type_name, vars),
+        st,
+      ))
       use field_ty <- result_try(field_type(env, type_name, vars, name))
-      Ok(#(field_ty, st))
+      Ok(#(texpr.TField(obj_t, name, field_ty), st))
+    }
+  }
+}
+
+/// Record update: desugar to a constructor whose unchanged fields read from
+/// `base`, exactly like the untyped inference, then keep only the written
+/// fields in the typed node.
+fn infer_update(env: Env, st: St, name, base, fields) {
+  case dict.get(env.ctors, name) {
+    Error(_) -> Error(InferError("unknown record `" <> name <> "`"))
+    Ok(CtorDef(_, field_names, _scheme)) -> {
+      use _ <- result_try(check_update_fields(fields, field_names))
+      use #(base_t, st) <- result_try(infer_t(env, st, base))
+      let args =
+        list.map(field_names, fn(field_name) {
+          case find_update_field(fields, field_name) {
+            Ok(value) -> value
+            Error(_) -> EField(base, field_name)
+          }
+        })
+      use #(ctor_t, st) <- result_try(infer_ctor(env, st, name, args))
+      let ret = texpr.type_of(ctor_t)
+      let typed_args = case ctor_t {
+        texpr.TCtor(_, typed_args, _) -> typed_args
+        _ -> []
+      }
+      let indexed =
+        list.index_map(field_names, fn(field_name, index) {
+          #(field_name, index)
+        })
+      let typed_fields =
+        list.filter_map(fields, fn(field) {
+          let #(label, _) = field
+          case list.find(indexed, fn(pair) {
+            let #(field_name, _) = pair
+            field_name == label
+          }) {
+            Ok(pair) -> {
+              let #(_, index) = pair
+              case list.drop(typed_args, index) {
+                [typed, ..] -> Ok(#(label, typed))
+                [] -> Error(Nil)
+              }
+            }
+            Error(_) -> Error(Nil)
+          }
+        })
+      Ok(#(texpr.TUpdate(name, base_t, typed_fields, ret), st))
     }
   }
 }
