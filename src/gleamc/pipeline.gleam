@@ -100,7 +100,7 @@ fn cascade(modules: List(#(String, Module))) {
   ))
   let t = mark("checker", t)
   use ir_module <- result.try(map_err(
-    lower.lower_module(checked.module, checked.signatures, checked.ctors),
+    lower.lower_module(checked.typed, checked.signatures, checked.ctors),
     lower.describe_error,
   ))
   let t = mark("lower", t)

@@ -8,7 +8,7 @@ fn lower_text(source: String) -> String {
   let assert Ok(module) = parser.parse(source)
   let assert Ok(checked) = checker.check(module)
   let assert Ok(ir_module) =
-    lower.lower_module(checked.module, checked.signatures, checked.ctors)
+    lower.lower_module(checked.typed, checked.signatures, checked.ctors)
   ir.to_text(ir_module)
 }
 

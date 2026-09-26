@@ -11,16 +11,14 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleamc/ast.{
-  type Arm, type Expr, type Function, type Module, type Pattern, type Statement,
-  type Type, Arm, DExternal, DFunction, EBinop, EBitArray, EBlock, EBool, ECall,
-  ECase, EClosure, ECtor, EEnvGet, EField, EFloat, EInt, ELabelled, ELambda, ENil,
-  EPanic, EString, ETuple, EUnop, EUpdate, EVar, Let, Module, PAs, PBitArray,
-  PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard,
-  Stmt, TApp, TBool, TFun, TInt, TNamed, TNil, TString, TTuple, buffer_elem_name,
+  type Pattern, type Type, PAs, PBitArray, PBool, PCtor, PFloat, PInt, PLabelled,
+  PNil, PString, PTuple, PVar, PWildcard, TApp, TBool, TFun, TInt, TNamed, TNil,
+  TString, TTuple, buffer_elem_name,
 }
 import gleamc/checker
 import gleamc/infer
 import gleamc/ir
+import gleamc/tmono
 
 pub type LowerError {
   LowerError(message: String)
@@ -105,25 +103,21 @@ fn env_lookup(env, name) {
   }
 }
 
-fn infer(b: Builder, expr: Expr) -> Type {
-  let assert Ok(ty) = checker.infer(b.tenv, b.signatures, b.ctors, expr)
-  ty
-}
-
 // ---------------------------------------------------------------------------
 // module / functions
 // ---------------------------------------------------------------------------
 
 pub fn lower_module(
-  module: Module,
+  module: tmono.TModule,
   signatures: Dict(String, checker.Signature),
   ctors: Dict(String, checker.CtorInfo),
 ) -> Result(ir.Module, LowerError) {
-  let Module(definitions) = module
+  let tmono.TModule(definitions) = module
   let externals =
     list.fold(definitions, dict.new(), fn(acc, definition) {
       case definition {
-        DExternal(external) -> dict.insert(acc, external.name, external.symbol)
+        tmono.TDExternal(external) ->
+          dict.insert(acc, external.name, external.symbol)
         _ -> acc
       }
     })
@@ -131,7 +125,7 @@ pub fn lower_module(
     list.map(
       list.filter_map(definitions, fn(definition) {
         case definition {
-          DFunction(function) -> Ok(function)
+          tmono.TDFunction(function) -> Ok(function)
           _ -> Error(Nil)
         }
       }),
@@ -157,7 +151,7 @@ fn sequence_loop(results, acc) {
 }
 
 fn lower_function(
-  function: Function,
+  function: tmono.TFunction,
   signatures,
   ctors,
   externals,
@@ -205,10 +199,10 @@ fn lower_function(
   ))
 }
 
-fn body_statements(body: Expr) -> List(Statement) {
+fn body_statements(body: tmono.TExpr) -> List(tmono.TStatement) {
   case body {
-    EBlock(statements) -> statements
-    _ -> [Stmt(body)]
+    tmono.TBlock(statements, _) -> statements
+    _ -> [tmono.TStmt(body)]
   }
 }
 
@@ -218,18 +212,18 @@ fn body_statements(body: Expr) -> List(Statement) {
 
 fn lower_block(
   b: Builder,
-  statements: List(Statement),
+  statements: List(tmono.TStatement),
 ) -> Result(#(ir.Operand, Builder), LowerError) {
   case statements {
     [] -> Ok(#(ir.Lit(ir.LUnit), b))
-    [Stmt(expr)] -> lower_expr(b, expr)
-    [Let(pattern, value), ..rest] -> {
+    [tmono.TStmt(expr)] -> lower_expr(b, expr)
+    [tmono.TLet(pattern, value), ..rest] -> {
       use #(operand, b1) <- result.try(lower_expr(b, value))
-      let ty = infer(b, value)
+      let ty = tmono.type_of(value)
       use b2 <- result.try(bind_let(b1, pattern, operand, ty))
       lower_block(b2, rest)
     }
-    [Stmt(expr), ..rest] -> {
+    [tmono.TStmt(expr), ..rest] -> {
       use #(_, b1) <- result.try(lower_expr(b, expr))
       lower_block(b1, rest)
     }
@@ -238,18 +232,18 @@ fn lower_block(
 
 fn lower_tail_block(
   b: Builder,
-  statements: List(Statement),
+  statements: List(tmono.TStatement),
 ) -> Result(Builder, LowerError) {
   case statements {
     [] -> Ok(end_block(b, ir.Ret(ir.Lit(ir.LUnit))))
-    [Let(pattern, value), ..rest] -> {
+    [tmono.TLet(pattern, value), ..rest] -> {
       use #(operand, b1) <- result.try(lower_expr(b, value))
-      let ty = infer(b, value)
+      let ty = tmono.type_of(value)
       use b2 <- result.try(bind_let(b1, pattern, operand, ty))
       lower_tail_block(b2, rest)
     }
-    [Stmt(expr)] -> lower_tail(b, expr)
-    [Stmt(expr), ..rest] -> {
+    [tmono.TStmt(expr)] -> lower_tail(b, expr)
+    [tmono.TStmt(expr), ..rest] -> {
       use #(_, b1) <- result.try(lower_expr(b, expr))
       lower_tail_block(b1, rest)
     }
@@ -259,28 +253,31 @@ fn lower_tail_block(
 /// Lowers an expression in tail position: a direct call becomes a `Tailcall`
 /// (self or mutual); `case`/blocks recurse in tail position; anything else is
 /// a normal expression + `Ret`.
-fn lower_tail(b: Builder, expr: Expr) -> Result(Builder, LowerError) {
+fn lower_tail(b: Builder, expr: tmono.TExpr) -> Result(Builder, LowerError) {
   case expr {
-    ECall(EVar(name), args) ->
-      case env_lookup(b.env, name) {
-        // Direct call to a top-level function.
-        Error(_) -> {
-          use #(operands, b1) <- result.try(lower_args_expect(
-            b,
-            signature_param_types(b, name),
-            order_by_params(b, name, args),
-          ))
-          Ok(end_block(b1, ir.Tailcall(name, operands)))
-        }
-        // Local function value: tail call through it.
-        Ok(_) -> lower_tail_indirect(b, EVar(name), args)
+    tmono.TCall(fun, args, _) ->
+      case fun {
+        tmono.TVar(name, _) ->
+          case env_lookup(b.env, name) {
+            // Direct call to a top-level function.
+            Error(_) -> {
+              use #(operands, b1) <- result.try(lower_args_expect(
+                b,
+                signature_param_types(b, name),
+                order_by_params(b, name, args),
+              ))
+              Ok(end_block(b1, ir.Tailcall(name, operands)))
+            }
+            // Local function value: tail call through it.
+            Ok(_) -> lower_tail_indirect(b, fun, args)
+          }
+        // A module function (`int.to_string`, ...) is a builtin, not a value.
+        tmono.TField(tmono.TVar(_, _), _, _) -> lower_tail_ret(b, expr)
+        // Any other callee is a function value: tail call it directly in the IR.
+        _ -> lower_tail_indirect(b, fun, args)
       }
-    // A module function (`int.to_string`, ...) is a builtin, not a value.
-    ECall(EField(EVar(_), _), _) -> lower_tail_ret(b, expr)
-    // Any other callee is a function value: tail call it directly in the IR.
-    ECall(fun, args) -> lower_tail_indirect(b, fun, args)
-    EBlock(statements) -> lower_tail_block(b, statements)
-    ECase(subject, arms) -> lower_tail_case(b, subject, arms)
+    tmono.TBlock(statements, _) -> lower_tail_block(b, statements)
+    tmono.TCase(subject, arms, _) -> lower_tail_case(b, subject, arms)
     _ -> lower_tail_ret(b, expr)
   }
 }
@@ -296,17 +293,17 @@ fn lower_tail_indirect(b: Builder, fun, args) {
   Ok(end_block(b2, ir.TailcallIndirect(fval, operands)))
 }
 
-fn lower_tail_ret(b: Builder, expr: Expr) -> Result(Builder, LowerError) {
+fn lower_tail_ret(b: Builder, expr: tmono.TExpr) -> Result(Builder, LowerError) {
   use #(value, b1) <- result.try(lower_expr(b, expr))
   Ok(end_block(b1, ir.Ret(value)))
 }
 
 fn lower_tail_case(
   b: Builder,
-  subject: Expr,
-  arms: List(Arm),
+  subject: tmono.TExpr,
+  arms: List(tmono.TArm),
 ) -> Result(Builder, LowerError) {
-  let subject_ty = infer(b, subject)
+  let subject_ty = tmono.type_of(subject)
   let case_env = b.env
   let case_tenv = b.tenv
   use #(subject_op, b0) <- result.try(lower_expr(b, subject))
@@ -344,7 +341,7 @@ fn lower_tail_arms(
 ) -> Result(Builder, LowerError) {
   case arms, labels {
     [], _ -> Ok(b)
-    [Arm(pattern, guard, body), ..rest_arms],
+    [tmono.TArm(pattern, guard, body), ..rest_arms],
       [#(test_label, body_label), ..rest_labels]
     -> {
       let next = case rest_labels {
@@ -532,35 +529,33 @@ fn bind_tuple_let(
 
 fn lower_expr(
   b: Builder,
-  expr: Expr,
+  expr: tmono.TExpr,
 ) -> Result(#(ir.Operand, Builder), LowerError) {
   case expr {
-    EInt(value) -> Ok(#(ir.Lit(ir.LInt(value)), b))
-    EFloat(value) -> Ok(#(ir.Lit(ir.LFloat(value)), b))
-    EBool(value) -> Ok(#(ir.Lit(ir.LBool(value)), b))
-    ENil -> Ok(#(ir.Lit(ir.LUnit), b))
-    EString(value) -> {
+    tmono.TInt(value, _) -> Ok(#(ir.Lit(ir.LInt(value)), b))
+    tmono.TFloat(value, _) -> Ok(#(ir.Lit(ir.LFloat(value)), b))
+    tmono.TBool(value, _) -> Ok(#(ir.Lit(ir.LBool(value)), b))
+    tmono.TNil(_) -> Ok(#(ir.Lit(ir.LUnit), b))
+    tmono.TString(value, _) -> {
       let #(dest, b1) = fresh_local(b, "str", TString)
       Ok(#(ir.Var(dest), emit(b1, ir.OpConst(dest, ir.LString(value)))))
     }
-    EVar(name) ->
+    tmono.TVar(name, _) ->
       case env_lookup(b.env, name) {
         Ok(#(operand, _)) -> Ok(#(operand, b))
         Error(_) -> lower_fn_value(b, name)
       }
-    ETuple(elements) -> {
+    tmono.TTuple(elements, ty) -> {
       use #(operands, b1) <- result.try(lower_args(b, elements))
-      let ty = infer(b, expr)
       let #(dest, b2) = fresh_local(b1, "tuple", ty)
       Ok(#(ir.Var(dest), emit(b2, ir.OpTuple(dest, operands, ty))))
     }
-    EBitArray(elements) -> {
+    tmono.TBitArray(elements, ty) -> {
       use #(operands, b1) <- result.try(lower_args(b, elements))
-      let ty = infer(b, expr)
       let #(dest, b2) = fresh_local(b1, "bitarray", ty)
       Ok(#(ir.Var(dest), emit(b2, ir.OpBitArray(dest, operands, ty))))
     }
-    ECtor(name, args) -> {
+    tmono.TCtor(name, args, ty) -> {
       use ordered <- result.try(order_exprs(ctor_field_names(b, name), args))
       use #(operands, b1) <- result.try(lower_args_expect(
         b,
@@ -568,38 +563,35 @@ fn lower_expr(
         ordered,
       ))
       let type_name = ctor_type_name(b, name)
-      let ty = infer(b, expr)
       let #(dest, b2) = fresh_local(b1, "ctor", ty)
       Ok(#(
         ir.Var(dest),
         emit(b2, ir.OpCtor(dest, name, type_name, operands, ty)),
       ))
     }
-    EUnop(op, operand) -> {
+    tmono.TUnop(op, operand, ty) -> {
       use #(operand_op, b1) <- result.try(lower_expr(b, operand))
-      let ty = infer(b, expr)
       let #(dest, b2) = fresh_local(b1, "unop", ty)
       Ok(#(ir.Var(dest), emit(b2, ir.OpUnop(dest, op, operand_op))))
     }
-    EBinop(op, left, right) -> {
+    tmono.TBinop(op, left, right, ty) -> {
       use #(left_op, b1) <- result.try(lower_expr(b, left))
       use #(right_op, b2) <- result.try(lower_expr(b1, right))
-      let ty = infer(b, expr)
       let #(dest, b3) = fresh_local(b2, "binop", ty)
       Ok(#(ir.Var(dest), emit(b3, ir.OpBinop(dest, op, left_op, right_op))))
     }
-    ECall(fun, args) -> lower_call(b, fun, args)
-    EBlock(statements) -> lower_block(b, statements)
-    ECase(subject, arms) -> lower_case(b, subject, arms)
-    EField(obj, name) -> lower_field(b, obj, name)
-    ELabelled(_, value) -> lower_expr(b, value)
-    ELambda(_, _) -> Error(LowerError("lambda not lifted before lowering"))
-    EClosure(code, captures, env_ty, fn_ty) ->
+    tmono.TCall(fun, args, ty) -> lower_call(b, fun, args, ty)
+    tmono.TBlock(statements, _) -> lower_block(b, statements)
+    tmono.TCase(subject, arms, ty) -> lower_case(b, subject, arms, ty)
+    tmono.TField(obj, name, _) -> lower_field(b, obj, name)
+    tmono.TLabelled(_, value, _) -> lower_expr(b, value)
+    tmono.TLambda(_, _, _) ->
+      Error(LowerError("lambda not lifted before lowering"))
+    tmono.TClosure(code, captures, env_ty, fn_ty, _) ->
       lower_closure(b, code, captures, env_ty, fn_ty)
-    EUpdate(_, _, _) ->
+    tmono.TUpdate(_, _, _, _) ->
       Error(LowerError("record update must be desugared before lowering"))
-    EPanic(message, _) -> {
-      let ty = infer(b, expr)
+    tmono.TPanic(message, ty) -> {
       let #(dest, b1) = fresh_local(b, "panic", ty)
       let #(msg_dest, b2) = fresh_local(b1, "panic_msg", TString)
       let b3 = emit(b2, ir.OpConst(msg_dest, ir.LString(message)))
@@ -608,7 +600,7 @@ fn lower_expr(
         emit(b3, ir.OpBuiltin(dest, "panic", [ir.Var(msg_dest)], ty)),
       ))
     }
-    EEnvGet(env_ty, index, ty) -> {
+    tmono.TEnvGet(env_ty, index, ty) -> {
       let #(dest, b1) = fresh_local(b, "cap", ty)
       Ok(#(ir.Var(dest), emit(b1, ir.OpEnvGet(dest, env_ty, index, ty))))
     }
@@ -632,7 +624,7 @@ fn lower_closure(
 
 fn lower_field(b, obj, name) -> Result(#(ir.Operand, Builder), LowerError) {
   use #(obj_op, b1) <- result.try(lower_expr(b, obj))
-  let obj_ty = infer(b, obj)
+  let obj_ty = tmono.type_of(obj)
   use #(ctor, index, field_ty) <- result.try(field_lookup(b1, obj_ty, name))
   let #(dest, b2) = fresh_local(b1, "field", field_ty)
   Ok(#(ir.Var(dest), emit(b2, ir.OpField(dest, obj_op, ctor, index, field_ty))))
@@ -692,11 +684,11 @@ fn ctor_field_names(b: Builder, name: String) -> List(String) {
   }
 }
 
-fn empty_expr_slots(names: List(String)) -> List(Option(Expr)) {
+fn empty_expr_slots(names: List(String)) -> List(Option(tmono.TExpr)) {
   list.map(names, fn(_) { None })
 }
 
-fn order_exprs(names, args) -> Result(List(Expr), LowerError) {
+fn order_exprs(names, args) -> Result(List(tmono.TExpr), LowerError) {
   let slots = empty_expr_slots(names)
   use filled <- result.try(fill_exprs(names, args, slots, 0))
   case collect_exprs(filled, []) {
@@ -710,12 +702,12 @@ fn fill_exprs(
   args,
   slots,
   next_pos,
-) -> Result(List(Option(Expr)), LowerError) {
+) -> Result(List(Option(tmono.TExpr)), LowerError) {
   case args {
     [] -> Ok(slots)
     [arg, ..rest] ->
       case arg {
-        ELabelled(label, value) ->
+        tmono.TLabelled(label, value, _) ->
           case index_of(names, label) {
             Error(_) -> Error(LowerError("unknown argument `" <> label <> "`"))
             Ok(index) ->
@@ -792,10 +784,14 @@ fn set_slot(slots, index, value) {
   }
 }
 
-fn lower_call(b, fun, args) -> Result(#(ir.Operand, Builder), LowerError) {
-  let ret_ty = infer(b, ECall(fun, args))
+fn lower_call(
+  b: Builder,
+  fun,
+  args,
+  ret_ty,
+) -> Result(#(ir.Operand, Builder), LowerError) {
   case fun {
-    EVar(name) ->
+    tmono.TVar(name, ty) ->
       case dict.get(b.externals, name) {
         // `@external`: call the runtime symbol directly. The name has no dot,
         // so the backend uses it verbatim instead of the `Gleamc_<module>_...`
@@ -814,7 +810,7 @@ fn lower_call(b, fun, args) -> Result(#(ir.Operand, Builder), LowerError) {
         Error(_) ->
           case env_lookup(b.env, name) {
             Ok(_) -> {
-              use #(fval, b1) <- result.try(lower_expr(b, EVar(name)))
+              use #(fval, b1) <- result.try(lower_expr(b, tmono.TVar(name, ty)))
               use #(operands, b2) <- result.try(lower_args(b1, args))
               let #(dest, b3) = fresh_local(b2, "callind", ret_ty)
               Ok(#(
@@ -836,7 +832,7 @@ fn lower_call(b, fun, args) -> Result(#(ir.Operand, Builder), LowerError) {
             }
           }
       }
-    EField(EVar(module), name) -> {
+    tmono.TField(tmono.TVar(module, _), name, _) -> {
       let builtin = module <> "." <> name
       case is_suspending(builtin) {
         // Async host call: starts an internal `Future` and suspends; the
@@ -932,7 +928,7 @@ fn lower_fn_value(
   }
 }
 
-fn order_by_params(b: Builder, name: String, args) -> List(Expr) {
+fn order_by_params(b: Builder, name: String, args) -> List(tmono.TExpr) {
   case dict.get(b.signatures, name) {
     Ok(checker.Signature(params, _)) -> {
       let names =
@@ -1013,7 +1009,11 @@ fn is_buffer_like(ty: Type) -> Bool {
 /// its element type from the expected type (a constructor field).
 fn lower_expect(b, expected, expr) -> Result(#(ir.Operand, Builder), LowerError) {
   case expr {
-    ECall(EField(EVar("buffer"), "new"), args) ->
+    tmono.TCall(
+      tmono.TField(tmono.TVar("buffer", _), "new", _),
+      args,
+      _,
+    ) ->
       case is_buffer_like(expected) {
         True -> {
           use #(operands, b1) <- result.try(lower_args(b, args))
@@ -1040,9 +1040,13 @@ fn ctor_type_name(b: Builder, name: String) -> String {
 // case expressions (decision tree: nested patterns tested incrementally)
 // ---------------------------------------------------------------------------
 
-fn lower_case(b, subject, arms) -> Result(#(ir.Operand, Builder), LowerError) {
-  let result_ty = infer(b, ECase(subject, arms))
-  let subject_ty = infer(b, subject)
+fn lower_case(
+  b: Builder,
+  subject,
+  arms,
+  result_ty,
+) -> Result(#(ir.Operand, Builder), LowerError) {
+  let subject_ty = tmono.type_of(subject)
   let case_env = b.env
   let case_tenv = b.tenv
   use #(subject_op, b0) <- result.try(lower_expr(b, subject))
@@ -1105,7 +1109,7 @@ fn lower_arms(
 ) -> Result(Builder, LowerError) {
   case arms, labels {
     [], _ -> Ok(b)
-    [Arm(pattern, guard, body), ..rest_arms],
+    [tmono.TArm(pattern, guard, body), ..rest_arms],
       [#(test_label, body_label), ..rest_labels]
     -> {
       let next = case rest_labels {

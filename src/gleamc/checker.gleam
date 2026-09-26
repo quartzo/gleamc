@@ -20,6 +20,7 @@ import gleamc/ast.{
   PTuple, PVar, PWildcard, Stmt, TApp, TBool, TFloat, TFun, TInt, TNamed, TNil,
   TString, TTuple, TVar, Variant, buffer_elem_name, type_of_mangled,
 }
+import gleamc/tmono
 
 pub type Signature {
   Signature(params: List(#(String, Type)), ret: Type)
@@ -32,6 +33,10 @@ pub type CtorInfo {
 pub type Checked {
   Checked(
     module: Module,
+    /// The same module with every function body elaborated into a typed
+    /// monomorphic AST, so downstream passes read types instead of
+    /// re-inferring.
+    typed: tmono.TModule,
     signatures: Dict(String, Signature),
     ctors: Dict(String, CtorInfo),
   )
@@ -50,7 +55,8 @@ pub fn check(module: Module) -> Result(Checked, CheckError) {
   let Module(defs) = module
   let #(signatures, ctors) = collect(defs, dict.new(), dict.new())
   case check_defs(defs, signatures, ctors) {
-    Ok(_) -> Ok(Checked(module, signatures, ctors))
+    Ok(typed_defs) ->
+      Ok(Checked(module, tmono.TModule(typed_defs), signatures, ctors))
     Error(err) -> Error(err)
   }
 }
@@ -79,13 +85,32 @@ fn collect(defs, signatures, ctors) {
 
 fn check_defs(defs, signatures, ctors) {
   case defs {
-    [] -> Ok(Nil)
-    [DFunction(function), ..rest] ->
-      case check_function(function, signatures, ctors) {
-        Ok(_) -> check_defs(rest, signatures, ctors)
-        Error(_) as error -> error
-      }
-    [_, ..rest] -> check_defs(rest, signatures, ctors)
+    [] -> Ok([])
+    [DFunction(function), ..rest] -> {
+      use typed <- result.try(check_function(function, signatures, ctors))
+      use rest_typed <- result.try(check_defs(rest, signatures, ctors))
+      Ok([tmono.TDFunction(typed), ..rest_typed])
+    }
+    [DExternal(external), ..rest] -> {
+      use rest_typed <- result.try(check_defs(rest, signatures, ctors))
+      Ok([tmono.TDExternal(external), ..rest_typed])
+    }
+    [DConst(name, value), ..rest] -> {
+      use rest_typed <- result.try(check_defs(rest, signatures, ctors))
+      Ok([tmono.TDConst(name, value), ..rest_typed])
+    }
+    [DCustomType(custom), ..rest] -> {
+      use rest_typed <- result.try(check_defs(rest, signatures, ctors))
+      Ok([tmono.TDCustomType(custom), ..rest_typed])
+    }
+    [DTypeAlias(is_pub, name, generics, ty), ..rest] -> {
+      use rest_typed <- result.try(check_defs(rest, signatures, ctors))
+      Ok([tmono.TDTypeAlias(is_pub, name, generics, ty), ..rest_typed])
+    }
+    [DImport(imp), ..rest] -> {
+      use rest_typed <- result.try(check_defs(rest, signatures, ctors))
+      Ok([tmono.TDImport(imp), ..rest_typed])
+    }
   }
 }
 
@@ -101,20 +126,24 @@ fn add_variants(variants, ctorname, acc) {
   }
 }
 
-fn check_function(function, signatures, ctors) {
-  let Function(_, name, params, ret, body, line) = function
+fn check_function(function, signatures, ctors) -> Result(tmono.TFunction, CheckError) {
+  let Function(is_pub, name, params, ret, body, line) = function
   let env =
     list.map(params, fn(param) {
       let #(param_name, ty) = param
       #(param_name, ty)
     })
-  use body_ty <- result.try(with_function(
+  use body_t <- result.try(with_function(
     name,
     line,
-    infer(env, signatures, ctors, body),
+    infer_t(env, signatures, ctors, body),
   ))
-  use _ <- result.try(unify(ret, body_ty, "in function `" <> name <> "`"))
-  Ok(Nil)
+  use _ <- result.try(unify(
+    ret,
+    tmono.type_of(body_t),
+    "in function `" <> name <> "`",
+  ))
+  Ok(tmono.TFunction(is_pub, name, params, ret, body_t, line))
 }
 
 fn with_function(name, line, result) {
@@ -144,30 +173,45 @@ fn locate(line, name, message) {
 pub type Env =
   List(#(String, Type))
 
+/// Thin wrapper preserving the original `infer` interface: elaborate to a
+/// typed monomorphic expression, then project its type.
 pub fn infer(
   env: Env,
   signatures: Dict(String, Signature),
   ctors: Dict(String, CtorInfo),
   expr: Expr,
 ) -> Result(Type, CheckError) {
+  use typed <- result.try(infer_t(env, signatures, ctors, expr))
+  Ok(tmono.type_of(typed))
+}
+
+/// Type-check an expression, elaborating it into a typed monomorphic AST.
+pub fn infer_t(
+  env: Env,
+  signatures: Dict(String, Signature),
+  ctors: Dict(String, CtorInfo),
+  expr: Expr,
+) -> Result(tmono.TExpr, CheckError) {
   case expr {
-    EInt(_) -> Ok(TInt)
-    EFloat(_) -> Ok(TFloat)
-    EString(_) -> Ok(TString)
-    EBool(_) -> Ok(TBool)
-    ENil -> Ok(TNil)
+    EInt(n) -> Ok(tmono.TInt(n, TInt))
+    EFloat(f) -> Ok(tmono.TFloat(f, TFloat))
+    EString(s) -> Ok(tmono.TString(s, TString))
+    EBool(b) -> Ok(tmono.TBool(b, TBool))
+    ENil -> Ok(tmono.TNil(TNil))
     EVar(name) ->
       case lookup(env, name) {
-        Ok(ty) -> Ok(ty)
+        Ok(ty) -> Ok(tmono.TVar(name, ty))
         Error(_) ->
           case dict.get(signatures, name) {
-            Ok(Signature(params, ret)) -> Ok(fn_type_of(params, ret))
+            Ok(Signature(params, ret)) ->
+              Ok(tmono.TVar(name, fn_type_of(params, ret)))
             Error(_) -> Error(CheckError("unknown variable `" <> name <> "`"))
           }
       }
     ETuple(elements) -> {
-      use types <- result.try(infer_all(env, signatures, ctors, elements))
-      Ok(TTuple(types))
+      use typed <- result.try(infer_all(env, signatures, ctors, elements))
+      let types = list.map(typed, tmono.type_of)
+      Ok(tmono.TTuple(typed, TTuple(types)))
     }
     EUnop(op, operand) -> infer_unop(env, signatures, ctors, op, operand)
     EBinop(op, left, right) ->
@@ -177,24 +221,36 @@ pub fn infer(
     ECtor(name, args) -> infer_ctor(env, signatures, ctors, name, args)
     ECall(fun, args) -> infer_call(env, signatures, ctors, fun, args)
     EField(obj, name) -> {
-      use obj_ty <- result.try(infer(env, signatures, ctors, obj))
-      infer_field(obj_ty, name, ctors)
+      use obj_t <- result.try(infer_t(env, signatures, ctors, obj))
+      use field_ty <- result.try(infer_field(tmono.type_of(obj_t), name, ctors))
+      Ok(tmono.TField(obj_t, name, field_ty))
     }
-    ELabelled(_, value) -> infer(env, signatures, ctors, value)
+    ELabelled(name, value) -> {
+      use value_t <- result.try(infer_t(env, signatures, ctors, value))
+      Ok(tmono.TLabelled(name, value_t, tmono.type_of(value_t)))
+    }
     ELambda(_, _) -> Error(CheckError("lambda not lifted before lowering"))
-    EClosure(_, _, _, fn_ty) -> Ok(fn_ty)
-    EEnvGet(_, _, ty) -> Ok(ty)
-    EPanic(_, ty) -> Ok(ty)
+    EClosure(code, captures, env_ty, fn_ty) -> {
+      use typed_captures <- result.try(infer_all(
+        env,
+        signatures,
+        ctors,
+        captures,
+      ))
+      Ok(tmono.TClosure(code, typed_captures, env_ty, fn_ty, fn_ty))
+    }
+    EEnvGet(env_ty, index, ty) -> Ok(tmono.TEnvGet(env_ty, index, ty))
+    EPanic(message, ty) -> Ok(tmono.TPanic(message, ty))
     EUpdate(_, _, _) ->
       Error(CheckError("record update must be desugared before checking"))
     EBitArray(elements) -> {
-      use types <- result.try(infer_all(env, signatures, ctors, elements))
+      use typed <- result.try(infer_all(env, signatures, ctors, elements))
       use _ <- result.try(check_types(
-        list.repeat(TInt, list.length(types)),
-        types,
+        list.repeat(TInt, list.length(typed)),
+        list.map(typed, tmono.type_of),
         "bit array segment",
       ))
-      Ok(TNamed("BitArray"))
+      Ok(tmono.TBitArray(typed, TNamed("BitArray")))
     }
   }
 }
@@ -227,9 +283,9 @@ fn infer_all(env, signatures, ctors, exprs) {
   case exprs {
     [] -> Ok([])
     [expr, ..rest] -> {
-      use ty <- result.try(infer(env, signatures, ctors, expr))
-      use types <- result.try(infer_all(env, signatures, ctors, rest))
-      Ok([ty, ..types])
+      use typed <- result.try(infer_t(env, signatures, ctors, expr))
+      use typed_rest <- result.try(infer_all(env, signatures, ctors, rest))
+      Ok([typed, ..typed_rest])
     }
   }
 }
@@ -260,13 +316,17 @@ fn infer_expect(env, signatures, ctors, expected, expr) {
     ECall(EField(EVar("buffer"), "new"), args) ->
       case buffer_elem_type(expected) {
         Ok(_) -> {
-          use arg_types <- result.try(infer_all(env, signatures, ctors, args))
-          use _ <- result.try(check_types([TInt], arg_types, "in `buffer.new`"))
-          Ok(expected)
+          use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+          use _ <- result.try(check_types(
+            [TInt],
+            list.map(typed_args, tmono.type_of),
+            "in `buffer.new`",
+          ))
+          Ok(builtin_call("buffer", "new", [TInt], expected, typed_args))
         }
-        Error(_) -> infer(env, signatures, ctors, expr)
+        Error(_) -> infer_t(env, signatures, ctors, expr)
       }
-    _ -> infer(env, signatures, ctors, expr)
+    _ -> infer_t(env, signatures, ctors, expr)
   }
 }
 
@@ -285,12 +345,13 @@ pub fn buffer_elem_type(ty: Type) -> Result(Type, Nil) {
 }
 
 fn infer_unop(env, signatures, ctors, op, operand) {
-  use ty <- result.try(infer(env, signatures, ctors, operand))
+  use operand_t <- result.try(infer_t(env, signatures, ctors, operand))
+  let ty = tmono.type_of(operand_t)
   case op {
     "-" ->
       case ty {
-        TInt -> Ok(TInt)
-        TFloat -> Ok(TFloat)
+        TInt -> Ok(tmono.TUnop(op, operand_t, TInt))
+        TFloat -> Ok(tmono.TUnop(op, operand_t, TFloat))
         _ ->
           Error(CheckError(
             "`-` expects Int or Float, found `" <> describe_type(ty) <> "`",
@@ -298,7 +359,7 @@ fn infer_unop(env, signatures, ctors, op, operand) {
       }
     "-." ->
       case ty {
-        TFloat -> Ok(TFloat)
+        TFloat -> Ok(tmono.TUnop(op, operand_t, TFloat))
         _ ->
           Error(CheckError(
             "`-.` expects Float, found `" <> describe_type(ty) <> "`",
@@ -306,7 +367,7 @@ fn infer_unop(env, signatures, ctors, op, operand) {
       }
     "!" ->
       case ty {
-        TBool -> Ok(TBool)
+        TBool -> Ok(tmono.TUnop(op, operand_t, TBool))
         _ ->
           Error(CheckError(
             "`!` expects Bool, found `" <> describe_type(ty) <> "`",
@@ -317,18 +378,21 @@ fn infer_unop(env, signatures, ctors, op, operand) {
 }
 
 fn infer_binop(env, signatures, ctors, op, left, right) {
-  use left_ty <- result.try(infer(env, signatures, ctors, left))
-  use right_ty <- result.try(infer(env, signatures, ctors, right))
+  use left_t <- result.try(infer_t(env, signatures, ctors, left))
+  use right_t <- result.try(infer_t(env, signatures, ctors, right))
+  let left_ty = tmono.type_of(left_t)
+  let right_ty = tmono.type_of(right_t)
+  let wrap = fn(ty) { tmono.TBinop(op, left_t, right_t, ty) }
   case op {
     "+" | "-" | "*" | "/" | "%" ->
       case left_ty, right_ty {
-        TInt, TInt -> Ok(TInt)
+        TInt, TInt -> Ok(wrap(TInt))
         _, _ ->
           Error(binary_error(op, left_ty, right_ty, "expects Int on both sides"))
       }
     "+." | "-." | "*." | "/." ->
       case left_ty, right_ty {
-        TFloat, TFloat -> Ok(TFloat)
+        TFloat, TFloat -> Ok(wrap(TFloat))
         _, _ ->
           Error(binary_error(
             op,
@@ -339,19 +403,19 @@ fn infer_binop(env, signatures, ctors, op, left, right) {
       }
     "==" | "!=" ->
       case type_equal(left_ty, right_ty) {
-        True -> Ok(TBool)
+        True -> Ok(wrap(TBool))
         False ->
           Error(binary_error(op, left_ty, right_ty, "expects matching sides"))
       }
     "<" | "<=" | ">" | ">=" ->
       case left_ty, right_ty {
-        TInt, TInt -> Ok(TBool)
+        TInt, TInt -> Ok(wrap(TBool))
         _, _ ->
           Error(binary_error(op, left_ty, right_ty, "expects Int on both sides"))
       }
     "<." | "<=." | ">." | ">=." ->
       case left_ty, right_ty {
-        TFloat, TFloat -> Ok(TBool)
+        TFloat, TFloat -> Ok(wrap(TBool))
         _, _ ->
           Error(binary_error(
             op,
@@ -362,7 +426,7 @@ fn infer_binop(env, signatures, ctors, op, left, right) {
       }
     "<>" ->
       case left_ty, right_ty {
-        TString, TString -> Ok(TString)
+        TString, TString -> Ok(wrap(TString))
         _, _ ->
           Error(binary_error(
             op,
@@ -373,7 +437,7 @@ fn infer_binop(env, signatures, ctors, op, left, right) {
       }
     "&&" | "||" ->
       case left_ty, right_ty {
-        TBool, TBool -> Ok(TBool)
+        TBool, TBool -> Ok(wrap(TBool))
         _, _ ->
           Error(binary_error(
             op,
@@ -402,24 +466,55 @@ fn binary_error(op, left_ty, right_ty, hint) {
 
 fn infer_block(env, signatures, ctors, statements) {
   case statements {
-    [] -> Ok(TNil)
-    [Stmt(expr)] -> infer(env, signatures, ctors, expr)
+    [] -> Ok(tmono.TBlock([], TNil))
+    [Stmt(expr)] -> {
+      use expr_t <- result.try(infer_t(env, signatures, ctors, expr))
+      Ok(tmono.TBlock([tmono.TStmt(expr_t)], tmono.type_of(expr_t)))
+    }
     [Let(pattern, value), ..rest] -> {
-      use ty <- result.try(infer(env, signatures, ctors, value))
-      use bindings <- result.try(bind_pattern(pattern, ty, ctors))
-      infer_block(list.append(bindings, env), signatures, ctors, rest)
+      use value_t <- result.try(infer_t(env, signatures, ctors, value))
+      use bindings <- result.try(bind_pattern(pattern, tmono.type_of(value_t), ctors))
+      infer_block_prepend(
+        tmono.TLet(pattern, value_t),
+        list.append(bindings, env),
+        signatures,
+        ctors,
+        rest,
+      )
     }
     [Stmt(expr), ..rest] -> {
-      use _ <- result.try(infer(env, signatures, ctors, expr))
-      infer_block(env, signatures, ctors, rest)
+      use expr_t <- result.try(infer_t(env, signatures, ctors, expr))
+      infer_block_prepend(
+        tmono.TStmt(expr_t),
+        env,
+        signatures,
+        ctors,
+        rest,
+      )
     }
   }
 }
 
+fn infer_block_prepend(statement, env, signatures, ctors, rest) {
+  use rest_t <- result.try(infer_block(env, signatures, ctors, rest))
+  let assert tmono.TBlock(statements, ty) = rest_t
+  Ok(tmono.TBlock([statement, ..statements], ty))
+}
+
 fn infer_case(env, signatures, ctors, subject, arms) {
-  use subject_ty <- result.try(infer(env, signatures, ctors, subject))
+  use subject_t <- result.try(infer_t(env, signatures, ctors, subject))
+  let subject_ty = tmono.type_of(subject_t)
   use _ <- result.try(check_exhaustive(subject_ty, arms, ctors))
-  infer_arms(env, signatures, ctors, subject_ty, arms, None)
+  use inferred <- result.try(infer_arms(
+    env,
+    signatures,
+    ctors,
+    subject_ty,
+    arms,
+    None,
+  ))
+  let #(typed_arms, result_ty) = inferred
+  Ok(tmono.TCase(subject_t, typed_arms, result_ty))
 }
 
 // ---------------------------------------------------------------------------
@@ -598,19 +693,35 @@ fn infer_arms(env, signatures, ctors, subject_ty, arms, acc) {
     [] ->
       case acc {
         None -> Error(CheckError("`case` with no arms"))
-        Some(ty) -> Ok(ty)
+        Some(#(typed_arms, ty)) -> Ok(#(list.reverse(typed_arms), ty))
       }
     [Arm(pattern, guard, body), ..rest] -> {
       use bindings <- result.try(bind_pattern(pattern, subject_ty, ctors))
       let arm_env = list.append(bindings, env)
-      use _ <- result.try(check_guard(guard, arm_env, signatures, ctors))
-      use body_ty <- result.try(infer(arm_env, signatures, ctors, body))
+      use guard_t <- result.try(check_guard(guard, arm_env, signatures, ctors))
+      use body_t <- result.try(infer_t(arm_env, signatures, ctors, body))
+      let arm = tmono.TArm(pattern, guard_t, body_t)
+      let body_ty = tmono.type_of(body_t)
       case acc {
         None ->
-          infer_arms(env, signatures, ctors, subject_ty, rest, Some(body_ty))
-        Some(ty) -> {
+          infer_arms(
+            env,
+            signatures,
+            ctors,
+            subject_ty,
+            rest,
+            Some(#([arm], body_ty)),
+          )
+        Some(#(typed_arms, ty)) -> {
           use _ <- result.try(unify(ty, body_ty, "in `case` arm"))
-          infer_arms(env, signatures, ctors, subject_ty, rest, Some(ty))
+          infer_arms(
+            env,
+            signatures,
+            ctors,
+            subject_ty,
+            rest,
+            Some(#([arm, ..typed_arms], ty)),
+          )
         }
       }
     }
@@ -619,11 +730,11 @@ fn infer_arms(env, signatures, ctors, subject_ty, arms, acc) {
 
 fn check_guard(guard, env, signatures, ctors) {
   case guard {
-    None -> Ok(Nil)
+    None -> Ok(None)
     Some(expr) -> {
-      use ty <- result.try(infer(env, signatures, ctors, expr))
-      use _ <- result.try(unify(TBool, ty, "in `case` guard"))
-      Ok(Nil)
+      use expr_t <- result.try(infer_t(env, signatures, ctors, expr))
+      use _ <- result.try(unify(TBool, tmono.type_of(expr_t), "in `case` guard"))
+      Ok(Some(expr_t))
     }
   }
 }
@@ -643,7 +754,7 @@ fn infer_ctor(env, signatures, ctors, name, args) {
           field_ty
         })
       use ordered <- result.try(order_args(field_names, name, args))
-      use arg_types <- result.try(infer_all_expect(
+      use typed_args <- result.try(infer_all_expect(
         env,
         signatures,
         ctors,
@@ -652,10 +763,10 @@ fn infer_ctor(env, signatures, ctors, name, args) {
       ))
       use _ <- result.try(check_types(
         field_types,
-        arg_types,
+        list.map(typed_args, tmono.type_of),
         "in `" <> name <> "`",
       ))
-      Ok(TNamed(type_name))
+      Ok(tmono.TCtor(name, typed_args, TNamed(type_name)))
     }
   }
 }
@@ -665,7 +776,7 @@ fn infer_call(env, signatures, ctors, fun, args) {
     EVar(name) ->
       case lookup(env, name) {
         Ok(TFun(param_types, ret)) -> {
-          use arg_types <- result.try(infer_all_expect(
+          use typed_args <- result.try(infer_all_expect(
             env,
             signatures,
             ctors,
@@ -674,26 +785,30 @@ fn infer_call(env, signatures, ctors, fun, args) {
           ))
           use _ <- result.try(check_types(
             param_types,
-            arg_types,
+            list.map(typed_args, tmono.type_of),
             "in indirect call to `" <> name <> "`",
           ))
-          Ok(ret)
+          Ok(tmono.TCall(
+            tmono.TVar(name, TFun(param_types, ret)),
+            typed_args,
+            ret,
+          ))
         }
         _ -> infer_named_call(env, signatures, ctors, name, args)
       }
     EField(EVar(module), name) ->
       infer_builtin(env, signatures, ctors, module, name, args)
     _ -> {
-      use fun_ty <- result.try(infer(env, signatures, ctors, fun))
-      case fun_ty {
+      use fun_t <- result.try(infer_t(env, signatures, ctors, fun))
+      case tmono.type_of(fun_t) {
         TFun(param_types, ret) -> {
-          use arg_types <- result.try(infer_all(env, signatures, ctors, args))
+          use typed_args <- result.try(infer_all(env, signatures, ctors, args))
           use _ <- result.try(check_types(
             param_types,
-            arg_types,
+            list.map(typed_args, tmono.type_of),
             "in indirect call",
           ))
-          Ok(ret)
+          Ok(tmono.TCall(fun_t, typed_args, ret))
         }
         _ -> Error(CheckError("callee is not a function"))
       }
@@ -726,7 +841,7 @@ fn infer_named_call(env, signatures, ctors, name, args) {
           param_ty
         })
       use ordered <- result.try(order_args(param_names, name, args))
-      use arg_types <- result.try(infer_all_expect(
+      use typed_args <- result.try(infer_all_expect(
         env,
         signatures,
         ctors,
@@ -735,10 +850,10 @@ fn infer_named_call(env, signatures, ctors, name, args) {
       ))
       use _ <- result.try(check_types(
         param_types,
-        arg_types,
+        list.map(typed_args, tmono.type_of),
         "in call to `" <> name <> "`",
       ))
-      Ok(ret)
+      Ok(tmono.TCall(tmono.TVar(name, fn_type_of(params, ret)), typed_args, ret))
     }
   }
 }
@@ -881,43 +996,86 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
     // `Buffer(a)`: the element type flows from the operand (`get`/`set`/`len`)
     // or from the expected type at the call site (`new`, via `infer_expect`).
     "buffer", "new" -> {
-      use arg_types <- result.try(infer_all(env, signatures, ctors, args))
-      use _ <- result.try(check_types([TInt], arg_types, "in `buffer.new`"))
-      Ok(TApp("Buffer", [TVar("__buffer_elem")]))
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      use _ <- result.try(check_types(
+        [TInt],
+        list.map(typed_args, tmono.type_of),
+        "in `buffer.new`",
+      ))
+      Ok(builtin_call(
+        "buffer",
+        "new",
+        [TInt],
+        TApp("Buffer", [TVar("__buffer_elem")]),
+        typed_args,
+      ))
     }
     "buffer", "len" -> {
-      use arg_types <- result.try(infer_all(env, signatures, ctors, args))
-      case arg_types {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
         [buf] ->
-          case buffer_elem_type(buf) {
-            Ok(_) -> Ok(TInt)
+          case buffer_elem_type(tmono.type_of(buf)) {
+            Ok(_) ->
+              Ok(builtin_call(
+                "buffer",
+                "len",
+                [tmono.type_of(buf)],
+                TInt,
+                typed_args,
+              ))
             Error(_) -> Error(CheckError("buffer.len expects a Buffer"))
           }
         _ -> Error(CheckError("buffer.len expects a Buffer"))
       }
     }
     "buffer", "get" -> {
-      use arg_types <- result.try(infer_all(env, signatures, ctors, args))
-      case arg_types {
-        [buf, TInt] ->
-          case buffer_elem_type(buf) {
-            Ok(elem) -> Ok(elem)
-            Error(_) -> Error(CheckError("buffer.get expects (Buffer(a), Int)"))
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [buf, index] ->
+          case tmono.type_of(index) {
+            TInt ->
+              case buffer_elem_type(tmono.type_of(buf)) {
+                Ok(elem) ->
+                  Ok(builtin_call(
+                    "buffer",
+                    "get",
+                    [tmono.type_of(buf), TInt],
+                    elem,
+                    typed_args,
+                  ))
+                Error(_) ->
+                  Error(CheckError("buffer.get expects (Buffer(a), Int)"))
+              }
+            _ -> Error(CheckError("buffer.get expects (Buffer(a), Int)"))
           }
         _ -> Error(CheckError("buffer.get expects (Buffer(a), Int)"))
       }
     }
     "buffer", "set" -> {
-      use arg_types <- result.try(infer_all(env, signatures, ctors, args))
-      case arg_types {
-        [buf, TInt, value] ->
-          case buffer_elem_type(buf) {
-            Ok(elem) -> {
-              use _ <- result.try(expect_ty(value, elem, "in `buffer.set`"))
-              Ok(buf)
-            }
-            Error(_) ->
-              Error(CheckError("buffer.set expects (Buffer(a), Int, a)"))
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [buf, index, value] ->
+          case tmono.type_of(index) {
+            TInt ->
+              case buffer_elem_type(tmono.type_of(buf)) {
+                Ok(elem) -> {
+                  use _ <- result.try(expect_ty(
+                    tmono.type_of(value),
+                    elem,
+                    "in `buffer.set`",
+                  ))
+                  Ok(builtin_call(
+                    "buffer",
+                    "set",
+                    [tmono.type_of(buf), TInt, elem],
+                    tmono.type_of(buf),
+                    typed_args,
+                  ))
+                }
+                Error(_) ->
+                  Error(CheckError("buffer.set expects (Buffer(a), Int, a)"))
+              }
+            _ -> Error(CheckError("buffer.set expects (Buffer(a), Int, a)"))
           }
         _ -> Error(CheckError("buffer.set expects (Buffer(a), Int, a)"))
       }
@@ -1342,32 +1500,60 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         "string.replace",
       )
     "gleamc", "show" -> {
-      use _ <- result.try(infer_all(env, signatures, ctors, args))
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
       case args {
-        [_] -> Ok(TString)
+        [_] ->
+          Ok(builtin_call(
+            "gleamc",
+            "show",
+            list.map(typed_args, tmono.type_of),
+            TString,
+            typed_args,
+          ))
         _ -> Error(CheckError("gleamc.show expects 1 argument"))
       }
     }
     "gleamc", "hash" -> {
-      use _ <- result.try(infer_all(env, signatures, ctors, args))
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
       case args {
-        [_] -> Ok(TInt)
+        [_] ->
+          Ok(builtin_call(
+            "gleamc",
+            "hash",
+            list.map(typed_args, tmono.type_of),
+            TInt,
+            typed_args,
+          ))
         _ -> Error(CheckError("gleamc.hash expects 1 argument"))
       }
     }
     "io", "debug" -> {
-      use _ <- result.try(infer_all(env, signatures, ctors, args))
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
       case args {
-        [_] -> Ok(TNil)
+        [_] ->
+          Ok(builtin_call(
+            "io",
+            "debug",
+            list.map(typed_args, tmono.type_of),
+            TNil,
+            typed_args,
+          ))
         _ -> Error(CheckError("io.debug expects 1 argument"))
       }
     }
     "gleamc", "key_compare" -> {
-      use arg_types <- result.try(infer_all(env, signatures, ctors, args))
-      case arg_types {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
         [a, b] ->
-          case type_equal(a, b) {
-            True -> Ok(TInt)
+          case type_equal(tmono.type_of(a), tmono.type_of(b)) {
+            True ->
+              Ok(builtin_call(
+                "gleamc",
+                "key_compare",
+                [tmono.type_of(a), tmono.type_of(b)],
+                TInt,
+                typed_args,
+              ))
             False ->
               Error(CheckError("gleamc.key_compare expects matching types"))
           }
@@ -1705,13 +1891,29 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
 
 fn check_builtin(env, signatures, ctors, args, params, ret, label) {
   use _ <- result.try(check_call_arity(label, params, args, label))
-  use arg_types <- result.try(infer_all(env, signatures, ctors, args))
+  use typed_args <- result.try(infer_all(env, signatures, ctors, args))
   use _ <- result.try(check_types(
     params,
-    arg_types,
+    list.map(typed_args, tmono.type_of),
     "in call to `" <> label <> "`",
   ))
-  Ok(ret)
+  let #(module, name) = split_builtin_label(label)
+  Ok(builtin_call(module, name, params, ret, typed_args))
+}
+
+fn split_builtin_label(label) {
+  case string.split(label, ".") {
+    [module, name] -> #(module, name)
+    _ -> #(label, "")
+  }
+}
+
+fn builtin_call(module, name, params, ret, typed_args) {
+  tmono.TCall(
+    tmono.TField(tmono.TVar(module, TNil), name, TFun(params, ret)),
+    typed_args,
+    ret,
+  )
 }
 
 fn check_call_arity(label, params, args, ctx) {
