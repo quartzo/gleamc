@@ -6,7 +6,8 @@ import gleamc/parser
 
 fn lower_text(source: String) -> String {
   let assert Ok(module) = parser.parse(source)
-  let assert Ok(checked) = checker.check(module)
+  let assert Ok(typed) = checker.elaborate(module)
+  let assert Ok(checked) = checker.check(typed)
   let assert Ok(ir_module) =
     lower.lower_module(checked.typed, checked.signatures, checked.ctors)
   ir.to_text(ir_module)

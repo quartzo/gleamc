@@ -5,18 +5,15 @@ import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
-import gleamc/ast.{
-  type Module, Arm, DFunction, EBinop, EBitArray, EBlock, ECall, ECase, EClosure,
-  ECtor, EField, ELabelled, ELambda, ETuple, EUnop, EUpdate, EVar, Let, Module,
-  PBitArray, PCtor, PLabelled, PTuple, Stmt,
-}
+import gleamc/ast.{PBitArray, PCtor, PLabelled, PTuple}
+import gleamc/tmono
 
-pub fn prune(module: Module) -> Module {
-  let Module(definitions) = module
+pub fn prune(module: tmono.TModule) -> tmono.TModule {
+  let tmono.TModule(definitions) = module
   let functions =
     list.filter_map(definitions, fn(definition) {
       case definition {
-        DFunction(function) -> Ok(function.name)
+        tmono.TDFunction(function) -> Ok(function.name)
         _ -> Error(Nil)
       }
     })
@@ -31,7 +28,7 @@ pub fn prune(module: Module) -> Module {
     False ->
       list.filter_map(definitions, fn(definition) {
         case definition {
-          DFunction(function) ->
+          tmono.TDFunction(function) ->
             case function.is_pub {
               True -> Ok(function.name)
               False -> Error(Nil)
@@ -44,10 +41,10 @@ pub fn prune(module: Module) -> Module {
     [] -> module
     _ -> {
       let reachable = wander(roots, definitions, known, dict.new())
-      Module(
+      tmono.TModule(
         list.filter(definitions, fn(definition) {
           case definition {
-            DFunction(function) -> dict.has_key(reachable, function.name)
+            tmono.TDFunction(function) -> dict.has_key(reachable, function.name)
             _ -> True
           }
         }),
@@ -89,7 +86,7 @@ fn refs_in_known(refs, known, acc) {
 fn function_body(definitions, name) {
   case definitions {
     [] -> Error(Nil)
-    [DFunction(function), ..rest] ->
+    [tmono.TDFunction(function), ..rest] ->
       case function.name == name {
         True -> Ok(function.body)
         False -> function_body(rest, name)
@@ -100,38 +97,39 @@ fn function_body(definitions, name) {
 
 fn expr_refs(expr, acc) -> List(String) {
   case expr {
-    EVar(name) -> [name, ..acc]
-    EClosure(code, captures, _, _) ->
+    tmono.TVar(name, _) -> [name, ..acc]
+    tmono.TClosure(code, captures, _, _, _) ->
       list.fold(captures, [drop_prefix(code), ..acc], fn(acc, x) {
         expr_refs(x, acc)
       })
-    EBitArray(elements) ->
+    tmono.TBitArray(elements, _) ->
       list.fold(elements, acc, fn(acc, x) { expr_refs(x, acc) })
-    ETuple(elements) ->
+    tmono.TTuple(elements, _) ->
       list.fold(elements, acc, fn(acc, x) { expr_refs(x, acc) })
-    ECtor(_, args) -> list.fold(args, acc, fn(acc, x) { expr_refs(x, acc) })
-    ECall(fun, args) -> {
+    tmono.TCtor(_, args, _) ->
+      list.fold(args, acc, fn(acc, x) { expr_refs(x, acc) })
+    tmono.TCall(fun, args, _) -> {
       let acc = expr_refs(fun, acc)
       list.fold(args, acc, fn(acc, x) { expr_refs(x, acc) })
     }
-    EBinop(_, left, right) -> expr_refs(right, expr_refs(left, acc))
-    EUnop(_, operand) -> expr_refs(operand, acc)
-    EField(obj, _) -> expr_refs(obj, acc)
-    ELabelled(_, value) -> expr_refs(value, acc)
-    ELambda(_, body) -> expr_refs(body, acc)
-    EUpdate(_, base, fields) -> {
+    tmono.TBinop(_, left, right, _) -> expr_refs(right, expr_refs(left, acc))
+    tmono.TUnop(_, operand, _) -> expr_refs(operand, acc)
+    tmono.TField(obj, _, _) -> expr_refs(obj, acc)
+    tmono.TLabelled(_, value, _) -> expr_refs(value, acc)
+    tmono.TLambda(_, body, _) -> expr_refs(body, acc)
+    tmono.TUpdate(_, base, fields, _) -> {
       let acc = expr_refs(base, acc)
       list.fold(fields, acc, fn(acc, field) {
         let #(_, value) = field
         expr_refs(value, acc)
       })
     }
-    EBlock(statements) ->
+    tmono.TBlock(statements, _) ->
       list.fold(statements, acc, fn(acc, x) { stmt_refs(x, acc) })
-    ECase(subject, arms) -> {
+    tmono.TCase(subject, arms, _) -> {
       let acc = expr_refs(subject, acc)
       list.fold(arms, acc, fn(acc, arm) {
-        let Arm(pattern, guard, body) = arm
+        let tmono.TArm(pattern, guard, body) = arm
         let acc = pattern_refs(pattern, acc)
         let acc = case guard {
           Some(g) -> expr_refs(g, acc)
@@ -146,8 +144,8 @@ fn expr_refs(expr, acc) -> List(String) {
 
 fn stmt_refs(statement, acc) {
   case statement {
-    Let(pattern, value) -> expr_refs(value, pattern_refs(pattern, acc))
-    Stmt(expr) -> expr_refs(expr, acc)
+    tmono.TLet(pattern, value) -> expr_refs(value, pattern_refs(pattern, acc))
+    tmono.TStmt(expr) -> expr_refs(expr, acc)
   }
 }
 

@@ -12,7 +12,7 @@ import gleam/string
 import gleamc/aliases
 import gleamc/async
 import gleamc/ffi
-import gleamc/ast.{type CustomType, type Module, DCustomType, Module}
+import gleamc/ast.{type CustomType, type Module}
 import gleamc/checker
 import gleamc/consts
 import gleamc/dce
@@ -26,6 +26,7 @@ import gleamc/opacity
 import gleamc/ownership
 import gleamc/parser
 import gleamc/qualify
+import gleamc/tmono
 
 /// Single-module convenience (entry module name "").
 pub fn compile_to_llvm(source: String) -> Result(String, String) {
@@ -88,14 +89,15 @@ fn cascade(modules: List(#(String, Module))) {
   // 0. expand type aliases before specialisation
   use merged <- result.try(aliases.expand(merged))
   let t = mark("aliases", t)
-  // 1. monomorphise the generic program (validates via the HM checker)
-  use mono_module <- result.try(mono.monomorphize(merged))
+  // 1. monomorphise the generic program (validates via the HM checker) and
+  // produce the typed monomorphic module
+  use typed_module <- result.try(mono.monomorphize(merged))
   let t = mark("mono", t)
-  let mono_module = dce.prune(mono_module)
+  let typed_module = dce.prune(typed_module)
   let t = mark("dce", t)
-  // 2. the monomorphic backend runs on the specialised AST
+  // 2. the monomorphic backend reads the typed module produced by `mono`
   use checked <- result.try(map_err(
-    checker.check(mono_module),
+    checker.check(typed_module),
     checker.describe_error,
   ))
   let t = mark("checker", t)
@@ -114,14 +116,14 @@ fn cascade(modules: List(#(String, Module))) {
   let t = mark("frame", t)
   let owned = ownership.insert(ir_module, checked.ctors)
   let _ = mark("ownership", t)
-  Ok(#(checked.module, owned, checked.ctors, custom_types_of(checked.module)))
+  Ok(#(typed_module, owned, checked.ctors, custom_types_of(typed_module)))
 }
 
-fn custom_types_of(module: Module) -> List(CustomType) {
-  let Module(definitions) = module
+fn custom_types_of(module: tmono.TModule) -> List(CustomType) {
+  let tmono.TModule(definitions) = module
   list.filter_map(definitions, fn(definition) {
     case definition {
-      DCustomType(custom) -> Ok(custom)
+      tmono.TDCustomType(custom) -> Ok(custom)
       _ -> Error(Nil)
     }
   })

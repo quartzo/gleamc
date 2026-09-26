@@ -32,10 +32,8 @@ pub type CtorInfo {
 
 pub type Checked {
   Checked(
-    module: Module,
-    /// The same module with every function body elaborated into a typed
-    /// monomorphic AST, so downstream passes read types instead of
-    /// re-inferring.
+    /// The typed monomorphic module produced by the monomorphiser, so
+    /// downstream passes read types instead of re-inferring.
     typed: tmono.TModule,
     signatures: Dict(String, Signature),
     ctors: Dict(String, CtorInfo),
@@ -51,13 +49,150 @@ pub fn describe_error(err: CheckError) -> String {
   "type error: " <> message
 }
 
-pub fn check(module: Module) -> Result(Checked, CheckError) {
+/// Elaborate a monomorphic surface module into the typed monomorphic AST.
+///
+/// This is the single elaboration of the monomorphised program; the
+/// monomorphiser calls it and owns the resulting `tmono.TModule`. The
+/// pipeline's `check` then only consumes that typed module.
+pub fn elaborate(module: Module) -> Result(tmono.TModule, CheckError) {
   let Module(defs) = module
   let #(signatures, ctors) = collect(defs, dict.new(), dict.new())
   case check_defs(defs, signatures, ctors) {
-    Ok(typed_defs) ->
-      Ok(Checked(module, tmono.TModule(typed_defs), signatures, ctors))
+    Ok(typed_defs) -> Ok(tmono.TModule(typed_defs))
     Error(err) -> Error(err)
+  }
+}
+
+/// Consume an already-typed monomorphic module: collect its signatures and
+/// constructors, and check that every `case` is exhaustive. No inference is
+/// performed here — every node already carries its type.
+pub fn check(module: tmono.TModule) -> Result(Checked, CheckError) {
+  let tmono.TModule(defs) = module
+  let #(signatures, ctors) = collect_typed(defs, dict.new(), dict.new())
+  use _ <- result.try(check_exhaustive_module(defs, ctors))
+  Ok(Checked(module, signatures, ctors))
+}
+
+fn collect_typed(defs, signatures, ctors) {
+  case defs {
+    [] -> #(signatures, ctors)
+    [tmono.TDFunction(tmono.TFunction(_, name, params, ret, _, _)), ..rest] -> {
+      let signatures = dict.insert(signatures, name, Signature(params, ret))
+      collect_typed(rest, signatures, ctors)
+    }
+    [tmono.TDExternal(External(_, name, params, ret, _, _, _)), ..rest] -> {
+      let signatures = dict.insert(signatures, name, Signature(params, ret))
+      collect_typed(rest, signatures, ctors)
+    }
+    [tmono.TDCustomType(custom), ..rest] -> {
+      let CustomType(_, name, _generics, variants, _) = custom
+      let ctors = add_variants(variants, name, ctors)
+      collect_typed(rest, signatures, ctors)
+    }
+    [_, ..rest] -> collect_typed(rest, signatures, ctors)
+  }
+}
+
+fn check_exhaustive_module(defs, ctors) {
+  case defs {
+    [] -> Ok(Nil)
+    [tmono.TDFunction(function), ..rest] -> {
+      use _ <- result.try(check_exhaustive_expr(function.body, ctors))
+      check_exhaustive_module(rest, ctors)
+    }
+    [_, ..rest] -> check_exhaustive_module(rest, ctors)
+  }
+}
+
+fn check_exhaustive_expr(expr, ctors) -> Result(Nil, CheckError) {
+  case expr {
+    tmono.TCase(subject, arms, _) -> {
+      use _ <- result.try(check_exhaustive_expr(subject, ctors))
+      let unguarded =
+        list.filter_map(arms, fn(arm) {
+          let tmono.TArm(pattern, guard, _) = arm
+          case is_none(guard) {
+            True -> Ok(pattern)
+            False -> Error(Nil)
+          }
+        })
+      use _ <- result.try(exhaustive_patterns(
+        tmono.type_of(subject),
+        unguarded,
+        ctors,
+      ))
+      check_exhaustive_arms(arms, ctors)
+    }
+    tmono.TField(obj, _, _) -> check_exhaustive_expr(obj, ctors)
+    tmono.TCtor(_, args, _) -> check_exhaustive_exprs(args, ctors)
+    tmono.TCall(fun, args, _) -> {
+      use _ <- result.try(check_exhaustive_expr(fun, ctors))
+      check_exhaustive_exprs(args, ctors)
+    }
+    tmono.TBinop(_, left, right, _) -> {
+      use _ <- result.try(check_exhaustive_expr(left, ctors))
+      check_exhaustive_expr(right, ctors)
+    }
+    tmono.TUnop(_, operand, _) -> check_exhaustive_expr(operand, ctors)
+    tmono.TBlock(statements, _) -> check_exhaustive_statements(statements, ctors)
+    tmono.TTuple(elements, _) -> check_exhaustive_exprs(elements, ctors)
+    tmono.TLabelled(_, value, _) -> check_exhaustive_expr(value, ctors)
+    tmono.TLambda(_, body, _) -> check_exhaustive_expr(body, ctors)
+    tmono.TClosure(_, captures, _, _, _) -> check_exhaustive_exprs(captures, ctors)
+    tmono.TUpdate(_, base, fields, _) -> {
+      use _ <- result.try(check_exhaustive_expr(base, ctors))
+      check_exhaustive_fields(fields, ctors)
+    }
+    tmono.TBitArray(elements, _) -> check_exhaustive_exprs(elements, ctors)
+    _ -> Ok(Nil)
+  }
+}
+
+fn check_exhaustive_exprs(exprs, ctors) -> Result(Nil, CheckError) {
+  case exprs {
+    [] -> Ok(Nil)
+    [expr, ..rest] -> {
+      use _ <- result.try(check_exhaustive_expr(expr, ctors))
+      check_exhaustive_exprs(rest, ctors)
+    }
+  }
+}
+
+fn check_exhaustive_fields(fields, ctors) -> Result(Nil, CheckError) {
+  case fields {
+    [] -> Ok(Nil)
+    [#(_, value), ..rest] -> {
+      use _ <- result.try(check_exhaustive_expr(value, ctors))
+      check_exhaustive_fields(rest, ctors)
+    }
+  }
+}
+
+fn check_exhaustive_statements(statements, ctors) -> Result(Nil, CheckError) {
+  case statements {
+    [] -> Ok(Nil)
+    [tmono.TLet(_, value), ..rest] -> {
+      use _ <- result.try(check_exhaustive_expr(value, ctors))
+      check_exhaustive_statements(rest, ctors)
+    }
+    [tmono.TStmt(expr), ..rest] -> {
+      use _ <- result.try(check_exhaustive_expr(expr, ctors))
+      check_exhaustive_statements(rest, ctors)
+    }
+  }
+}
+
+fn check_exhaustive_arms(arms, ctors) -> Result(Nil, CheckError) {
+  case arms {
+    [] -> Ok(Nil)
+    [tmono.TArm(_, guard, body), ..rest] -> {
+      use _ <- result.try(case guard {
+        Some(expr) -> check_exhaustive_expr(expr, ctors)
+        None -> Ok(Nil)
+      })
+      use _ <- result.try(check_exhaustive_expr(body, ctors))
+      check_exhaustive_arms(rest, ctors)
+    }
   }
 }
 
@@ -136,7 +271,7 @@ fn check_function(function, signatures, ctors) -> Result(tmono.TFunction, CheckE
   use body_t <- result.try(with_function(
     name,
     line,
-    infer_t(env, signatures, ctors, body),
+    elaborate_t(env, signatures, ctors, body),
   ))
   use _ <- result.try(unify(
     ret,
@@ -181,12 +316,24 @@ pub fn infer(
   ctors: Dict(String, CtorInfo),
   expr: Expr,
 ) -> Result(Type, CheckError) {
-  use typed <- result.try(infer_t(env, signatures, ctors, expr))
+  use typed <- result.try(elaborate_t(env, signatures, ctors, expr))
   Ok(tmono.type_of(typed))
 }
 
-/// Type-check an expression, elaborating it into a typed monomorphic AST.
+/// Compatibility wrapper around `elaborate_t` for callers that still use the
+/// historical name. The monomorphiser's elaboration and the pipeline use
+/// `elaborate_t` directly.
 pub fn infer_t(
+  env: Env,
+  signatures: Dict(String, Signature),
+  ctors: Dict(String, CtorInfo),
+  expr: Expr,
+) -> Result(tmono.TExpr, CheckError) {
+  elaborate_t(env, signatures, ctors, expr)
+}
+
+/// Type-check an expression, elaborating it into a typed monomorphic AST.
+fn elaborate_t(
   env: Env,
   signatures: Dict(String, Signature),
   ctors: Dict(String, CtorInfo),
@@ -221,12 +368,12 @@ pub fn infer_t(
     ECtor(name, args) -> infer_ctor(env, signatures, ctors, name, args)
     ECall(fun, args) -> infer_call(env, signatures, ctors, fun, args)
     EField(obj, name) -> {
-      use obj_t <- result.try(infer_t(env, signatures, ctors, obj))
+      use obj_t <- result.try(elaborate_t(env, signatures, ctors, obj))
       use field_ty <- result.try(infer_field(tmono.type_of(obj_t), name, ctors))
       Ok(tmono.TField(obj_t, name, field_ty))
     }
     ELabelled(name, value) -> {
-      use value_t <- result.try(infer_t(env, signatures, ctors, value))
+      use value_t <- result.try(elaborate_t(env, signatures, ctors, value))
       Ok(tmono.TLabelled(name, value_t, tmono.type_of(value_t)))
     }
     ELambda(_, _) -> Error(CheckError("lambda not lifted before lowering"))
@@ -283,7 +430,7 @@ fn infer_all(env, signatures, ctors, exprs) {
   case exprs {
     [] -> Ok([])
     [expr, ..rest] -> {
-      use typed <- result.try(infer_t(env, signatures, ctors, expr))
+      use typed <- result.try(elaborate_t(env, signatures, ctors, expr))
       use typed_rest <- result.try(infer_all(env, signatures, ctors, rest))
       Ok([typed, ..typed_rest])
     }
@@ -324,9 +471,9 @@ fn infer_expect(env, signatures, ctors, expected, expr) {
           ))
           Ok(builtin_call("buffer", "new", [TInt], expected, typed_args))
         }
-        Error(_) -> infer_t(env, signatures, ctors, expr)
+        Error(_) -> elaborate_t(env, signatures, ctors, expr)
       }
-    _ -> infer_t(env, signatures, ctors, expr)
+    _ -> elaborate_t(env, signatures, ctors, expr)
   }
 }
 
@@ -345,7 +492,7 @@ pub fn buffer_elem_type(ty: Type) -> Result(Type, Nil) {
 }
 
 fn infer_unop(env, signatures, ctors, op, operand) {
-  use operand_t <- result.try(infer_t(env, signatures, ctors, operand))
+  use operand_t <- result.try(elaborate_t(env, signatures, ctors, operand))
   let ty = tmono.type_of(operand_t)
   case op {
     "-" ->
@@ -378,8 +525,8 @@ fn infer_unop(env, signatures, ctors, op, operand) {
 }
 
 fn infer_binop(env, signatures, ctors, op, left, right) {
-  use left_t <- result.try(infer_t(env, signatures, ctors, left))
-  use right_t <- result.try(infer_t(env, signatures, ctors, right))
+  use left_t <- result.try(elaborate_t(env, signatures, ctors, left))
+  use right_t <- result.try(elaborate_t(env, signatures, ctors, right))
   let left_ty = tmono.type_of(left_t)
   let right_ty = tmono.type_of(right_t)
   let wrap = fn(ty) { tmono.TBinop(op, left_t, right_t, ty) }
@@ -468,11 +615,11 @@ fn infer_block(env, signatures, ctors, statements) {
   case statements {
     [] -> Ok(tmono.TBlock([], TNil))
     [Stmt(expr)] -> {
-      use expr_t <- result.try(infer_t(env, signatures, ctors, expr))
+      use expr_t <- result.try(elaborate_t(env, signatures, ctors, expr))
       Ok(tmono.TBlock([tmono.TStmt(expr_t)], tmono.type_of(expr_t)))
     }
     [Let(pattern, value), ..rest] -> {
-      use value_t <- result.try(infer_t(env, signatures, ctors, value))
+      use value_t <- result.try(elaborate_t(env, signatures, ctors, value))
       use bindings <- result.try(bind_pattern(pattern, tmono.type_of(value_t), ctors))
       infer_block_prepend(
         tmono.TLet(pattern, value_t),
@@ -483,7 +630,7 @@ fn infer_block(env, signatures, ctors, statements) {
       )
     }
     [Stmt(expr), ..rest] -> {
-      use expr_t <- result.try(infer_t(env, signatures, ctors, expr))
+      use expr_t <- result.try(elaborate_t(env, signatures, ctors, expr))
       infer_block_prepend(
         tmono.TStmt(expr_t),
         env,
@@ -502,9 +649,8 @@ fn infer_block_prepend(statement, env, signatures, ctors, rest) {
 }
 
 fn infer_case(env, signatures, ctors, subject, arms) {
-  use subject_t <- result.try(infer_t(env, signatures, ctors, subject))
+  use subject_t <- result.try(elaborate_t(env, signatures, ctors, subject))
   let subject_ty = tmono.type_of(subject_t)
-  use _ <- result.try(check_exhaustive(subject_ty, arms, ctors))
   use inferred <- result.try(infer_arms(
     env,
     signatures,
@@ -521,15 +667,7 @@ fn infer_case(env, signatures, ctors, subject, arms) {
 // exhaustiveness
 // ---------------------------------------------------------------------------
 
-fn check_exhaustive(subject_ty, arms, ctors) {
-  let unguarded =
-    list.filter_map(arms, fn(arm) {
-      let Arm(pattern, guard, _) = arm
-      case is_none(guard) {
-        True -> Ok(pattern)
-        False -> Error(Nil)
-      }
-    })
+fn exhaustive_patterns(subject_ty, unguarded, ctors) {
   case patterns_exhaustive(subject_ty, unguarded, ctors) {
     True -> Ok(Nil)
     False -> Error(CheckError("non-exhaustive `case` (add a `_` arm)"))
@@ -699,7 +837,7 @@ fn infer_arms(env, signatures, ctors, subject_ty, arms, acc) {
       use bindings <- result.try(bind_pattern(pattern, subject_ty, ctors))
       let arm_env = list.append(bindings, env)
       use guard_t <- result.try(check_guard(guard, arm_env, signatures, ctors))
-      use body_t <- result.try(infer_t(arm_env, signatures, ctors, body))
+      use body_t <- result.try(elaborate_t(arm_env, signatures, ctors, body))
       let arm = tmono.TArm(pattern, guard_t, body_t)
       let body_ty = tmono.type_of(body_t)
       case acc {
@@ -732,7 +870,7 @@ fn check_guard(guard, env, signatures, ctors) {
   case guard {
     None -> Ok(None)
     Some(expr) -> {
-      use expr_t <- result.try(infer_t(env, signatures, ctors, expr))
+      use expr_t <- result.try(elaborate_t(env, signatures, ctors, expr))
       use _ <- result.try(unify(TBool, tmono.type_of(expr_t), "in `case` guard"))
       Ok(Some(expr_t))
     }
@@ -799,7 +937,7 @@ fn infer_call(env, signatures, ctors, fun, args) {
     EField(EVar(module), name) ->
       infer_builtin(env, signatures, ctors, module, name, args)
     _ -> {
-      use fun_t <- result.try(infer_t(env, signatures, ctors, fun))
+      use fun_t <- result.try(elaborate_t(env, signatures, ctors, fun))
       case tmono.type_of(fun_t) {
         TFun(param_types, ret) -> {
           use typed_args <- result.try(infer_all(env, signatures, ctors, args))

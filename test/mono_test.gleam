@@ -1,14 +1,15 @@
 import gleam/list
-import gleamc/ast.{type Module, CustomType, DCustomType, DFunction, Module}
+import gleamc/ast.{CustomType}
 import gleamc/mono
 import gleamc/parser
+import gleamc/tmono
 
-fn definition_names(module: Module) -> List(String) {
-  let Module(definitions) = module
+fn definition_names(module: tmono.TModule) -> List(String) {
+  let tmono.TModule(definitions) = module
   list.filter_map(definitions, fn(definition) {
     case definition {
-      DFunction(function) -> Ok(function.name)
-      DCustomType(custom) -> {
+      tmono.TDFunction(function) -> Ok(function.name)
+      tmono.TDCustomType(custom) -> {
         let CustomType(_, name, _, _, _) = custom
         Ok(name)
       }
@@ -17,7 +18,7 @@ fn definition_names(module: Module) -> List(String) {
   })
 }
 
-fn monomorphize(source: String) -> Module {
+fn monomorphize(source: String) -> tmono.TModule {
   let assert Ok(module) = parser.parse(source)
   let assert Ok(mono_module) = mono.monomorphize(module)
   mono_module

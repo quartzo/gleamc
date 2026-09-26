@@ -14,6 +14,8 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import gleamc/util
 import gleamc/ffi
+import gleamc/checker
+import gleamc/tmono
 import gleamc/ast.{
   type Arm, type CustomType, type Expr, type Function, type Module, type Pattern,
   type Type, type Variant, Arm, CustomType, DCustomType, DExternal, DFunction,
@@ -27,7 +29,7 @@ import gleamc/infer
 import gleamc/texpr
 import gleamc/types.{type Scheme, Con, Fun, Scheme, Tup, Var}
 
-pub fn monomorphize(module: Module) -> Result(Module, String) {
+pub fn monomorphize(module: Module) -> Result(tmono.TModule, String) {
   use #(resolved, program) <- result_try(
     map_check(infer.check_resolved(module)),
   )
@@ -49,12 +51,30 @@ pub fn monomorphize(module: Module) -> Result(Module, String) {
         _ -> False
       }
     })
-  Ok(Module(
-    list.append(
-      type_defs,
-      list.append(list.reverse(fn_defs), external_defs),
-    ),
-  ))
+  let mono_module =
+    Module(
+      list.append(
+        type_defs,
+        list.append(list.reverse(fn_defs), external_defs),
+      ),
+    )
+  // The monomorphiser owns the typed monomorphic product: elaborate the
+  // specialised surface module once here, then hand the typed module to the
+  // rest of the cascade (dce -> checker.check -> lower).
+  map_elaborate(checker.elaborate(mono_module))
+}
+
+fn map_elaborate(result: Result(tmono.TModule, checker.CheckError)) -> Result(
+  tmono.TModule,
+  String,
+) {
+  case result {
+    Ok(typed) -> Ok(typed)
+    Error(err) -> {
+      let checker.CheckError(message) = err
+      Error(message)
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

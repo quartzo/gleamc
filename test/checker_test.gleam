@@ -3,7 +3,10 @@ import gleamc/parser
 
 fn check(source: String) {
   let assert Ok(module) = parser.parse(source)
-  checker.check(module)
+  case checker.elaborate(module) {
+    Ok(typed) -> checker.check(typed)
+    Error(err) -> Error(err)
+  }
 }
 
 pub fn check_fn_ok_test() {
