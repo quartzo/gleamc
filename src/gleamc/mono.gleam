@@ -790,6 +790,18 @@ fn mono_expr_pair(
       mono_ctor_ex_pair(state, locals, name, args, args_t, None)
     ECase(subject, arms), Some(texpr.TCase(subject_t, arms_t, _)) ->
       mono_case_pair(state, locals, subject, arms, subject_t, arms_t)
+    EUpdate(name, base, fields), Some(texpr.TUpdate(_, base_t, fields_t, ty)) ->
+      mono_update_pair(
+        state,
+        locals,
+        None,
+        name,
+        base,
+        base_t,
+        fields,
+        fields_t,
+        ty,
+      )
     _, _ -> mono_expr(state, locals, expr)
   }
 }
@@ -826,6 +838,18 @@ fn mono_expr_ex_pair(
         subject_t,
         arms_t,
         expected,
+      )
+    EUpdate(name, base, fields), Some(texpr.TUpdate(_, base_t, fields_t, ty)) ->
+      mono_update_pair(
+        state,
+        locals,
+        expected,
+        name,
+        base,
+        base_t,
+        fields,
+        fields_t,
+        ty,
       )
     _, _ -> mono_expr_ex(state, locals, expected, expr)
   }
@@ -1119,6 +1143,85 @@ fn mono_update(
       let expanded = EBlock([Let(PVar(temp), base), Stmt(ECtor(name, args))])
       mono_expr_ex(state, locals, expected, expanded)
     }
+  }
+}
+
+/// Paired record update: desugar to a block whose typed companion is built in
+/// lockstep, so the walk never re-infers the update.
+fn mono_update_pair(
+  state: State,
+  locals: Dict(String, Scheme),
+  expected: Option(types.Ty),
+  name: String,
+  base: Expr,
+  base_t: texpr.TExpr,
+  fields: List(#(String, Expr)),
+  fields_t: List(#(String, texpr.TExpr)),
+  ty,
+) {
+  case dict.get(state.ctors, name) {
+    Error(_) -> Error("unknown record `" <> name <> "`")
+    Ok(def) -> {
+      let infer.CtorDef(_, field_names, _) = def
+      let counter = state.counter
+      let temp = "__record_" <> int.to_string(counter)
+      let state = State(..state, counter: counter + 1)
+      let base_ty = node_ty(state, base_t)
+      let #(args, targs, state) =
+        list.fold(
+          field_names,
+          #([], [], state),
+          fn(acc, field_name) {
+            let #(args, targs, state) = acc
+            case find_update_field(fields, field_name) {
+              Ok(value) -> {
+                let #(value_t, state) =
+                  case find_update_field_t(fields_t, field_name) {
+                    Ok(found) -> #(found, state)
+                    Error(_) -> #(texpr.TVar(field_name, base_ty), state)
+                  }
+                #([value, ..args], [value_t, ..targs], state)
+              }
+              Error(_) -> {
+                // Unchanged field: read it back from the bound base. A fresh
+                // variable is unified with the constructor parameter by the
+                // caller, mirroring the untyped desugaring.
+                let #(fresh_ty, counter) = types.fresh(state.counter)
+                let state = State(..state, counter: counter)
+                let field_t =
+                  texpr.TField(texpr.TVar(temp, base_ty), field_name, fresh_ty)
+                #([EField(EVar(temp), field_name), ..args], [field_t, ..targs], state)
+              }
+            }
+          },
+        )
+      let expanded =
+        EBlock([Let(PVar(temp), base), Stmt(ECtor(name, list.reverse(args)))])
+      let expanded_t =
+        texpr.TBlock(
+          [
+            texpr.TLet(PVar(temp), base_t),
+            texpr.TStmt(texpr.TCtor(name, list.reverse(targs), ty)),
+          ],
+          ty,
+        )
+      mono_expr_ex_pair(state, locals, expected, expanded, Some(expanded_t))
+    }
+  }
+}
+
+fn find_update_field_t(fields, name) {
+  case
+    list.find(fields, fn(field) {
+      let #(label, _) = field
+      label == name
+    })
+  {
+    Ok(field) -> {
+      let #(_, value) = field
+      Ok(value)
+    }
+    Error(_) -> Error(Nil)
   }
 }
 
