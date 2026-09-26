@@ -669,6 +669,34 @@ fn node_ty(state: State, typed: texpr.TExpr) -> types.Ty {
   types.zonk(texpr.type_of(typed), state.subst)
 }
 
+/// Structural equality of two inferred types up to variable renaming (any
+/// variable matches any variable; a variable never matches a concrete type).
+/// Used by the verification harness to ignore the ids that differ between the
+/// elaboration and a re-inference.
+fn ty_alpha_equal(a: types.Ty, b: types.Ty) -> Bool {
+  case a, b {
+    types.Var(_), types.Var(_) -> True
+    types.Var(_), types.Rig(_) -> True
+    types.Rig(_), types.Var(_) -> True
+    types.Rig(_), types.Rig(_) -> True
+    types.Con(na, args_a), types.Con(nb, args_b) ->
+      na == nb && tys_alpha_equal(args_a, args_b)
+    types.Fun(params_a, ret_a), types.Fun(params_b, ret_b) ->
+      tys_alpha_equal(params_a, params_b) && ty_alpha_equal(ret_a, ret_b)
+    types.Tup(items_a), types.Tup(items_b) ->
+      tys_alpha_equal(items_a, items_b)
+    _, _ -> False
+  }
+}
+
+fn tys_alpha_equal(a: List(types.Ty), b: List(types.Ty)) -> Bool {
+  case a, b {
+    [], [] -> True
+    [x, ..xr], [y, ..yr] -> ty_alpha_equal(x, y) && tys_alpha_equal(xr, yr)
+    _, _ -> False
+  }
+}
+
 /// Read a node's inferred type from its annotation. With `GLEAMC_MONO_VERIFY`
 /// set, cross-check against the state-advancing re-inference (`type_of`) and
 /// report divergences, falling back to `type_of` to stay correct while the
@@ -683,7 +711,7 @@ fn read_ty(
   case ffi.get_env("GLEAMC_MONO_VERIFY") {
     Ok(_) -> {
       let #(re_inferred, state2) = type_of(state, locals, expr)
-      case types.describe(annotated) == types.describe(re_inferred) {
+      case ty_alpha_equal(annotated, re_inferred) {
         True -> #(annotated, state2)
         False -> {
           io.println(
