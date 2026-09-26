@@ -319,7 +319,7 @@ pub fn emit_chunks(
     )
   let chunks =
     list.flatten([
-      [header()],
+      [header(audit)],
       intersperse(global_decls, "\n"),
       ["\n\n", type_code, "\n\n", builtins, "\n\n"],
       intersperse(defs_bodies, "\n\n"),
@@ -474,7 +474,7 @@ fn push(rev: List(String), chunk: List(String)) -> List(String) {
   list.fold(chunk, rev, fn(acc, line) { [line, ..acc] })
 }
 
-fn header() -> String {
+fn header(audit: Bool) -> String {
   "target triple = \"x86_64-pc-linux-gnu\"\n\n"
   <> "%GleamcString = type { i8*, i64 }\n"
   <> "%GleamcBitArray = type { i8*, i64 }\n"
@@ -483,8 +483,7 @@ fn header() -> String {
   <> "declare i8* @gleamc_alloc(i64)\n"
   <> "declare i8* @gleamc_alloc0(i64)\n"
   <> "declare i8* @gleamc_alloc_site(i64, i8*)\n"
-  <> "declare void @Gleamc_rc_retain(i8*, i8*)\n"
-  <> "declare void @Gleamc_rc_release(i8*, i8*)\n"
+  <> rc_defs(audit)
   <> "declare void @Gleamc_uv_await_nil(i8*)\n"
   <> "declare i64 @Gleamc_uv_value_int(i8*)\n"
   <> "declare i64 @Gleamc_uv_result(i8*)\n"
@@ -516,6 +515,60 @@ fn header() -> String {
   <> "declare i1 @Gleamc_bit_array_eq(%GleamcBitArray, %GleamcBitArray)\n"
   <> "declare %GleamcBitArray @Gleamc_bit_array_new(i64)\n"
   <> "declare %GleamcBitArray @Gleamc_bit_array_from_bytes(i64*, i64)\n"
+}
+
+/// `Gleamc_rc_retain`/`Gleamc_rc_release`. In a normal build they are defined
+/// here as `linkonce_odr ... alwaysinline`, so `clang` folds the fast path into
+/// every call site (the reference-count header sits 8 bytes before the
+/// payload); the runtime keeps an out-of-line copy for any non-inlined call.
+/// The audit build must keep the runtime's instrumented versions, so it only
+/// sees declarations.
+fn rc_defs(audit: Bool) -> String {
+  case audit {
+    True ->
+      "declare void @Gleamc_rc_retain(i8*, i8*)\n"
+      <> "declare void @Gleamc_rc_release(i8*, i8*)\n"
+    False ->
+      "declare void @gleamc_release_slow(i8*)\n"
+      <> "define linkonce_odr void @Gleamc_rc_retain(i8* %p, i8* %site) alwaysinline {\n"
+      <> "entry:\n"
+      <> "  %isnull = icmp eq i8* %p, null\n"
+      <> "  br i1 %isnull, label %done, label %chk\n"
+      <> "chk:\n"
+      <> "  %hp = getelementptr i8, i8* %p, i64 -8\n"
+      <> "  %hpc = bitcast i8* %hp to i64*\n"
+      <> "  %rc = load i64, i64* %hpc\n"
+      <> "  %isstatic = icmp eq i64 %rc, -1\n"
+      <> "  br i1 %isstatic, label %done, label %inc\n"
+      <> "inc:\n"
+      <> "  %rc1 = add i64 %rc, 1\n"
+      <> "  store i64 %rc1, i64* %hpc\n"
+      <> "  br label %done\n"
+      <> "done:\n"
+      <> "  ret void\n"
+      <> "}\n"
+      <> "define linkonce_odr void @Gleamc_rc_release(i8* %p, i8* %site) alwaysinline {\n"
+      <> "entry:\n"
+      <> "  %isnull = icmp eq i8* %p, null\n"
+      <> "  br i1 %isnull, label %done, label %chk\n"
+      <> "chk:\n"
+      <> "  %hp = getelementptr i8, i8* %p, i64 -8\n"
+      <> "  %hpc = bitcast i8* %hp to i64*\n"
+      <> "  %rc = load i64, i64* %hpc\n"
+      <> "  %isstatic = icmp eq i64 %rc, -1\n"
+      <> "  br i1 %isstatic, label %done, label %dec\n"
+      <> "dec:\n"
+      <> "  %rc1 = add i64 %rc, -1\n"
+      <> "  store i64 %rc1, i64* %hpc\n"
+      <> "  %iszero = icmp eq i64 %rc1, 0\n"
+      <> "  br i1 %iszero, label %slow, label %done\n"
+      <> "slow:\n"
+      <> "  call void @gleamc_release_slow(i8* %hp)\n"
+      <> "  br label %done\n"
+      <> "done:\n"
+      <> "  ret void\n"
+      <> "}\n"
+  }
 }
 
 // ---------------------------------------------------------------------------
