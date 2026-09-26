@@ -894,6 +894,8 @@ fn is_suspending(builtin: String) -> Bool {
       "uv.fs_readdir",
       "uv.fs_cwd",
       "process_ffi.receive",
+      "process_ffi.wait_any",
+      "task_ffi.await_timeout",
     ],
     builtin,
   )

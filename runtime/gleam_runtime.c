@@ -1080,6 +1080,7 @@ static GleamcFuture* gleamc_future_new(void) {
     f->value_i = 0;
     f->value_p = NULL;
     f->uv_armed = false;
+    f->notify = NULL;
     return f;
 }
 
@@ -1177,14 +1178,43 @@ typedef struct {
     void** msgs;
     int nmsg;
     int mcap;
+    /* `receive` waiters: the box is handed to the oldest one. */
     GleamcFuture** waiters;
     int nwait;
     int wcap;
+    /* `wait_any` notifiers: they are signalled (value_i = 1) but the box stays
+     * queued, so the following `receive` claims it. */
+    GleamcFuture** notifiers;
+    int nnotify;
+    int ncap;
 } GleamcMailbox;
 
 int64_t Gleamc_process_ffi_new_subject(void) {
     GleamcMailbox* mb = (GleamcMailbox*)gleamc_alloc0(sizeof(GleamcMailbox));
     return (int64_t)(intptr_t)mb;
+}
+
+static void gleamc_mailbox_add_notifier(GleamcMailbox* mb, GleamcFuture* f) {
+    if (mb->nnotify == mb->ncap) {
+        int cap = mb->ncap == 0 ? 4 : mb->ncap * 2;
+        GleamcFuture** grown = (GleamcFuture**)realloc(
+            mb->notifiers, (size_t)cap * sizeof(GleamcFuture*));
+        if (grown == NULL) return;
+        mb->notifiers = grown;
+        mb->ncap = cap;
+    }
+    if (mb->nnotify < mb->ncap) mb->notifiers[mb->nnotify++] = f;
+}
+
+static void gleamc_mailbox_remove_notifier(GleamcMailbox* mb, GleamcFuture* f) {
+    for (int i = 0; i < mb->nnotify; i++) {
+        if (mb->notifiers[i] == f) {
+            for (int j = i + 1; j < mb->nnotify; j++)
+                mb->notifiers[j - 1] = mb->notifiers[j];
+            mb->nnotify--;
+            return;
+        }
+    }
 }
 
 int32_t Gleamc_process_ffi_send(int64_t handle, void* box) {
@@ -1213,6 +1243,15 @@ int32_t Gleamc_process_ffi_send(int64_t handle, void* box) {
         mb->mcap = cap;
     }
     mb->msgs[mb->nmsg++] = box;
+    /* Wake the oldest `wait_any`, if any; the box stays queued. */
+    if (mb->nnotify > 0) {
+        GleamcFuture* f = mb->notifiers[0];
+        for (int i = 1; i < mb->nnotify; i++)
+            mb->notifiers[i - 1] = mb->notifiers[i];
+        mb->nnotify--;
+        f->value_i = 1;
+        f->done = true;
+    }
     return 0;
 }
 
@@ -1241,6 +1280,80 @@ GleamcFuture* Gleamc_process_ffi_receive(int64_t handle) {
         if (mb->nwait < mb->wcap) mb->waiters[mb->nwait++] = f;
     }
     return f;
+}
+
+/* ------------------------------------------------------------------ */
+/* Timed waits: a wait future completed by a message/task or a timer.   */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    uv_timer_t timer;
+    GleamcFuture* fut;  /* owned reference while the timer lives       */
+    GleamcMailbox* mb;  /* `wait_any`: remove the notifier on timeout  */
+    GleamcFuture* task; /* `await_timeout`: clear `task->notify`       */
+} GleamcWaitTimer;
+
+static void gleamc_wait_timer_close_cb(uv_handle_t* h) {
+    GleamcWaitTimer* wt = (GleamcWaitTimer*)h->data;
+    gleamc_release(wt->fut);
+    free(wt);
+}
+
+static void gleamc_wait_timer_cb(uv_timer_t* t) {
+    GleamcWaitTimer* wt = (GleamcWaitTimer*)t->data;
+    if (!wt->fut->done) {
+        if (wt->mb != NULL) gleamc_mailbox_remove_notifier(wt->mb, wt->fut);
+        if (wt->task != NULL && wt->task->notify == wt->fut)
+            wt->task->notify = NULL;
+        wt->fut->value_i = 0;
+        wt->fut->done = true;
+    }
+    uv_close((uv_handle_t*)t, gleamc_wait_timer_close_cb);
+}
+
+static void gleamc_wait_timer_new(GleamcFuture* fut, GleamcMailbox* mb,
+                                  GleamcFuture* task, int64_t ms) {
+    GleamcWaitTimer* wt = (GleamcWaitTimer*)calloc(1, sizeof(GleamcWaitTimer));
+    if (wt == NULL) return;
+    wt->fut = fut;
+    wt->mb = mb;
+    wt->task = task;
+    gleamc_retain(fut);
+    uv_timer_init((uv_loop_t*)gleamc_uv_loop(), &wt->timer);
+    wt->timer.data = wt;
+    uv_timer_start(
+        &wt->timer, gleamc_wait_timer_cb, ms < 0 ? 0 : (uint64_t)ms, 0);
+    fut->uv_armed = true;
+}
+
+GleamcFuture* Gleamc_process_ffi_wait_any(int64_t handle, int64_t ms) {
+    GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)handle;
+    GleamcFuture* f = (GleamcFuture*)gleamc_alloc0(sizeof(GleamcFuture));
+    if (mb != NULL && mb->nmsg > 0) {
+        f->value_i = 1;
+        f->done = true;
+        return f;
+    }
+    if (mb == NULL) {
+        f->value_i = 0;
+        f->done = true;
+        return f;
+    }
+    gleamc_mailbox_add_notifier(mb, f);
+    gleamc_wait_timer_new(f, mb, NULL, ms);
+    return f;
+}
+
+GleamcFuture* Gleamc_task_ffi_await_timeout(GleamcFuture* task, int64_t ms) {
+    GleamcFuture* w = (GleamcFuture*)gleamc_alloc0(sizeof(GleamcFuture));
+    if (task == NULL || task->done) {
+        w->value_i = 1;
+        w->done = true;
+        return w;
+    }
+    task->notify = w;
+    gleamc_wait_timer_new(w, NULL, task, ms);
+    return w;
 }
 
 void gleamc_run_until(GleamcFuture* target) {
@@ -1283,7 +1396,15 @@ void gleamc_run_until(GleamcFuture* target) {
             if (done) {
                 if (t->copy_result != NULL && t->result_dst != NULL)
                     t->copy_result(t->frame, t->result_dst);
-                if (t->done != NULL) t->done->done = true;
+                if (t->done != NULL) {
+                    t->done->done = true;
+                    /* Complete a `try_await` wait racing this task. */
+                    if (t->done->notify != NULL) {
+                        t->done->notify->value_i = 1;
+                        t->done->notify->done = true;
+                        t->done->notify = NULL;
+                    }
+                }
                 /* `frame_drop` releases the frame (it ends in an rc_release). */
                 if (t->frame_drop != NULL) t->frame_drop(t->frame);
                 else gleamc_release(t->frame);

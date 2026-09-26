@@ -128,6 +128,19 @@ waiter, so it never blocks the driver on a non-empty mailbox. Because `send`
 runs inside a task's `step`, the driver's `progressed` flag guarantees the
 woken receiver is re-stepped.
 
+### Timeouts
+
+`receive(from:, within:)` and `task.try_await(t, timeout)` need to race a
+message/task against a timer. `process_ffi.wait_any` registers a *notifier* on
+the mailbox (alongside the `receive` waiters): the box stays queued and the
+notifier's future is completed with `value_i = 1`, so the following `receive`
+claims it; on timeout a libuv timer removes the notifier and completes the
+future with `value_i = 0`. `task_ffi.await_timeout` sets itself as the task
+completion future's single `notify` observer: the driver completes it with
+`value_i = 1` when the task finishes, or the timer completes it with `0`. Both
+wait futures are held by their timer (`gleamc_wait_timer_new` retains them), so
+whichever side loses still closes cleanly.
+
 ### Boxed values
 
 `Subject(a)` and `Task(a)` are phantom handle types (`llvm_ty` maps them to

@@ -324,6 +324,9 @@ typedef struct GleamcFuture {
     int64_t value_i;    /* wake value (scalars / handles / length)   */
     void* value_p;      /* wake value by reference (structs / bytes) */
     bool uv_armed;      /* handle registered on the libuv loop       */
+    /* Single observer to complete when this future completes (a `try_await`
+     * wait racing a task against a timeout). */
+    struct GleamcFuture* notify;
 } GleamcFuture;
 
 uint64_t gleamc_now_ms(void);
@@ -388,6 +391,13 @@ void gleamc_box_free(void* box);
 int64_t Gleamc_process_ffi_new_subject(void);
 int32_t Gleamc_process_ffi_send(int64_t handle, void* box);
 GleamcFuture* Gleamc_process_ffi_receive(int64_t handle);
+/* Waits until a message is available on the subject or `ms` elapse. The
+ * future's `value_i` is 1 when a message is queued, 0 on timeout; the message
+ * itself stays queued for a following `receive`. */
+GleamcFuture* Gleamc_process_ffi_wait_any(int64_t handle, int64_t ms);
+/* Waits until `task` completes or `ms` elapse (`value_i` 1 = completed,
+ * 0 = timeout); the task's boxed result is left for a following await. */
+GleamcFuture* Gleamc_task_ffi_await_timeout(GleamcFuture* task, int64_t ms);
 
 /* Host async surface (Vesper docs 09/11/14): starts return a Future,
  * `await` (Gleamc_uv_await_*) drives the scheduler to completion. */

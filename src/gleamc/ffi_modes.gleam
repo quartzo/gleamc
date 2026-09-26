@@ -75,6 +75,11 @@ pub fn table() -> Dict(String, FfiSig) {
   // The message is moved into a box; the mailbox then owns that reference.
   |> dict.insert("process_ffi.send", FfiSig([Borrow, Owned], OwnedResult))
   |> dict.insert("process_ffi.receive", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("process_ffi.wait_any", FfiSig([Borrow, Borrow], OwnedResult))
+  |> dict.insert(
+    "task_ffi.await_timeout",
+    FfiSig([Borrow, Borrow], OwnedResult),
+  )
   |> dict.insert("process.spawn", FfiSig([Borrow], OwnedResult))
   |> dict.insert("task.async", FfiSig([Borrow], OwnedResult))
   |> dict.insert("task_ffi.await", FfiSig([Borrow], OwnedResult))

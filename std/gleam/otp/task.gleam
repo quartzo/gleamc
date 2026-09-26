@@ -15,17 +15,18 @@ pub fn await_forever(task: Task(value)) -> value {
   task_ffi.await(task)
 }
 
-/// Wait for the value computed by a task.
-///
-/// The timeout is not wired to the scheduler yet, so this waits indefinitely.
+/// Wait for the value computed by a task, crashing if it does not arrive
+/// within `timeout` milliseconds.
 pub fn await(task: Task(value), timeout: Int) -> value {
-  let _ = timeout
-  task_ffi.await(task)
+  let assert Ok(value) = try_await(task, timeout)
+  value
 }
 
 /// Wait for the value computed by a task, returning `Error(Timeout)` if it does
-/// not arrive in time. The timeout is not wired yet, so this waits forever.
+/// not arrive within `timeout` milliseconds.
 pub fn try_await(task: Task(value), timeout: Int) -> Result(value, AwaitError) {
-  let _ = timeout
-  Ok(task_ffi.await(task))
+  case task_ffi.await_timeout(task, timeout) {
+    1 -> Ok(task_ffi.await(task))
+    _ -> Error(Timeout)
+  }
 }

@@ -15,12 +15,12 @@ pub fn send(subject: Subject(message), message: message) -> Nil {
 }
 
 /// Receive a message that has been sent to the current process using the
-/// `Subject`, waiting at most `timeout` milliseconds.
+/// `Subject`, waiting at most `within` milliseconds.
 pub fn receive(from: Subject(message), within: Int) -> Result(message, Nil) {
-  // Timeout is not wired to the scheduler yet; `receive` blocks until a
-  // message arrives.
-  let _ = within
-  Ok(process_ffi.receive(from))
+  case process_ffi.wait_any(from, within) {
+    1 -> Ok(receive_forever(from))
+    _ -> Error(Nil)
+  }
 }
 
 /// Receive a message, waiting forever.

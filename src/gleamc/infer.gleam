@@ -966,6 +966,14 @@ fn builtins() -> Dict(String, Scheme) {
     "task_ffi.await",
     Scheme([9106], Fun([Con("Task", [Var(9106)])], Var(9106))),
   )
+  |> dict.insert(
+    "process_ffi.wait_any",
+    Scheme([9110], Fun([Con("Subject", [Var(9110)]), i], i)),
+  )
+  |> dict.insert(
+    "task_ffi.await_timeout",
+    Scheme([9111], Fun([Con("Task", [Var(9111)]), i], i)),
+  )
 }
 
 /// The names of every builtin, used by `ffi_modes` coverage checks.

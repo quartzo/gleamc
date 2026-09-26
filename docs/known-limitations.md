@@ -119,17 +119,19 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   so `Int`, `String`, records, lists, etc. all round-trip. `spawn` / `async`
   take a zero-argument `fn() -> ...` (matching Gleam) and closures **may
   capture** (the environment is retained by the task and released when it
-  finishes). Restrictions: `receive(within:)` and `task.await(t, timeout)` do
-  **not** honour the timeout yet (they block until a message/result arrives, so
-  a `try_await` never returns `Error(Timeout)`); there is no `Pid` operation
-  (`self`, `is_alive`, `spawn_unlinked`), no `Selector`/`select*`, no
-  `monitor`/`link`/names, and `AwaitError` only has `Timeout` (no
-  `Exit(Dynamic)`). A `Subject` handle is not refcount-dropped (one leak per
-  subject) and boxes queued but never received leak. Draining a mailbox does
-  not join the spawned senders. Capturing a **compile-time-constant** binding
-  in a closure (e.g. `let base = 41; fn() { f(base) }`) reads the wrong
-  environment slot — a pre-existing `frame.link_closures` corner case, not
-  specific to tasks.
+  finishes). Timeouts are honoured: `receive(from:, within:)` and
+  `task.try_await(t, timeout)` race the message/task against a libuv timer
+  (`Gleamc_process_ffi_wait_any` / `Gleamc_task_ffi_await_timeout`), and
+  `task.await(t, timeout)` crashes on timeout like the original. Restrictions:
+  there is no `Pid` operation (`self`, `is_alive`, `spawn_unlinked`), no
+  `Selector`/`select*`, no `monitor`/`link`/names, no `send_after`/
+  `cancel_timer`, and `AwaitError` only has `Timeout` (no `Exit(Dynamic)`). A
+  `Subject` handle is not refcount-dropped (one leak per subject) and boxes
+  queued but never received leak; a timed-out task's boxed result also leaks.
+  Draining a mailbox does not join the spawned senders. Capturing a
+  **compile-time-constant** binding in a closure (e.g. `let base = 41; fn() {
+  f(base) }`) reads the wrong environment slot — a pre-existing
+  `frame.link_closures` corner case, not specific to tasks.
 
 ## Standard library coverage
 

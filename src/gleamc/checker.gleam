@@ -2186,6 +2186,56 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         _ -> Error(CheckError("task.async expects fn() -> a"))
       }
     }
+    "process_ffi", "wait_any" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [subject, timeout] ->
+          case subject_elem_type(tmono.type_of(subject)) {
+            Ok(_) ->
+              case tmono.type_of(timeout) {
+                TInt ->
+                  Ok(builtin_call(
+                    "process_ffi",
+                    "wait_any",
+                    [tmono.type_of(subject), TInt],
+                    TInt,
+                    typed_args,
+                  ))
+                _ -> Error(CheckError("process_ffi.wait_any expects an Int timeout"))
+              }
+            Error(_) ->
+              Error(CheckError("process_ffi.wait_any expects a Subject(a)"))
+          }
+        _ -> Error(CheckError("process_ffi.wait_any expects (Subject(a), Int)"))
+      }
+    }
+    "task_ffi", "await_timeout" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [task, timeout] ->
+          case task_elem_type(tmono.type_of(task)) {
+            Ok(_) ->
+              case tmono.type_of(timeout) {
+                TInt ->
+                  Ok(builtin_call(
+                    "task_ffi",
+                    "await_timeout",
+                    [tmono.type_of(task), TInt],
+                    TInt,
+                    typed_args,
+                  ))
+                _ ->
+                  Error(CheckError(
+                    "task_ffi.await_timeout expects an Int timeout",
+                  ))
+              }
+            Error(_) ->
+              Error(CheckError("task_ffi.await_timeout expects a Task(a)"))
+          }
+        _ ->
+          Error(CheckError("task_ffi.await_timeout expects (Task(a), Int)"))
+      }
+    }
     "task_ffi", "await" -> {
       use typed_args <- result.try(infer_all(env, signatures, ctors, args))
       case typed_args {
