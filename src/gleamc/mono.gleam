@@ -610,7 +610,8 @@ fn mono_expr_ex(state, locals, expected, expr) {
     }
     EBlock(statements) -> mono_block_ex(state, locals, expected, statements)
     ECall(fun, args) -> mono_call(state, locals, fun, args, expected)
-    ELambda(names, body) -> lift_lambda(state, locals, names, body, expected)
+    ELambda(names, body) ->
+      lift_lambda(state, locals, names, body, None, expected)
     EClosure(_, _, _, _) -> Ok(#(expr, state))
     EEnvGet(env_ty, index, ty) -> {
       use #(specialized, state) <- result_try(specialize_env_get(state, ty))
@@ -810,6 +811,8 @@ fn mono_expr_ex_pair(
       mono_expr_pair(state, locals, expr, typed)
     EBlock(statements), _ ->
       mono_block_ex_pair(state, locals, expected, statements, typed)
+    ELambda(names, body), Some(texpr.TLambda(_, body_t, _)) ->
+      lift_lambda(state, locals, names, body, Some(body_t), expected)
     ECall(fun, args), Some(texpr.TCall(_, args_t, _)) ->
       mono_call_pair(state, locals, fun, args, args_t, expected)
     ECtor(name, args), Some(texpr.TCtor(_, args_t, _)) ->
@@ -981,6 +984,7 @@ fn lift_lambda(
   locals: Dict(String, Scheme),
   names,
   body,
+  body_t,
   expected,
 ) {
   case expected {
@@ -1057,11 +1061,12 @@ fn lift_lambda(
             Error(_) -> acc
           }
         })
-      use #(body_mono, state) <- result_try(mono_expr_ex(
+      use #(body_mono, state) <- result_try(mono_expr_ex_pair(
         state,
         lam_locals,
         Some(ret_ty),
         body,
+        body_t,
       ))
       let body2 = replace_vars(body_mono, replacements)
       let env_param = #("__env", TNamed("void*"))
