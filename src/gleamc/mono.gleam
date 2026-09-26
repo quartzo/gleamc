@@ -753,6 +753,42 @@ fn mono_expr_pair(
       ))
       Ok(#(EBinop(op, left2, right2), state))
     }
+    EUnop(op, operand), Some(texpr.TUnop(_, operand_t, _)) -> {
+      use #(operand2, state) <- result_try(
+        mono_expr_pair(state, locals, operand, Some(operand_t)),
+      )
+      Ok(#(EUnop(op, operand2), state))
+    }
+    EField(obj, name), Some(texpr.TField(obj_t, _, _)) -> {
+      use #(obj2, state) <- result_try(
+        mono_expr_pair(state, locals, obj, Some(obj_t)),
+      )
+      Ok(#(EField(obj2, name), state))
+    }
+    ETuple(elements), Some(texpr.TTuple(elements_t, _)) -> {
+      use #(elements2, state) <- result_try(
+        mono_exprs_pair(state, locals, elements, elements_t),
+      )
+      Ok(#(ETuple(elements2), state))
+    }
+    ELabelled(label, value), Some(texpr.TLabelled(_, value_t, _)) -> {
+      use #(value2, state) <- result_try(
+        mono_expr_pair(state, locals, value, Some(value_t)),
+      )
+      Ok(#(ELabelled(label, value2), state))
+    }
+    EBitArray(elements), Some(texpr.TBitArray(elements_t, _)) -> {
+      use #(elements2, state) <- result_try(
+        mono_exprs_pair(state, locals, elements, elements_t),
+      )
+      Ok(#(EBitArray(elements2), state))
+    }
+    ECall(fun, args), Some(texpr.TCall(_, args_t, _)) ->
+      mono_call_pair(state, locals, fun, args, args_t, None)
+    ECtor(name, args), Some(texpr.TCtor(_, args_t, _)) ->
+      mono_ctor_ex_pair(state, locals, name, args, args_t, None)
+    ECase(subject, arms), Some(texpr.TCase(subject_t, arms_t, _)) ->
+      mono_case_pair(state, locals, subject, arms, subject_t, arms_t)
     _, _ -> mono_expr(state, locals, expr)
   }
 }
@@ -768,8 +804,26 @@ fn mono_expr_ex_pair(
   case expr, typed {
     EBinop(_, _, _), Some(texpr.TBinop(_, _, _, _)) ->
       mono_expr_pair(state, locals, expr, typed)
+    EUnop(_, _), Some(texpr.TUnop(_, _, _)) ->
+      mono_expr_pair(state, locals, expr, typed)
+    EField(_, _), Some(texpr.TField(_, _, _)) ->
+      mono_expr_pair(state, locals, expr, typed)
     EBlock(statements), _ ->
       mono_block_ex_pair(state, locals, expected, statements, typed)
+    ECall(fun, args), Some(texpr.TCall(_, args_t, _)) ->
+      mono_call_pair(state, locals, fun, args, args_t, expected)
+    ECtor(name, args), Some(texpr.TCtor(_, args_t, _)) ->
+      mono_ctor_ex_pair(state, locals, name, args, args_t, expected)
+    ECase(subject, arms), Some(texpr.TCase(subject_t, arms_t, _)) ->
+      mono_case_ex_pair(
+        state,
+        locals,
+        subject,
+        arms,
+        subject_t,
+        arms_t,
+        expected,
+      )
     _, _ -> mono_expr_ex(state, locals, expected, expr)
   }
 }
@@ -2137,5 +2191,477 @@ fn result_try(result, next) {
   case result {
     Ok(value) -> next(value)
     Error(err) -> Error(err)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// paired walk: call / argument / constructor / case
+//
+// These mirror the surface helpers exactly, but read subexpression types from
+// the typed companion (`read_ty`) instead of re-inferring them.
+// ---------------------------------------------------------------------------
+
+fn mono_exprs_pair(
+  state: State,
+  locals: Dict(String, Scheme),
+  exprs: List(Expr),
+  typed_exprs: List(texpr.TExpr),
+) {
+  case list.length(exprs) == list.length(typed_exprs) {
+    True -> mono_exprs_pair_zip(state, locals, exprs, typed_exprs, [])
+    False -> mono_exprs(state, locals, exprs)
+  }
+}
+
+fn mono_exprs_pair_zip(
+  state: State,
+  locals: Dict(String, Scheme),
+  exprs: List(Expr),
+  typed_exprs: List(texpr.TExpr),
+  acc: List(Expr),
+) {
+  case exprs, typed_exprs {
+    [], _ -> Ok(#(list.reverse(acc), state))
+    [expr, ..rest], [typed, ..typed_rest] -> {
+      use #(expr2, state) <- result_try(
+        mono_expr_pair(state, locals, expr, Some(typed)),
+      )
+      mono_exprs_pair_zip(state, locals, rest, typed_rest, [expr2, ..acc])
+    }
+    _, _ -> mono_exprs(state, locals, exprs)
+  }
+}
+
+fn mono_call_pair(
+  state: State,
+  locals: Dict(String, Scheme),
+  fun: Expr,
+  args: List(Expr),
+  args_t: List(texpr.TExpr),
+  expected_opt,
+) {
+  case fun {
+    EVar(name) ->
+      case dict.get(state.globals, name) {
+        Error(_) ->
+          case dict.get(locals, name) {
+            Error(_) -> {
+              use #(args2, state) <- result_try(
+                mono_exprs_pair(state, locals, args, args_t),
+              )
+              Ok(#(ECall(EVar(name), args2), state))
+            }
+            Ok(scheme) -> {
+              let #(_, local_ty, counter) =
+                types.instantiate_vars(scheme, state.counter)
+              let state = State(..state, counter: counter)
+              let #(param_tys, _) = fun_parts(local_ty)
+              let expected =
+                list.map(param_tys, fn(param_ty) {
+                  types.zonk(param_ty, state.subst)
+                })
+              use #(args2, state) <- result_try(
+                mono_args_expect_pair(state, locals, expected, args, args_t),
+              )
+              Ok(#(ECall(EVar(name), args2), state))
+            }
+          }
+        Ok(scheme) -> {
+          use #(type_args, state) <- result_try(
+            callee_type_args_pair(
+              state,
+              locals,
+              scheme,
+              args,
+              args_t,
+              expected_opt,
+            ),
+          )
+          let state = request_fn(state, name, type_args)
+          let specialized = fn_specialised_name(state, name, type_args)
+          let expected = expected_param_tys(state, name, type_args)
+          use #(final_args, state) <- result_try(
+            mono_args_expect_pair(state, locals, expected, args, args_t),
+          )
+          Ok(#(ECall(EVar(specialized), final_args), state))
+        }
+      }
+    _ -> {
+      use #(args2, state) <- result_try(
+        mono_exprs_pair(state, locals, args, args_t),
+      )
+      Ok(#(ECall(fun, args2), state))
+    }
+  }
+}
+
+fn mono_args_expect_pair(
+  state: State,
+  locals: Dict(String, Scheme),
+  expected_list: List(types.Ty),
+  args: List(Expr),
+  typed_args: List(texpr.TExpr),
+) {
+  use #(state, _) <- result_try(
+    unify_arg_types_pair(state, locals, expected_list, args, typed_args),
+  )
+  mono_args_expect_go_pair(state, locals, expected_list, args, typed_args, [])
+}
+
+fn unify_arg_types_pair(
+  state: State,
+  locals: Dict(String, Scheme),
+  expected_list: List(types.Ty),
+  args: List(Expr),
+  typed_args: List(texpr.TExpr),
+) {
+  case args, expected_list, typed_args {
+    [], _, _ -> Ok(#(state, Nil))
+    [arg, ..rest], [expected, ..rest_expected], [typed, ..typed_rest] -> {
+      let #(arg_ty, state) = read_ty(state, locals, arg, typed)
+      use subst <- result_try(
+        map_unify(expected, unspecialize_internal(state, arg_ty), state.subst),
+      )
+      let state = State(..state, subst: subst)
+      unify_arg_types_pair(state, locals, rest_expected, rest, typed_rest)
+    }
+    [_arg, ..rest], [], [_, ..typed_rest] ->
+      unify_arg_types_pair(state, locals, [], rest, typed_rest)
+    _, _, _ -> unify_arg_types(state, locals, expected_list, args)
+  }
+}
+
+fn mono_args_expect_go_pair(
+  state: State,
+  locals: Dict(String, Scheme),
+  expected_list: List(types.Ty),
+  args: List(Expr),
+  typed_args: List(texpr.TExpr),
+  acc: List(Expr),
+) {
+  case args, expected_list, typed_args {
+    [], _, _ -> Ok(#(list.reverse(acc), state))
+    [arg, ..rest], [expected, ..rest_expected], [typed, ..typed_rest] -> {
+      use #(arg2, state) <- result_try(
+        mono_arg_expect_pair(state, locals, expected, arg, typed),
+      )
+      mono_args_expect_go_pair(
+        state,
+        locals,
+        rest_expected,
+        rest,
+        typed_rest,
+        [arg2, ..acc],
+      )
+    }
+    [arg, ..rest], [], [typed, ..typed_rest] -> {
+      use #(arg2, state) <- result_try(
+        mono_expr_pair(state, locals, arg, Some(typed)),
+      )
+      mono_args_expect_go_pair(state, locals, [], rest, typed_rest, [arg2, ..acc])
+    }
+    _, _, _ -> mono_args_expect_go(state, locals, expected_list, args, acc)
+  }
+}
+
+fn mono_arg_expect_pair(
+  state: State,
+  locals: Dict(String, Scheme),
+  expected: types.Ty,
+  arg: Expr,
+  typed: texpr.TExpr,
+) {
+  case arg, typed {
+    ECtor(name, ctor_args), texpr.TCtor(_, ctor_args_t, _) ->
+      mono_ctor_ex_pair(
+        state,
+        locals,
+        name,
+        ctor_args,
+        ctor_args_t,
+        Some(expected),
+      )
+    _, _ -> mono_expr_ex_pair(state, locals, Some(expected), arg, Some(typed))
+  }
+}
+
+fn callee_type_args_pair(
+  state: State,
+  locals: Dict(String, Scheme),
+  scheme: Scheme,
+  args: List(Expr),
+  typed_args: List(texpr.TExpr),
+  expected_opt,
+) {
+  let Scheme(vars, _) = scheme
+  case vars {
+    [] -> Ok(#([], state))
+    _ -> {
+      let #(fresh_vars, fresh_ty, counter) =
+        types.instantiate_vars(scheme, state.counter)
+      let #(param_tys, ret) = fun_parts(fresh_ty)
+      let state = State(..state, counter: counter)
+      let #(arg_tys, state) = arg_types_pair(state, locals, args, typed_args)
+      use subst <- result_try(unify_seq(param_tys, arg_tys, state.subst))
+      let subst = case expected_opt {
+        Some(expected) ->
+          case map_unify(ret, expected, subst) {
+            Ok(updated) -> updated
+            Error(_) -> subst
+          }
+        None -> subst
+      }
+      let state = State(..state, subst: subst)
+      let type_args =
+        list.map(fresh_vars, fn(fresh_var) { types.zonk(fresh_var, subst) })
+      Ok(#(list.map(type_args, surface_of), state))
+    }
+  }
+}
+
+fn arg_types_pair(
+  state: State,
+  locals: Dict(String, Scheme),
+  args: List(Expr),
+  typed_args: List(texpr.TExpr),
+) {
+  case args, typed_args {
+    [], _ -> #([], state)
+    [arg, ..rest], [typed, ..typed_rest] -> {
+      let #(arg_ty, state) = read_ty(state, locals, arg, typed)
+      let #(tys, state) = arg_types_pair(state, locals, rest, typed_rest)
+      #([unspecialize_internal(state, arg_ty), ..tys], state)
+    }
+    _, _ -> arg_types(state, locals, args)
+  }
+}
+
+fn mono_ctor_ex_pair(state, locals, name, args, args_t, expected_opt) {
+  case dict.get(state.ctors, name) {
+    Error(_) -> Error("unknown constructor `" <> name <> "`")
+    Ok(def) -> {
+      let infer.CtorDef(type_name, _, scheme) = def
+      let #(fresh_vars, fresh_ty, counter) =
+        types.instantiate_vars(scheme, state.counter)
+      let state = State(..state, counter: counter)
+      let #(param_tys, ret) = fun_parts(fresh_ty)
+      let subst0 = case expected_opt {
+        Some(expected) ->
+          case map_unify(ret, expected, state.subst) {
+            Ok(subst) -> subst
+            Error(_) -> state.subst
+          }
+        None -> state.subst
+      }
+      use #(args2, state, subst) <- result_try(
+        mono_ctor_args_pair(
+          State(..state, subst: subst0),
+          locals,
+          param_tys,
+          args,
+          args_t,
+          subst0,
+        ),
+      )
+      let state = State(..state, subst: subst)
+      let type_args =
+        list.map(fresh_vars, fn(fv) { surface_of(types.zonk(fv, subst)) })
+      let #(_specialized_type, state) =
+        request_type(state, type_name, type_args)
+      let state =
+        State(
+          ..state,
+          ctor_names: dict.insert(
+            state.ctor_names,
+            ctor_key(type_name, name, type_args),
+            ctor_specialised(type_name, name, type_args),
+          ),
+        )
+      let specialized = ctor_specialised_name(state, type_name, name, type_args)
+      Ok(#(ECtor(specialized, args2), state))
+    }
+  }
+}
+
+fn mono_ctor_args_pair(state, locals, param_tys, args, args_t, subst) {
+  mono_ctor_args_pair_acc(state, locals, param_tys, args, args_t, subst, [])
+}
+
+fn mono_ctor_args_pair_acc(
+  state,
+  locals,
+  param_tys,
+  args,
+  typed_args,
+  subst,
+  acc,
+) {
+  case args, param_tys, typed_args {
+    [], _, _ -> Ok(#(list.reverse(acc), state, subst))
+    [arg, ..rest_args], [param_ty, ..rest_params], [typed, ..typed_rest] -> {
+      let expected = types.zonk(param_ty, subst)
+      use #(arg2, state) <- result_try(
+        mono_arg_expect_pair(state, locals, expected, arg, typed),
+      )
+      let #(arg_ty, state) = read_ty(state, locals, arg, typed)
+      use subst <- result_try(
+        map_unify(param_ty, unspecialize_internal(state, arg_ty), state.subst),
+      )
+      let state = State(..state, subst: subst)
+      mono_ctor_args_pair_acc(
+        state,
+        locals,
+        rest_params,
+        rest_args,
+        typed_rest,
+        subst,
+        [arg2, ..acc],
+      )
+    }
+    [arg, ..rest_args], [], [typed, ..typed_rest] -> {
+      use #(arg2, state) <- result_try(
+        mono_expr_pair(state, locals, arg, Some(typed)),
+      )
+      mono_ctor_args_pair_acc(
+        state,
+        locals,
+        [],
+        rest_args,
+        typed_rest,
+        subst,
+        [arg2, ..acc],
+      )
+    }
+    _, _, _ -> mono_ctor_args(state, locals, param_tys, args, subst)
+  }
+}
+
+/// `case` reached from `mono_expr` (no expected result type): arm bodies use
+/// `mono_expr`, exactly like `mono_arms`.
+fn mono_case_pair(state, locals, subject, arms, subject_t, arms_t) {
+  use #(subject2, state) <- result_try(
+    mono_expr_pair(state, locals, subject, Some(subject_t)),
+  )
+  let #(subject_ty, state) = read_ty(state, locals, subject, subject_t)
+  use #(arms2, state) <- result_try(
+    mono_arms_pair(state, locals, subject_ty, arms, arms_t),
+  )
+  Ok(#(ECase(subject2, arms2), state))
+}
+
+fn mono_arms_pair(state, locals, subject_ty, arms, typed_arms) {
+  mono_arms_pair_acc(state, locals, subject_ty, arms, typed_arms, [])
+}
+
+fn mono_arms_pair_acc(state, locals, subject_ty, arms, typed_arms, acc) {
+  case arms, typed_arms {
+    [], _ -> Ok(#(list.reverse(acc), state))
+    [Arm(pattern, guard, body), ..rest], [
+      texpr.TArm(_, guard_t, body_t),
+      ..typed_rest
+    ] -> {
+      use #(pattern2, bindings, state) <- result_try(
+        mono_pattern(state, locals, pattern, subject_ty),
+      )
+      let arm_locals = merge_dicts(locals, bindings)
+      use #(guard2, state) <- result_try(
+        mono_guard_pair(state, arm_locals, guard, guard_t),
+      )
+      use #(body2, state) <- result_try(
+        mono_expr_pair(state, arm_locals, body, Some(body_t)),
+      )
+      mono_arms_pair_acc(
+        state,
+        locals,
+        subject_ty,
+        rest,
+        typed_rest,
+        [Arm(pattern2, guard2, body2), ..acc],
+      )
+    }
+    _, _ -> mono_arms(state, locals, subject_ty, arms)
+  }
+}
+
+/// `case` reached from `mono_expr_ex` (with the case's result expected type):
+/// arm bodies use `mono_expr_ex`, exactly like `mono_arms_ex`.
+fn mono_case_ex_pair(state, locals, subject, arms, subject_t, arms_t, expected) {
+  use #(subject2, state) <- result_try(
+    mono_expr_pair(state, locals, subject, Some(subject_t)),
+  )
+  let #(subject_ty, state) = read_ty(state, locals, subject, subject_t)
+  use #(arms2, state) <- result_try(
+    mono_arms_ex_pair(state, locals, subject_ty, expected, arms, arms_t),
+  )
+  Ok(#(ECase(subject2, arms2), state))
+}
+
+fn mono_arms_ex_pair(state, locals, subject_ty, result_expected, arms, typed_arms) {
+  mono_arms_ex_pair_acc(
+    state,
+    locals,
+    subject_ty,
+    result_expected,
+    arms,
+    typed_arms,
+    [],
+  )
+}
+
+fn mono_arms_ex_pair_acc(
+  state,
+  locals,
+  subject_ty,
+  result_expected,
+  arms,
+  typed_arms,
+  acc,
+) {
+  case arms, typed_arms {
+    [], _ -> Ok(#(list.reverse(acc), state))
+    [Arm(pattern, guard, body), ..rest], [
+      texpr.TArm(_, guard_t, body_t),
+      ..typed_rest
+    ] -> {
+      use #(pattern2, bindings, state) <- result_try(
+        mono_pattern(state, locals, pattern, subject_ty),
+      )
+      let arm_locals = merge_dicts(locals, bindings)
+      use #(guard2, state) <- result_try(
+        mono_guard_pair(state, arm_locals, guard, guard_t),
+      )
+      use #(body2, state) <- result_try(
+        mono_expr_ex_pair(
+          state,
+          arm_locals,
+          result_expected,
+          body,
+          Some(body_t),
+        ),
+      )
+      mono_arms_ex_pair_acc(
+        state,
+        locals,
+        subject_ty,
+        result_expected,
+        rest,
+        typed_rest,
+        [Arm(pattern2, guard2, body2), ..acc],
+      )
+    }
+    _, _ -> mono_arms_ex(state, locals, subject_ty, result_expected, arms)
+  }
+}
+
+fn mono_guard_pair(state, locals, guard, typed_guard) {
+  case guard, typed_guard {
+    None, _ -> Ok(#(None, state))
+    Some(expr), Some(expr_t) -> {
+      use #(expr2, state) <- result_try(
+        mono_expr_pair(state, locals, expr, Some(expr_t)),
+      )
+      Ok(#(Some(expr2), state))
+    }
+    _, _ -> mono_guard(state, locals, guard)
   }
 }
