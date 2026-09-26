@@ -422,22 +422,6 @@ pub fn type_fields(
 // borrow-only views
 // ---------------------------------------------------------------------------
 
-/// Reads of a view count as reads of its container (transitively), so the
-/// container stays live while the view is used.
-fn expand_names(names, views) -> List(ir.Operand) {
-  list.fold(names, names, fn(acc, operand) {
-    case operand {
-      ir.Var(name) ->
-        case dict.get(views, name) {
-          Ok(container) ->
-            list.append(acc, expand_names([ir.Var(container)], views))
-          Error(_) -> acc
-        }
-      ir.Lit(_) -> acc
-    }
-  })
-}
-
 fn has_key(d, key) {
   case dict.get(d, key) {
     Ok(_) -> True
@@ -732,38 +716,49 @@ fn block_use_def(block: ir.Block, handles: Dict(String, Type), views) {
     list.fold(block.ops, #(dict.new(), dict.new()), fn(acc, op) {
       let #(use_acc, defs_acc) = acc
       let use_acc =
-        list.fold(
-          handle_names(expand_names(ir.op_reads(op), views), handles),
-          use_acc,
-          fn(u, name) {
-            case dict.get(defs_acc, name) {
-              Ok(_) -> u
-              Error(_) -> set_add(u, name)
-            }
-          },
-        )
+        add_exposed_reads(use_acc, ir.op_reads(op), handles, views, defs_acc)
       let defs_acc = case ir.op_dest(op) {
         Ok(dest_name) ->
-          case dict.get(handles, dest_name) {
-            Ok(_) -> set_add(defs_acc, dest_name)
-            Error(_) -> defs_acc
+          case dict.has_key(handles, dest_name) {
+            True -> set_add(defs_acc, dest_name)
+            False -> defs_acc
           }
         Error(_) -> defs_acc
       }
       #(use_acc, defs_acc)
     })
   let used =
-    list.fold(
-      handle_names(expand_names(ir.term_reads(block.term), views), handles),
-      used,
-      fn(u, name) {
-        case dict.get(defs, name) {
-          Ok(_) -> u
-          Error(_) -> set_add(u, name)
-        }
-      },
-    )
+    add_exposed_reads(used, ir.term_reads(block.term), handles, views, defs)
   #(used, defs)
+}
+
+/// Add the handle names read by `operands` that are not already defined in the
+/// block (an upward-exposed use), without allocating the intermediate lists
+/// `expand_names`/`handle_names` would build.
+fn add_exposed_reads(acc, operands, handles, views, defs) {
+  list.fold(operands, acc, fn(acc, operand) {
+    add_exposed_read(acc, operand, handles, views, defs)
+  })
+}
+
+fn add_exposed_read(acc, operand, handles, views, defs) {
+  case operand {
+    ir.Var(name) ->
+      case dict.has_key(handles, name) {
+        True ->
+          case dict.has_key(defs, name) {
+            True -> acc
+            False -> dict.insert(acc, name, True)
+          }
+        False ->
+          case dict.get(views, name) {
+            Ok(container) ->
+              add_exposed_read(acc, ir.Var(container), handles, views, defs)
+            Error(_) -> acc
+          }
+      }
+    ir.Lit(_) -> acc
+  }
 }
 
 fn compute_liveness(
