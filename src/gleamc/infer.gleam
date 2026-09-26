@@ -1360,8 +1360,8 @@ fn field_on_var(env: Env, st: St, obj_t, name) {
   case unique_field_type_name(env, name) {
     Error(_) -> {
       // Ambiguous (or unknown): defer. The object type is usually resolved
-      // later (e.g. by a record update) and the backend checker validates the
-      // access against the concrete type.
+      // later (e.g. by a record update or through other uses) and the backend
+      // checker validates the access against the concrete type.
       let #(field_ty, counter) = types.fresh(st.counter)
       Ok(#(texpr.TField(obj_t, name, field_ty), St(..st, counter: counter)))
     }
@@ -1388,22 +1388,18 @@ fn field_on_var(env: Env, st: St, obj_t, name) {
 fn infer_update(env: Env, st: St, name, base, fields) {
   case dict.get(env.ctors, name) {
     Error(_) -> Error(InferError("unknown record `" <> name <> "`"))
-    Ok(CtorDef(_, field_names, _scheme)) -> {
+    Ok(CtorDef(_, field_names, scheme)) -> {
       use _ <- result_try(check_update_fields(fields, field_names))
+      // The constructor name fixes the base's type (`Builder(..b)` makes
+      // `b: Builder`), so infer the base once and read the unchanged fields
+      // from it directly; never re-infer the base (as Gleam does).
+      let #(ctor_ty, st) = instantiate_ty(scheme, st)
+      let #(param_tys, ret) = fun_parts(ctor_ty)
       use #(base_t, st) <- result_try(infer_t(env, st, base))
-      let args =
-        list.map(field_names, fn(field_name) {
-          case find_update_field(fields, field_name) {
-            Ok(value) -> value
-            Error(_) -> EField(base, field_name)
-          }
-        })
-      use #(ctor_t, st) <- result_try(infer_ctor(env, st, name, args))
-      let ret = texpr.type_of(ctor_t)
-      let typed_args = case ctor_t {
-        texpr.TCtor(_, typed_args, _) -> typed_args
-        _ -> []
-      }
+      use st <- result_try(unify_st(ret, texpr.type_of(base_t), st))
+      use #(typed_args, st) <- result_try(
+        infer_update_args(env, st, base_t, field_names, param_tys, fields, []),
+      )
       let indexed =
         list.index_map(field_names, fn(field_name, index) {
           #(field_name, index)
@@ -1427,6 +1423,44 @@ fn infer_update(env: Env, st: St, name, base, fields) {
         })
       Ok(#(texpr.TUpdate(name, base_t, typed_fields, ret), st))
     }
+  }
+}
+
+/// Build the constructor arguments of a record update in formal field order:
+/// updated fields infer their value and unify with the parameter type;
+/// unchanged fields read from the already-typed base.
+fn infer_update_args(
+  env: Env,
+  st: St,
+  base_t: texpr.TExpr,
+  field_names: List(String),
+  param_tys: List(types.Ty),
+  fields: List(#(String, Expr)),
+  acc: List(texpr.TExpr),
+) {
+  case field_names, param_tys {
+    [], _ -> Ok(#(list.reverse(acc), st))
+    [field_name, ..rest_names], [param_ty, ..rest_params] -> {
+      let param_ty = types.zonk(param_ty, st.subst)
+      use #(arg_t, st) <- result_try(case find_update_field(fields, field_name) {
+        Ok(value) -> {
+          use #(value_t, st) <- result_try(infer_t(env, st, value))
+          use st <- result_try(unify_st(param_ty, texpr.type_of(value_t), st))
+          Ok(#(value_t, st))
+        }
+        Error(_) -> Ok(#(texpr.TField(base_t, field_name, param_ty), st))
+      })
+      infer_update_args(
+        env,
+        st,
+        base_t,
+        rest_names,
+        rest_params,
+        fields,
+        [arg_t, ..acc],
+      )
+    }
+    _, _ -> Error(InferError("record update has the wrong number of fields"))
   }
 }
 
