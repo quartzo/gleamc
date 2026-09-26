@@ -29,6 +29,17 @@ pub fn insert(
   // of rebuilding them on every `needs_drop` call (once per local per function).
   let fields_of = type_fields(ctors)
   let recursive = recursive_types(ctors)
+  // Type name -> number of variants, used to restrict the extraction move-out
+  // to single-variant (struct) containers.
+  let variant_count =
+    dict.fold(ctors, dict.new(), fn(acc, _ctor, info) {
+      let checker.CtorInfo(type_name, _) = info
+      let n = case dict.get(acc, type_name) {
+        Ok(found) -> found
+        Error(_) -> 0
+      }
+      dict.insert(acc, type_name, n + 1)
+    })
   // Tail/indirect call sites use the `Owned` ABI; give those functions an
   // all-`Owned` clone so ordinary calls keep the natural modes. Only handle
   // parameters make the distinction observable, so scalar-only functions are
@@ -40,7 +51,8 @@ pub fn insert(
   let ffi = ffi_modes.table()
   ir.Module(
     list.map(functions, fn(function) {
-      let owned = insert_fn(function, fields_of, recursive, modes, ffi)
+      let owned =
+        insert_fn(function, fields_of, recursive, modes, ffi, variant_count)
       case list.contains(machines, function.name) {
         True -> add_frame_lifecycle(owned)
         False -> owned
@@ -224,7 +236,14 @@ pub fn type_fields(
 // per-function pass
 // ---------------------------------------------------------------------------
 
-fn insert_fn(function: ir.Function, fields_of, recursive, modes, ffi) -> ir.Function {
+fn insert_fn(
+  function: ir.Function,
+  fields_of,
+  recursive,
+  modes,
+  ffi,
+  variant_count,
+) -> ir.Function {
   let ir.Function(name, params, ret, blocks, locals) = function
   let handles =
     list.fold(locals, dict.new(), fn(acc, local) {
@@ -261,6 +280,9 @@ fn insert_fn(function: ir.Function, fields_of, recursive, modes, ffi) -> ir.Func
           params,
           locals,
           handles,
+          fields_of,
+          recursive,
+          variant_count,
           modes,
           ffi,
           param_modes,
@@ -415,6 +437,9 @@ fn insert_blocks(
   params: List(String),
   locals: List(ir.Local),
   handles: Dict(String, Type),
+  fields_of,
+  recursive,
+  variant_count,
   modes,
   ffi,
   param_modes,
@@ -570,6 +595,9 @@ fn insert_blocks(
       defs_map,
       moved_map,
     )
+  // A container that is a pure, root temporary: not a parameter, not extracted
+  // from another aggregate, and read only by field/tuple extractions.
+  let pure_subjects = pure_extraction_subjects(blocks, handles, params)
 
   list.map(blocks, fn(block) {
     let pre = case dict.get(backward, block.label) {
@@ -589,38 +617,236 @@ fn insert_blocks(
         set_diff(owned_out, live_out_block),
         transferred_set(block.term, handles, modes, ffi),
       )
+    let #(moved_dests, elided_subjects) =
+      full_destructure_moves(
+        block,
+        dead,
+        handles,
+        fields_of,
+        recursive,
+        variant_count,
+        pure_subjects,
+      )
     let drops =
       list.filter_map(locals, fn(local) {
         let ir.Local(local_name, local_ty) = local
         case dict.get(dead, local_name) {
-          Ok(_) -> Ok(ir.OpDrop(local_name, local_ty))
+          Ok(_) ->
+            case dict.get(elided_subjects, local_name) {
+              Ok(_) -> Error(Nil)
+              Error(_) -> Ok(ir.OpDrop(local_name, local_ty))
+            }
           Error(_) -> Error(Nil)
         }
       })
     let new_ops = insert_retains(block.ops, 0, pre, [])
-    let new_ops = add_extract_retains(new_ops, handles)
+    let new_ops = add_extract_retains(new_ops, handles, moved_dests)
     ir.Block(block.label, list.append(new_ops, drops), block.term)
   })
 }
 
-fn add_extract_retains(ops, handles) {
+/// A handle local eligible for the extraction move-out: not a parameter, not
+/// itself extracted from another aggregate (a nested value), and read only by
+/// field/tuple extractions (a pure root temporary).
+fn pure_extraction_subjects(blocks, handles: Dict(String, Type), params) {
+  let param_set =
+    list.fold(params, dict.new(), fn(acc, param) {
+      dict.insert(acc, param, True)
+    })
+  let impure =
+    list.fold(blocks, dict.new(), fn(acc, block) {
+      let ir.Block(_, ops, term) = block
+      let acc =
+        list.fold(ops, acc, fn(acc, op) {
+          case op {
+            ir.OpField(_, ir.Var(_), _, _, _) -> acc
+            ir.OpTupleGet(_, ir.Var(_), _, _) -> acc
+            _ -> list.fold(ir.op_reads(op), acc, set_add_var)
+          }
+        })
+      list.fold(ir.term_reads(term), acc, set_add_var)
+    })
+  let extraction_dests =
+    list.fold(blocks, dict.new(), fn(acc, block) {
+      let ir.Block(_, ops, _) = block
+      list.fold(ops, acc, fn(acc, op) {
+        case op {
+          ir.OpField(dest, _, _, _, _) -> dict.insert(acc, dest, True)
+          ir.OpTupleGet(dest, _, _, _) -> dict.insert(acc, dest, True)
+          ir.OpEnvGet(dest, _, _, _) -> dict.insert(acc, dest, True)
+          ir.OpFrameGet(dest, _, _, _) -> dict.insert(acc, dest, True)
+          _ -> acc
+        }
+      })
+    })
+  list.fold(dict.keys(handles), dict.new(), fn(acc, name) {
+    case
+      dict.has_key(param_set, name)
+      || dict.has_key(impure, name)
+      || dict.has_key(extraction_dests, name)
+    {
+      True -> acc
+      False -> dict.insert(acc, name, True)
+    }
+  })
+}
+
+/// Destructuring a dead single-variant container whose owned fields are all
+/// extracted moves the fields out of the container instead of duplicating them
+/// (no `OpRetain` on the extraction) and leaves the container with nothing to
+/// drop. Returns `#(moved dests, elided subjects)`.
+fn full_destructure_moves(
+  block: ir.Block,
+  dead,
+  handles: Dict(String, Type),
+  fields_of,
+  recursive,
+  variant_count,
+  pure_subjects,
+) {
+  let ir.Block(_, ops, _) = block
+  let owning =
+    list.fold(ops, dict.new(), fn(acc, op) {
+      case op {
+        ir.OpField(dest, ir.Var(subject), _, index, _) ->
+          add_owning_extract(acc, subject, dest, index, handles)
+        ir.OpTupleGet(dest, ir.Var(subject), index, _) ->
+          add_owning_extract(acc, subject, dest, index, handles)
+        _ -> acc
+      }
+    })
+  let all_dests =
+    list.fold(ops, dict.new(), fn(acc, op) {
+      let existing = fn(subject) {
+        case dict.get(acc, subject) {
+          Ok(found) -> found
+          Error(_) -> []
+        }
+      }
+      case op {
+        ir.OpField(dest, ir.Var(subject), _, _, _) ->
+          dict.insert(acc, subject, [dest, ..existing(subject)])
+        ir.OpTupleGet(dest, ir.Var(subject), _, _) ->
+          dict.insert(acc, subject, [dest, ..existing(subject)])
+        _ -> acc
+      }
+    })
+  list.fold(dict.to_list(owning), #(dict.new(), dict.new()), fn(acc, entry) {
+    let #(moved, elided) = acc
+    let #(subject, indices) = entry
+    case dict.get(dead, subject) {
+      Error(_) -> acc
+      Ok(_) ->
+        case dict.get(pure_subjects, subject) {
+          Error(_) -> acc
+          Ok(_) ->
+            case dict.get(handles, subject) {
+              Error(_) -> acc
+              Ok(subject_ty) ->
+                case owned_field_indices(
+                  subject_ty,
+                  fields_of,
+                  recursive,
+                  variant_count,
+                ) {
+                  Error(_) -> acc
+                  Ok(owned) ->
+                    case indices_covered(owned, indices) {
+                      False -> acc
+                      True -> {
+                        let dests = case dict.get(all_dests, subject) {
+                          Ok(found) -> found
+                          Error(_) -> []
+                        }
+                        let moved =
+                          list.fold(dests, moved, fn(acc, dest) {
+                            dict.insert(acc, dest, True)
+                          })
+                        #(moved, dict.insert(elided, subject, True))
+                      }
+                    }
+                }
+            }
+        }
+    }
+  })
+}
+
+fn add_owning_extract(acc, subject, dest, index, handles) {
+  case dict.get(handles, dest) {
+    Ok(_) -> {
+      let existing = case dict.get(acc, subject) {
+        Ok(found) -> found
+        Error(_) -> dict.new()
+      }
+      dict.insert(acc, subject, dict.insert(existing, index, True))
+    }
+    Error(_) -> acc
+  }
+}
+
+/// The field indices of a single-variant container that own a reference (need
+/// dropping). Multi-variant and non-struct containers are not eligible.
+fn owned_field_indices(ty: Type, fields_of, recursive, variant_count) {
+  let fields = case ty {
+    TNamed(name) ->
+      case dict.get(variant_count, name) {
+        Ok(1) ->
+          case dict.get(fields_of, name) {
+            Ok(fs) -> Ok(fs)
+            Error(_) -> Error(Nil)
+          }
+        _ -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
+  case fields {
+    Error(_) -> Error(Nil)
+    Ok(fs) ->
+      Ok(
+        list.filter_map(
+          list.index_map(fs, fn(field_ty, index) { #(field_ty, index) }),
+          fn(pair) {
+            let #(field_ty, index) = pair
+            case needs_drop_in(field_ty, fields_of, recursive) {
+              True -> Ok(index)
+              False -> Error(Nil)
+            }
+          },
+        ),
+      )
+  }
+}
+
+fn indices_covered(owned: List(Int), indices) -> Bool {
+  list.all(owned, fn(index) { dict.has_key(indices, index) })
+}
+
+fn add_extract_retains(ops, handles, moved) {
   list.flat_map(ops, fn(op) {
     case op {
-      ir.OpField(dest, _, _, _, ty) -> extract_pair(op, dest, ty, handles)
-      ir.OpTupleGet(dest, _, _, ty) -> extract_pair(op, dest, ty, handles)
-      ir.OpEnvGet(dest, _, _, ty) -> extract_pair(op, dest, ty, handles)
-      ir.OpFrameGet(dest, _, _, ty) -> extract_pair(op, dest, ty, handles)
+      ir.OpField(dest, _, _, _, ty) -> extract_pair(op, dest, ty, handles, moved)
+      ir.OpTupleGet(dest, _, _, ty) ->
+        extract_pair(op, dest, ty, handles, moved)
+      ir.OpEnvGet(dest, _, _, ty) -> extract_pair(op, dest, ty, handles, moved)
+      ir.OpFrameGet(dest, _, _, ty) ->
+        extract_pair(op, dest, ty, handles, moved)
       _ -> [op]
     }
   })
 }
 
 /// Owning extraction needs its own reference; borrow-only views were removed
-/// from `handles`, so they are not retained here.
-fn extract_pair(op, dest, ty, handles) {
-  case dict.get(handles, dest) {
-    Ok(_) -> [op, ir.OpRetain(dest, ty)]
-    Error(_) -> [op]
+/// from `handles`, so they are not retained here. A dest moved out of a
+/// consumed container already owns the container's reference.
+fn extract_pair(op, dest, ty, handles, moved) {
+  case dict.get(moved, dest) {
+    Ok(_) -> [op]
+    Error(_) ->
+      case dict.get(handles, dest) {
+        Ok(_) -> [op, ir.OpRetain(dest, ty)]
+        Error(_) -> [op]
+      }
   }
 }
 

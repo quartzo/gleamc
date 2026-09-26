@@ -2,24 +2,26 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/order
 
-// A persistent hash array mapped trie (HAMT), 32-way (5 bits per level). Keys
-// are hashed natively (`gleamc.hash`, FNV-1a); collisions are chained. This replaces the
-// previous sorted-list implementation, whose O(n) `get`/`insert` made building
-// a large dict (e.g. the monomorphiser's tables) quadratic.
+// A persistent dictionary: open-addressing hash table over a `Buffer` of
+// buckets (linear probing, power-of-two capacity). `Buffer` is copy-on-write,
+// so a uniquely-owned dict updates in place (O(1)) and a shared one copies.
+// Keys are hashed natively (`gleamc.hash`, FNV-1a). `to_list` sorts by key, so
+// iteration order is stable and matches the previous implementation.
 
 pub opaque type Dict(k, v) {
-  Dict(root: Node(k, v), count: Int)
+  Dict(slots: Buffer(Bucket(k, v)), cap: Int, count: Int)
 }
 
-type Node(k, v) {
+type Bucket(k, v) {
   Empty
-  Leaf(hash: Int, key: k, value: v)
-  Collision(hash: Int, entries: List(#(k, v)))
-  Branch(bitmap: Int, children: List(Node(k, v)))
+  Used(key: k, value: v)
+  Tomb(key: k, value: v)
 }
+
+const min_cap = 16
 
 pub fn new() -> Dict(k, v) {
-  Dict(root: Empty, count: 0)
+  Dict(slots: buffer.new(min_cap), cap: min_cap, count: 0)
 }
 
 pub fn is_empty(dict: Dict(k, v)) -> Bool {
@@ -27,7 +29,7 @@ pub fn is_empty(dict: Dict(k, v)) -> Bool {
 }
 
 pub fn size(dict: Dict(k, v)) -> Int {
-  let Dict(_, count) = dict
+  let Dict(_, _, count) = dict
   count
 }
 
@@ -38,12 +40,27 @@ pub fn from_list(entries: List(#(k, v))) -> Dict(k, v) {
   })
 }
 
-/// Iteration is by key order, so the observable order is stable and matches
-/// the previous (sorted) implementation. `list.sort` is an insertion sort
-/// (O(n^2) and deep recursion) so use a merge sort here.
+/// Iteration is by key order, so the observable order is stable.
 pub fn to_list(dict: Dict(k, v)) -> List(#(k, v)) {
-  let Dict(root, _) = dict
-  sort_entries(entries(root, []))
+  let Dict(slots, cap, _) = dict
+  let entries = collect(slots, cap, 0, [])
+  sort_entries(entries)
+}
+
+fn collect(
+  slots: Buffer(Bucket(k, v)),
+  cap: Int,
+  i: Int,
+  acc: List(#(k, v)),
+) -> List(#(k, v)) {
+  case i >= cap {
+    True -> acc
+    False ->
+      case buffer.get(slots, i) {
+        Used(key, value) -> collect(slots, cap, i + 1, [#(key, value), ..acc])
+        _ -> collect(slots, cap, i + 1, acc)
+      }
+  }
 }
 
 fn sort_entries(items: List(#(k, v))) -> List(#(k, v)) {
@@ -67,21 +84,9 @@ fn merge_entries(
     [], _ -> list.append(list.reverse(acc), b)
     _, [] -> list.append(list.reverse(acc), a)
     [#(key_a, _) as entry_a, ..rest_a], [#(key_b, _) as entry_b, ..rest_b] ->
-      case key_order(key_a, key_b) {
-        order.Gt -> merge_entries(a, rest_b, [entry_b, ..acc])
-        _ -> merge_entries(rest_a, b, [entry_a, ..acc])
-      }
-  }
-}
-
-fn key_order(a: k, b: k) -> Order {
-  let ordering = gleamc.key_compare(a, b)
-  case ordering < 0 {
-    True -> order.Lt
-    False ->
-      case ordering > 0 {
-        True -> order.Gt
-        False -> order.Eq
+      case gleamc.key_compare(key_a, key_b) > 0 {
+        True -> merge_entries(a, rest_b, [entry_b, ..acc])
+        False -> merge_entries(rest_a, b, [entry_a, ..acc])
       }
   }
 }
@@ -101,8 +106,20 @@ pub fn values(dict: Dict(k, v)) -> List(v) {
 }
 
 pub fn get(dict: Dict(k, v), key: k) -> Result(v, Nil) {
-  let Dict(root, _) = dict
-  get_node(root, hash_key(key), key, 0)
+  let Dict(slots, cap, _) = dict
+  probe_get(slots, cap, gleamc.hash(key) % cap, key)
+}
+
+fn probe_get(slots: Buffer(Bucket(k, v)), cap: Int, i: Int, key: k) -> Result(v, Nil) {
+  case buffer.get(slots, i) {
+    Empty -> Error(Nil)
+    Used(k, value) ->
+      case k == key {
+        True -> Ok(value)
+        False -> probe_get(slots, cap, next(cap, i), key)
+      }
+    Tomb(_, _) -> probe_get(slots, cap, next(cap, i), key)
+  }
 }
 
 pub fn has_key(dict: Dict(k, v), key: k) -> Bool {
@@ -113,21 +130,69 @@ pub fn has_key(dict: Dict(k, v), key: k) -> Bool {
 }
 
 pub fn insert(dict: Dict(k, v), key: k, value: v) -> Dict(k, v) {
-  let Dict(root, count) = dict
-  let #(root, added) = insert_node(root, hash_key(key), key, value, 0)
-  Dict(root, case added {
+  let dict = grow_if_needed(dict)
+  let Dict(slots, cap, count) = dict
+  let #(slots, added) = place(slots, cap, gleamc.hash(key) % cap, key, value, cap)
+  Dict(slots, cap, case added {
     True -> count + 1
     False -> count
   })
 }
 
+fn place(
+  slots: Buffer(Bucket(k, v)),
+  cap: Int,
+  i: Int,
+  key: k,
+  value: v,
+  tomb: Int,
+) -> #(Buffer(Bucket(k, v)), Bool) {
+  case buffer.get(slots, i) {
+    Empty ->
+      case tomb == cap {
+        True -> #(buffer.set(slots, i, Used(key, value)), True)
+        False -> #(buffer.set(slots, tomb, Used(key, value)), True)
+      }
+    Used(k, _) ->
+      case k == key {
+        True -> #(buffer.set(slots, i, Used(key, value)), False)
+        False -> place(slots, cap, next(cap, i), key, value, tomb)
+      }
+    Tomb(_, _) -> {
+      let tomb = case tomb == cap {
+        True -> i
+        False -> tomb
+      }
+      place(slots, cap, next(cap, i), key, value, tomb)
+    }
+  }
+}
+
 pub fn delete(dict: Dict(k, v), key: k) -> Dict(k, v) {
-  let Dict(root, count) = dict
-  let #(root, removed) = delete_node(root, hash_key(key), key, 0)
-  Dict(root, case removed {
+  let Dict(slots, cap, count) = dict
+  let #(slots, removed) = probe_delete(slots, cap, gleamc.hash(key) % cap, key)
+  Dict(slots, cap, case removed {
     True -> count - 1
     False -> count
   })
+}
+
+fn probe_delete(
+  slots: Buffer(Bucket(k, v)),
+  cap: Int,
+  i: Int,
+  key: k,
+) -> #(Buffer(Bucket(k, v)), Bool) {
+  case buffer.get(slots, i) {
+    Empty -> #(slots, False)
+    Tomb(_, _) -> probe_delete(slots, cap, next(cap, i), key)
+    Used(k, value) ->
+      case k == key {
+        // Keep the key/value bytes: the tombstone just marks the slot free.
+        True -> #(buffer.set(slots, i, Tomb(k, value)), True)
+        False -> probe_delete(slots, cap, next(cap, i), key)
+      }
+  }
 }
 
 pub fn upsert(
@@ -138,6 +203,50 @@ pub fn upsert(
   case get(dict, key) {
     Ok(value) -> insert(dict, key, with(Some(value)))
     Error(_) -> insert(dict, key, with(None))
+  }
+}
+
+fn grow_if_needed(dict: Dict(k, v)) -> Dict(k, v) {
+  let Dict(slots, cap, count) = dict
+  case count * 4 > cap * 3 {
+    True -> Dict(rehash(slots, cap, cap * 2, 0), cap * 2, count)
+    False -> dict
+  }
+}
+
+fn rehash(
+  old: Buffer(Bucket(k, v)),
+  old_cap: Int,
+  new_cap: Int,
+  i: Int,
+) -> Buffer(Bucket(k, v)) {
+  rehash_loop(old, old_cap, buffer.new(new_cap), new_cap, i)
+}
+
+fn rehash_loop(
+  old: Buffer(Bucket(k, v)),
+  old_cap: Int,
+  new: Buffer(Bucket(k, v)),
+  new_cap: Int,
+  i: Int,
+) -> Buffer(Bucket(k, v)) {
+  case i >= old_cap {
+    True -> new
+    False ->
+      case buffer.get(old, i) {
+        Used(key, value) -> {
+          let #(new, _) = place(new, new_cap, gleamc.hash(key) % new_cap, key, value, new_cap)
+          rehash_loop(old, old_cap, new, new_cap, i + 1)
+        }
+        _ -> rehash_loop(old, old_cap, new, new_cap, i + 1)
+      }
+  }
+}
+
+fn next(cap: Int, i: Int) -> Int {
+  case i + 1 >= cap {
+    True -> 0
+    False -> i + 1
   }
 }
 
@@ -212,282 +321,4 @@ pub fn group(key: fn(v) -> k, values: List(v)) -> Dict(k, List(v)) {
       Error(_) -> insert(dict, value_key, [value])
     }
   })
-}
-
-// ---------------------------------------------------------------------------
-// nodes
-// ---------------------------------------------------------------------------
-
-fn get_node(node: Node(k, v), hash: Int, key: k, level: Int) -> Result(v, Nil) {
-  case node {
-    Empty -> Error(Nil)
-    Leaf(h, k, v) ->
-      case h == hash && k == key {
-        True -> Ok(v)
-        False -> Error(Nil)
-      }
-    Collision(h, entries) ->
-      case h == hash {
-        True -> collision_get(entries, key)
-        False -> Error(Nil)
-      }
-    Branch(bitmap, children) ->
-      case bit_at(bitmap, index(hash, level)) {
-        True -> {
-          let child = list_at(children, bits_below(bitmap, index(hash, level)))
-          get_node(child, hash, key, level + 1)
-        }
-        False -> Error(Nil)
-      }
-  }
-}
-
-fn insert_node(node: Node(k, v), hash: Int, key: k, value: v, level: Int) -> #(Node(k, v), Bool) {
-  case node {
-    Empty -> #(Leaf(hash, key, value), True)
-    Leaf(h, k, v) ->
-      case h == hash {
-        True ->
-          case k == key {
-            True -> #(Leaf(hash, key, value), False)
-            False -> #(Collision(hash, [#(key, value), #(k, v)]), True)
-          }
-        False -> #(merge_two(node, Leaf(hash, key, value), level), True)
-      }
-    Collision(h, entries) ->
-      case h == hash {
-        True -> {
-          let #(entries, added) = collision_put(entries, key, value, [])
-          #(Collision(h, entries), added)
-        }
-        False -> #(merge_two(node, Leaf(hash, key, value), level), True)
-      }
-    Branch(bitmap, children) -> {
-      let idx = index(hash, level)
-      let pos = bits_below(bitmap, idx)
-      case bit_at(bitmap, idx) {
-        True -> {
-          let child = list_at(children, pos)
-          let #(child, added) = insert_node(child, hash, key, value, level + 1)
-          #(Branch(bitmap, replace_at(children, pos, child)), added)
-        }
-        False ->
-          #(
-            Branch(
-              bitmap + pow(2, idx),
-              insert_at(children, pos, Leaf(hash, key, value)),
-            ),
-            True,
-          )
-      }
-    }
-  }
-}
-
-fn delete_node(node: Node(k, v), hash: Int, key: k, level: Int) -> #(Node(k, v), Bool) {
-  case node {
-    Empty -> #(Empty, False)
-    Leaf(h, k, v) ->
-      case h == hash && k == key {
-        True -> #(Empty, True)
-        False -> #(node, False)
-      }
-    Collision(h, entries) ->
-      case h == hash {
-        True -> {
-          let #(entries, removed) = collision_remove(entries, key)
-          case entries {
-            [] -> #(Empty, removed)
-            [#(k, v)] -> #(Leaf(h, k, v), removed)
-            _ -> #(Collision(h, entries), removed)
-          }
-        }
-        False -> #(node, False)
-      }
-    Branch(bitmap, children) -> {
-      let idx = index(hash, level)
-      case bit_at(bitmap, idx) {
-        False -> #(node, False)
-        True -> {
-          let pos = bits_below(bitmap, idx)
-          let #(child, removed) =
-            delete_node(list_at(children, pos), hash, key, level + 1)
-          case removed {
-            False -> #(node, False)
-            True ->
-              case child {
-                Empty -> {
-                  let remaining = remove_at(children, pos)
-                  case remaining {
-                    [] -> #(Empty, True)
-                    [only] -> #(only, True)
-                    _ -> #(Branch(bitmap - pow(2, idx), remaining), True)
-                  }
-                }
-                _ -> #(Branch(bitmap, replace_at(children, pos, child)), True)
-              }
-          }
-        }
-      }
-    }
-  }
-}
-
-
-
-// Two leaf-like nodes (Leaf/Collision) whose hashes differ: branch them at the
-// first level where their indices diverge.
-fn merge_two(a: Node(k, v), b: Node(k, v), level: Int) -> Node(k, v) {
-  let ia = index(node_hash(a), level)
-  let ib = index(node_hash(b), level)
-  case ia == ib {
-    True -> Branch(pow(2, ia), [merge_two(a, b, level + 1)])
-    False ->
-      case ia < ib {
-        True -> Branch(pow(2, ia) + pow(2, ib), [a, b])
-        False -> Branch(pow(2, ia) + pow(2, ib), [b, a])
-      }
-  }
-}
-
-fn node_hash(node: Node(k, v)) -> Int {
-  case node {
-    Leaf(h, _, _) -> h
-    Collision(h, _) -> h
-    _ -> 0
-  }
-}
-
-fn collision_get(entries: List(#(k, v)), key: k) -> Result(v, Nil) {
-  case entries {
-    [] -> Error(Nil)
-    [#(k, v), ..rest] ->
-      case k == key {
-        True -> Ok(v)
-        False -> collision_get(rest, key)
-      }
-  }
-}
-
-fn collision_put(entries: List(#(k, v)), key: k, value: v, acc: List(#(k, v))) -> #(List(#(k, v)), Bool) {
-  case entries {
-    [] -> #(list.reverse([#(key, value), ..acc]), True)
-    [#(k, v), ..rest] ->
-      case k == key {
-        True -> #(list.reverse(acc) |> list.append([#(key, value), ..rest]), False)
-        False -> collision_put(rest, key, value, [#(k, v), ..acc])
-      }
-  }
-}
-
-fn collision_remove(entries: List(#(k, v)), key: k) -> #(List(#(k, v)), Bool) {
-  collision_remove_loop(entries, key, [])
-}
-
-fn collision_remove_loop(entries: List(#(k, v)), key: k, acc: List(#(k, v))) -> #(List(#(k, v)), Bool) {
-  case entries {
-    [] -> #(list.reverse(acc), False)
-    [#(k, v), ..rest] ->
-      case k == key {
-        True -> #(list.append(list.reverse(acc), rest), True)
-        False -> collision_remove_loop(rest, key, [#(k, v), ..acc])
-      }
-  }
-}
-
-fn entries(node: Node(k, v), acc: List(#(k, v))) -> List(#(k, v)) {
-  case node {
-    Empty -> acc
-    Leaf(_, k, v) -> [#(k, v), ..acc]
-    Collision(_, es) -> list.append(es, acc)
-    Branch(_, children) ->
-      list.fold(children, acc, fn(acc, child) { entries(child, acc) })
-  }
-}
-
-// ---------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------
-
-fn hash_key(key: a) -> Int {
-  gleamc.hash(key)
-}
-
-fn index(hash, level) -> Int {
-  hash / pow(32, level) % 32
-}
-
-fn pow(base, exponent) -> Int {
-  case exponent <= 0 {
-    True -> 1
-    False -> base * pow(base, exponent - 1)
-  }
-}
-
-fn bit_at(bitmap, i) -> Bool {
-  bitmap / pow(2, i) % 2 == 1
-}
-
-fn bits_below(bitmap, i) -> Int {
-  bits_below_loop(bitmap, 0, i, 0)
-}
-
-fn bits_below_loop(bitmap, from, to, acc) {
-  case from >= to {
-    True -> acc
-    False ->
-      bits_below_loop(
-        bitmap,
-        from + 1,
-        to,
-        case bit_at(bitmap, from) {
-          True -> acc + 1
-          False -> acc
-        },
-      )
-  }
-}
-
-fn list_at(items: List(Node(k, v)), index: Int) -> Node(k, v) {
-  case items {
-    [] -> Empty
-    [item, ..rest] ->
-      case index <= 0 {
-        True -> item
-        False -> list_at(rest, index - 1)
-      }
-  }
-}
-
-fn insert_at(items: List(Node(k, v)), index: Int, item: Node(k, v)) -> List(Node(k, v)) {
-  case items {
-    [] -> [item]
-    [first, ..rest] ->
-      case index <= 0 {
-        True -> [item, first, ..rest]
-        False -> [first, ..insert_at(rest, index - 1, item)]
-      }
-  }
-}
-
-fn replace_at(items: List(Node(k, v)), index: Int, item: Node(k, v)) -> List(Node(k, v)) {
-  case items {
-    [] -> []
-    [first, ..rest] ->
-      case index <= 0 {
-        True -> [item, ..rest]
-        False -> [first, ..replace_at(rest, index - 1, item)]
-      }
-  }
-}
-
-fn remove_at(items: List(Node(k, v)), index: Int) -> List(Node(k, v)) {
-  case items {
-    [] -> []
-    [first, ..rest] ->
-      case index <= 0 {
-        True -> rest
-        False -> [first, ..remove_at(rest, index - 1)]
-      }
-  }
 }
