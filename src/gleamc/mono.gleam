@@ -14,10 +14,9 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import gleamc/util
 import gleamc/ffi
-import gleamc/checker
 import gleamc/tmono
 import gleamc/ast.{
-  type Arm, type CustomType, type Expr, type Function, type Module, type Pattern,
+  type CustomType, type Expr, type Function, type Module, type Pattern,
   type Type, type Variant, Arm, CustomType, DCustomType, DExternal, DFunction,
   EBinop, EBitArray, EBlock,
   EBool, ECall, ECase, EClosure, ECtor, EEnvGet, EField, EFloat, EInt, ELabelled,
@@ -40,41 +39,31 @@ pub fn monomorphize(module: Module) -> Result(tmono.TModule, String) {
     list.sort(state.type_out, fn(a, b) {
       int.compare(type_rank(state, a), type_rank(state, b))
     })
-  let type_defs = list.map(sorted_types, fn(custom) { DCustomType(custom) })
-  let fn_defs = list.map(state.fn_out, fn(function) { DFunction(function) })
   // `@external` declarations have no body to specialise; keep them verbatim.
   let Module(definitions) = resolved
   let external_defs =
-    list.filter(definitions, fn(def) {
+    list.filter_map(definitions, fn(def) {
       case def {
-        DExternal(_) -> True
-        _ -> False
+        DExternal(external) -> Ok(tmono.TDExternal(external))
+        _ -> Error(Nil)
       }
     })
-  let mono_module =
-    Module(
-      list.append(
-        type_defs,
-        list.append(list.reverse(fn_defs), external_defs),
-      ),
-    )
-  // The monomorphiser owns the typed monomorphic product: elaborate the
-  // specialised surface module once here, then hand the typed module to the
-  // rest of the cascade (dce -> checker.check -> lower).
-  map_elaborate(checker.elaborate(mono_module))
-}
-
-fn map_elaborate(result: Result(tmono.TModule, checker.CheckError)) -> Result(
-  tmono.TModule,
-  String,
-) {
-  case result {
-    Ok(typed) -> Ok(typed)
-    Error(err) -> {
-      let checker.CheckError(message) = err
-      Error(message)
-    }
-  }
+  let typed_type_defs =
+    list.map(sorted_types, fn(custom) { tmono.TDCustomType(custom) })
+  // `state.fn_out` accumulates by prepending; reverse it back to emission
+  // order, matching the order the surface module would have had.
+  let typed_fn_defs =
+    list.map(list.reverse(state.fn_out), fn(function) {
+      tmono.TDFunction(function)
+    })
+  // The monomorphiser owns the typed monomorphic product: every node was
+  // annotated during the walk, so no further elaboration is needed.
+  Ok(tmono.TModule(
+    list.append(
+      typed_type_defs,
+      list.append(typed_fn_defs, external_defs),
+    ),
+  ))
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +77,10 @@ type State {
     globals: Dict(String, Scheme),
     ctors: Dict(String, infer.CtorDef),
     types: Dict(String, infer.TypeDef),
+    /// The type variables in scope while walking the current specialised
+    /// function body, mapped to their concrete surface types. Used to turn an
+    /// inferred type into its specialised surface type.
+    surface_map: Dict(String, Type),
     surface_fns: Dict(String, Function),
     surface_types: Dict(String, CustomType),
     type_order: Dict(String, Int),
@@ -98,7 +91,7 @@ type State {
     ctor_names: Dict(String, String),
     pending_fn: List(#(String, List(Type))),
     pending_type: List(#(String, List(Type))),
-    fn_out: List(Function),
+    fn_out: List(tmono.TFunction),
     type_out: List(CustomType),
   )
 }
@@ -144,6 +137,7 @@ fn initial_state(module: Module, program: infer.Program) -> State {
     globals: infer.globals_of(program),
     ctors: ctors,
     types: types_map,
+    surface_map: dict.new(),
     surface_fns: surface_fns,
     surface_types: surface_types,
     type_order: type_order,
@@ -315,6 +309,9 @@ fn specialise_fn_inner(state: State, name, type_args) {
           let #(var_name, arg) = pair
           dict.insert(acc, var_name, arg)
         })
+      // Make the enclosing type variables visible to the body walk, so each
+      // output node can carry its specialised surface type.
+      let state = State(..state, surface_map: surface_map)
       use #(params2, state) <- result_try(mono_params(
         state,
         surface_map,
@@ -376,7 +373,7 @@ fn specialise_fn_inner(state: State, name, type_args) {
       }
       Ok(
         State(..state1, globals: globals, fn_out: [
-          Function(is_pub, specialized, params2, ret2, body2, line),
+          tmono.TFunction(is_pub, specialized, params2, ret2, body2, line),
           ..state1.fn_out
         ]),
       )
@@ -553,6 +550,215 @@ fn mono_types_acc(state, surface_map, types_list, acc) -> Result(#(List(Type), S
 }
 
 // ---------------------------------------------------------------------------
+// specialised surface types for output nodes
+// ---------------------------------------------------------------------------
+
+/// The specialised surface type of an inferred `types.Ty` under the enclosing
+/// function's type substitution. Types are ground by now, so the registration
+/// performed by `mono_type` is idempotent (the specialised type was already
+/// requested when the surface was rewritten).
+fn specialised(state: State, ty: types.Ty) -> #(Type, State) {
+  case mono_type(state, state.surface_map, surface_of(ty)) {
+    Ok(#(surface, state2)) -> #(surface, state2)
+    Error(_) -> #(surface_of(ty), state)
+  }
+}
+
+/// The result type of a binary operator, mirroring the checker.
+fn binop_ty(op: String) -> Type {
+  case op {
+    "+" | "-" | "*" | "/" | "%" -> ast.TInt
+    "+." | "-." | "*." | "/." -> ast.TFloat
+    "<>" -> ast.TString
+    _ -> ast.TBool
+  }
+}
+
+/// The result type of a unary operator, mirroring the checker.
+fn unop_ty(op: String, operand_ty: Type) -> Type {
+  case op {
+    "!" -> ast.TBool
+    "-." -> ast.TFloat
+    _ -> operand_ty
+  }
+}
+
+/// The specialised function type of a top-level function instantiated with
+/// `type_args`, as the checker would compute it from the signature.
+fn fn_specialised_ty(
+  state: State,
+  name: String,
+  type_args: List(Type),
+) -> #(Type, State) {
+  case dict.get(state.surface_fns, name) {
+    Error(_) -> #(ast.TNil, state)
+    Ok(function) -> {
+      let Function(_, _, params, ret, _, _) = function
+      let var_names = function_type_vars(function)
+      let smap =
+        list.fold(list.zip(var_names, type_args), dict.new(), fn(acc, pair) {
+          let #(var_name, arg) = pair
+          dict.insert(acc, var_name, arg)
+        })
+      let param_types = list.map(params, fn(param) {
+        let #(_, param_ty) = param
+        param_ty
+      })
+      case mono_types(state, smap, param_types) {
+        Ok(#(params2, state2)) ->
+          case mono_type(state2, smap, ret) {
+            Ok(#(ret2, state3)) -> #(ast.TFun(params2, ret2), state3)
+            Error(_) -> #(ast.TNil, state2)
+          }
+        Error(_) -> #(ast.TNil, state)
+      }
+    }
+  }
+}
+
+/// The specialised type of a variable (a local binding, or a top-level
+/// function used as a value).
+fn var_specialised_ty(
+  state: State,
+  locals: Dict(String, Scheme),
+  name: String,
+) -> #(Type, State) {
+  case dict.get(locals, name) {
+    Ok(Scheme(_, ty)) -> specialised(state, types.zonk(ty, state.subst))
+    Error(_) ->
+      case dict.get(state.globals, name) {
+        Ok(Scheme(_, ty)) -> specialised(state, types.zonk(ty, state.subst))
+        Error(_) -> #(ast.TNil, state)
+      }
+  }
+}
+
+/// The type of a block: its final statement's type, or `Nil` when it ends in a
+/// `let` (or is empty), mirroring the checker.
+fn block_ty(statements: List(tmono.TStatement)) -> Type {
+  case list.reverse(statements) {
+    [] -> ast.TNil
+    [tmono.TStmt(expr), ..] -> tmono.type_of(expr)
+    [tmono.TLet(_, _), ..] -> ast.TNil
+  }
+}
+
+/// The result type of a `case`: the first arm body's type, mirroring the
+/// checker (all arm bodies share a type after mono).
+fn arms_result_ty(arms: List(tmono.TArm)) -> Type {
+  case arms {
+    [] -> ast.TNil
+    [tmono.TArm(_, _, body), ..] -> tmono.type_of(body)
+  }
+}
+
+/// The specialised return type of a builtin (or any global scheme) applied to
+/// `arg_tys`, resolved against the scheme without advancing the counter.
+fn global_call_ret_ty(
+  state: State,
+  fun: Expr,
+  arg_tys: List(types.Ty),
+  expected: Option(types.Ty),
+) -> Type {
+  case fun {
+    EField(EVar(module), name) -> {
+      let full = module <> "." <> name
+      case dict.get(state.globals, full) {
+        Error(_) -> ast.TNil
+        Ok(scheme) -> {
+          let Scheme(_, fun_ty) = scheme
+          let #(param_tys, ret) = fun_parts(fun_ty)
+          let generic_args = list.map(arg_tys, fn(ty) {
+            unspecialize_internal(state, ty)
+          })
+          let unified = case
+            unify_seq(param_tys, generic_args, types.empty())
+          {
+            Ok(subst) -> subst
+            Error(_) -> types.empty()
+          }
+          let unified = case expected {
+            Some(expected_ty) ->
+              case map_unify(
+                ret,
+                unspecialize_internal(state, expected_ty),
+                unified,
+              ) {
+                Ok(subst) -> subst
+                Error(_) -> unified
+              }
+            None -> unified
+          }
+          let #(ty, _) = specialised(state, types.zonk(ret, unified))
+          ty
+        }
+      }
+    }
+    _ -> ast.TNil
+  }
+}
+
+/// The specialised type of a record field, resolved from the (generic) custom
+/// type definition and the object's specialised type. The inference companion
+/// can leave an ambiguous field type as an unresolved variable, so the backend
+/// checker's rule (look the field up in the constructor info) is mirrored here.
+fn field_specialised_ty(state: State, obj_ty: Type, name: String) -> #(Type, State) {
+  case obj_ty {
+    TNamed(specialized) -> {
+      let #(orig, args) = case dict.get(state.type_generics, specialized) {
+        Ok(TNamed(base)) -> #(base, [])
+        Ok(TApp(base, type_args)) -> #(base, type_args)
+        Ok(_) -> #(specialized, [])
+        Error(_) -> #(specialized, [])
+      }
+      case dict.get(state.surface_types, orig) {
+        Error(_) -> #(ast.TNil, state)
+        Ok(CustomType(_, _, generics, variants, _)) -> {
+          let smap =
+            list.fold(list.zip(generics, args), dict.new(), fn(acc, pair) {
+              let #(generic, arg) = pair
+              dict.insert(acc, generic, arg)
+            })
+          let found =
+            list.filter_map(variants, fn(variant) {
+              let Variant(_, fields) = variant
+              case list.key_find(fields, name) {
+                Ok(field_ty) -> Ok(field_ty)
+                Error(_) -> Error(Nil)
+              }
+            })
+          case found {
+            [field_ty, ..] ->
+              case mono_type(state, smap, field_ty) {
+                Ok(#(ty, state2)) -> #(ty, state2)
+                Error(_) -> #(ast.TNil, state)
+              }
+            [] -> #(ast.TNil, state)
+          }
+        }
+      }
+    }
+    _ -> #(ast.TNil, state)
+  }
+}
+
+/// The callee `TExpr` for a call whose surface callee is not a plain variable,
+/// mirroring the checker's builtin shape (`module.name` becomes a field of a
+/// `Nil`-typed module variable).
+fn callee_texpr(state: State, locals, fun: Expr) -> Result(
+  #(tmono.TExpr, State),
+  String,
+) {
+  case fun {
+    EField(EVar(module), name) -> Ok(#(
+      tmono.TField(tmono.TVar(module, ast.TNil), name, ast.TNil),
+      state,
+    ))
+    _ -> mono_expr(state, locals, fun)
+  }
+}
+
+// ---------------------------------------------------------------------------
 // expression rewriting (type-directed)
 // ---------------------------------------------------------------------------
 
@@ -560,17 +766,25 @@ fn mono_expr(
   state: State,
   locals: Dict(String, Scheme),
   expr,
-) -> Result(#(Expr, State), String) {
+) -> Result(#(tmono.TExpr, State), String) {
   case expr {
-    EInt(_) | EFloat(_) | EString(_) | EBool(_) | ENil | EVar(_) ->
-      Ok(#(expr, state))
+    EInt(value) -> Ok(#(tmono.TInt(value, ast.TInt), state))
+    EFloat(value) -> Ok(#(tmono.TFloat(value, ast.TFloat), state))
+    EString(value) -> Ok(#(tmono.TString(value, ast.TString), state))
+    EBool(value) -> Ok(#(tmono.TBool(value, ast.TBool), state))
+    ENil -> Ok(#(tmono.TNil(ast.TNil), state))
+    EVar(name) -> {
+      let #(ty, state) = var_specialised_ty(state, locals, name)
+      Ok(#(tmono.TVar(name, ty), state))
+    }
     ELabelled(label, value) -> {
       use #(value2, state) <- result_try(mono_expr(state, locals, value))
-      Ok(#(ELabelled(label, value2), state))
+      Ok(#(tmono.TLabelled(label, value2, tmono.type_of(value2)), state))
     }
     ETuple(elements) -> {
       use #(elements2, state) <- result_try(mono_exprs(state, locals, elements))
-      Ok(#(ETuple(elements2), state))
+      let ty = ast.TTuple(list.map(elements2, tmono.type_of))
+      Ok(#(tmono.TTuple(elements2, ty), state))
     }
     EBinop(op, left, right) -> {
       use #(left2, state) <- result_try(mono_expr(state, locals, left))
@@ -581,39 +795,49 @@ fn mono_expr(
         Some(left_ty),
         right,
       ))
-      Ok(#(EBinop(op, left2, right2), state))
+      Ok(#(tmono.TBinop(op, left2, right2, binop_ty(op)), state))
     }
     EUnop(op, operand) -> {
       use #(operand2, state) <- result_try(mono_expr(state, locals, operand))
-      Ok(#(EUnop(op, operand2), state))
+      let ty = unop_ty(op, tmono.type_of(operand2))
+      Ok(#(tmono.TUnop(op, operand2, ty), state))
     }
     EField(obj, name) -> {
       use #(obj2, state) <- result_try(mono_expr(state, locals, obj))
-      Ok(#(EField(obj2, name), state))
+      let #(ty, state) = field_specialised_ty(state, tmono.type_of(obj2), name)
+      Ok(#(tmono.TField(obj2, name, ty), state))
     }
     EBlock(statements) -> mono_block(state, locals, statements)
     ECall(fun, args) -> mono_call(state, locals, fun, args, None)
     ECtor(name, args) -> mono_ctor(state, locals, name, args)
     ECase(subject, arms) -> mono_case(state, locals, subject, arms)
     ELambda(_, _) -> Error("lambda requires an expected function type")
-    EClosure(_, _, _, _) -> Ok(#(expr, state))
+    EClosure(code, captures, env_ty, fn_ty) -> {
+      use #(captures2, state) <- result_try(mono_exprs(state, locals, captures))
+      Ok(#(tmono.TClosure(code, captures2, env_ty, fn_ty, fn_ty), state))
+    }
     EEnvGet(env_ty, index, ty) -> {
       use #(specialized, state) <- result_try(specialize_env_get(state, ty))
-      Ok(#(EEnvGet(env_ty, index, specialized), state))
+      Ok(#(tmono.TEnvGet(env_ty, index, specialized), state))
     }
-    EPanic(_, _) -> Ok(#(expr, state))
+    EPanic(message, ty) -> Ok(#(tmono.TPanic(message, ty), state))
     EUpdate(name, base, fields) ->
       mono_update(state, locals, no_expected_ty(), name, base, fields)
     EBitArray(elements) -> {
       use #(elements2, state) <- result_try(mono_exprs(state, locals, elements))
-      Ok(#(EBitArray(elements2), state))
+      Ok(#(tmono.TBitArray(elements2, ast.TNamed("BitArray")), state))
     }
   }
 }
 
 /// Like `mono_expr`, but with an expected type used to resolve constructors
 /// that carry no arguments.
-fn mono_expr_ex(state, locals, expected, expr) {
+fn mono_expr_ex(
+  state,
+  locals,
+  expected,
+  expr,
+) -> Result(#(tmono.TExpr, State), String) {
   case expr {
     ECtor(name, args) -> mono_ctor_ex(state, locals, name, args, expected)
     ECase(subject, arms) -> {
@@ -626,16 +850,20 @@ fn mono_expr_ex(state, locals, expected, expr) {
         expected,
         arms,
       ))
-      Ok(#(ECase(subject2, arms2), state))
+      let ty = arms_result_ty(arms2)
+      Ok(#(tmono.TCase(subject2, arms2, ty), state))
     }
     EBlock(statements) -> mono_block_ex(state, locals, expected, statements)
     ECall(fun, args) -> mono_call(state, locals, fun, args, expected)
     ELambda(names, body) ->
       lift_lambda(state, locals, names, body, None, expected)
-    EClosure(_, _, _, _) -> Ok(#(expr, state))
+    EClosure(code, captures, env_ty, fn_ty) -> {
+      use #(captures2, state) <- result_try(mono_exprs(state, locals, captures))
+      Ok(#(tmono.TClosure(code, captures2, env_ty, fn_ty, fn_ty), state))
+    }
     EEnvGet(env_ty, index, ty) -> {
       use #(specialized, state) <- result_try(specialize_env_get(state, ty))
-      Ok(#(EEnvGet(env_ty, index, specialized), state))
+      Ok(#(tmono.TEnvGet(env_ty, index, specialized), state))
     }
     EPanic(message, _) -> {
       use #(ty, state) <- result_try(case expected {
@@ -643,15 +871,21 @@ fn mono_expr_ex(state, locals, expected, expr) {
           mono_type(state, dict.new(), surface_of(expected_ty))
         None -> Ok(#(ast.TNil, state))
       })
-      Ok(#(EPanic(message, ty), state))
+      Ok(#(tmono.TPanic(message, ty), state))
     }
     EVar(name) ->
       case dict.get(locals, name) {
-        Ok(_) -> Ok(#(expr, state))
+        Ok(_) -> {
+          let #(ty, state) = var_specialised_ty(state, locals, name)
+          Ok(#(tmono.TVar(name, ty), state))
+        }
         Error(_) ->
           case eta_expand(state, locals, name, expected) {
             Ok(expanded) -> Ok(expanded)
-            Error(_) -> Ok(#(expr, state))
+            Error(_) -> {
+              let #(ty, state) = var_specialised_ty(state, locals, name)
+              Ok(#(tmono.TVar(name, ty), state))
+            }
           }
       }
     ELabelled(label, value) -> {
@@ -661,7 +895,7 @@ fn mono_expr_ex(state, locals, expected, expr) {
         expected,
         value,
       ))
-      Ok(#(ELabelled(label, value2), state))
+      Ok(#(tmono.TLabelled(label, value2, tmono.type_of(value2)), state))
     }
     ETuple(elements) -> {
       case expected {
@@ -674,7 +908,8 @@ fn mono_expr_ex(state, locals, expected, expr) {
                 expected_items,
                 elements,
               ))
-              Ok(#(ETuple(elements2), state))
+              let ty = ast.TTuple(list.map(elements2, tmono.type_of))
+              Ok(#(tmono.TTuple(elements2, ty), state))
             }
             False -> mono_expr(state, locals, expr)
           }
@@ -758,7 +993,7 @@ fn mono_expr_pair(
   locals,
   expr: Expr,
   typed: Option(texpr.TExpr),
-) -> Result(#(Expr, State), String) {
+) -> Result(#(tmono.TExpr, State), String) {
   case expr, typed {
     EBinop(op, left, right), Some(texpr.TBinop(_, left_t, right_t, _)) -> {
       use #(left2, state) <- result_try(
@@ -772,44 +1007,47 @@ fn mono_expr_pair(
         right,
         Some(right_t),
       ))
-      Ok(#(EBinop(op, left2, right2), state))
+      Ok(#(tmono.TBinop(op, left2, right2, binop_ty(op)), state))
     }
     EUnop(op, operand), Some(texpr.TUnop(_, operand_t, _)) -> {
       use #(operand2, state) <- result_try(
         mono_expr_pair(state, locals, operand, Some(operand_t)),
       )
-      Ok(#(EUnop(op, operand2), state))
+      let ty2 = unop_ty(op, tmono.type_of(operand2))
+      Ok(#(tmono.TUnop(op, operand2, ty2), state))
     }
     EField(obj, name), Some(texpr.TField(obj_t, _, _)) -> {
       use #(obj2, state) <- result_try(
         mono_expr_pair(state, locals, obj, Some(obj_t)),
       )
-      Ok(#(EField(obj2, name), state))
+      let #(ty2, state) = field_specialised_ty(state, tmono.type_of(obj2), name)
+      Ok(#(tmono.TField(obj2, name, ty2), state))
     }
     ETuple(elements), Some(texpr.TTuple(elements_t, _)) -> {
       use #(elements2, state) <- result_try(
         mono_exprs_pair(state, locals, elements, elements_t),
       )
-      Ok(#(ETuple(elements2), state))
+      let ty2 = ast.TTuple(list.map(elements2, tmono.type_of))
+      Ok(#(tmono.TTuple(elements2, ty2), state))
     }
     ELabelled(label, value), Some(texpr.TLabelled(_, value_t, _)) -> {
       use #(value2, state) <- result_try(
         mono_expr_pair(state, locals, value, Some(value_t)),
       )
-      Ok(#(ELabelled(label, value2), state))
+      Ok(#(tmono.TLabelled(label, value2, tmono.type_of(value2)), state))
     }
     EBitArray(elements), Some(texpr.TBitArray(elements_t, _)) -> {
       use #(elements2, state) <- result_try(
         mono_exprs_pair(state, locals, elements, elements_t),
       )
-      Ok(#(EBitArray(elements2), state))
+      Ok(#(tmono.TBitArray(elements2, ast.TNamed("BitArray")), state))
     }
     ECall(fun, args), Some(texpr.TCall(_, args_t, _)) ->
       mono_call_pair(state, locals, fun, args, args_t, None)
     ECtor(name, args), Some(texpr.TCtor(_, args_t, _)) ->
       mono_ctor_ex_pair(state, locals, name, args, args_t, None)
-    ECase(subject, arms), Some(texpr.TCase(subject_t, arms_t, _)) ->
-      mono_case_pair(state, locals, subject, arms, subject_t, arms_t)
+    ECase(subject, arms), Some(texpr.TCase(subject_t, arms_t, ty)) ->
+      mono_case_pair(state, locals, subject, arms, subject_t, arms_t, ty)
     EUpdate(name, base, fields), Some(texpr.TUpdate(_, base_t, fields_t, ty)) ->
       mono_update_pair(
         state,
@@ -833,7 +1071,7 @@ fn mono_expr_ex_pair(
   expected,
   expr: Expr,
   typed: Option(texpr.TExpr),
-) -> Result(#(Expr, State), String) {
+) -> Result(#(tmono.TExpr, State), String) {
   case expr, typed {
     EBinop(_, _, _), Some(texpr.TBinop(_, _, _, _)) ->
       mono_expr_pair(state, locals, expr, typed)
@@ -849,7 +1087,7 @@ fn mono_expr_ex_pair(
       mono_call_pair(state, locals, fun, args, args_t, expected)
     ECtor(name, args), Some(texpr.TCtor(_, args_t, _)) ->
       mono_ctor_ex_pair(state, locals, name, args, args_t, expected)
-    ECase(subject, arms), Some(texpr.TCase(subject_t, arms_t, _)) ->
+    ECase(subject, arms), Some(texpr.TCase(subject_t, arms_t, ty)) ->
       mono_case_ex_pair(
         state,
         locals,
@@ -857,6 +1095,7 @@ fn mono_expr_ex_pair(
         arms,
         subject_t,
         arms_t,
+        ty,
         expected,
       )
     EUpdate(name, base, fields), Some(texpr.TUpdate(_, base_t, fields_t, ty)) ->
@@ -899,14 +1138,15 @@ fn mono_block_ex_pair_acc(
   statements,
   typed_statements,
   acc,
-) -> Result(#(Expr, State), String) {
+) -> Result(#(tmono.TExpr, State), String) {
   case statements, typed_statements {
-    [], _ -> Ok(#(EBlock(list.reverse(acc)), state))
+    [], _ -> Ok(#(tmono.TBlock(list.reverse(acc), ast.TNil), state))
     [Stmt(expr)], [texpr.TStmt(expr_t), ..] -> {
       use #(expr2, state) <- result_try(
         mono_expr_ex_pair(state, locals, expected, expr, Some(expr_t)),
       )
-      Ok(#(EBlock(list.reverse([Stmt(expr2), ..acc])), state))
+      let statements2 = list.reverse([tmono.TStmt(expr2), ..acc])
+      Ok(#(tmono.TBlock(statements2, block_ty(statements2)), state))
     }
     [Stmt(expr), ..rest], [texpr.TStmt(expr_t), ..trest] -> {
       use #(expr2, state) <- result_try(
@@ -918,7 +1158,7 @@ fn mono_block_ex_pair_acc(
         expected,
         rest,
         trest,
-        [Stmt(expr2), ..acc],
+        [tmono.TStmt(expr2), ..acc],
       )
     }
     [Let(pattern, value), ..rest], [texpr.TLet(_, value_t), ..trest] -> {
@@ -937,7 +1177,7 @@ fn mono_block_ex_pair_acc(
         expected,
         rest,
         trest,
-        [Let(pattern2, value2), ..acc],
+        [tmono.TLet(pattern2, value2), ..acc],
       )
     }
     _, _ -> mono_block_ex(state, locals, expected, statements)
@@ -960,8 +1200,8 @@ fn mono_exprs_ex_acc(
   locals: Dict(String, Scheme),
   expected_list: List(types.Ty),
   exprs: List(Expr),
-  acc: List(Expr),
-) -> Result(#(List(Expr), State), String) {
+  acc: List(tmono.TExpr),
+) -> Result(#(List(tmono.TExpr), State), String) {
   case exprs, expected_list {
     [], _ -> Ok(#(list.reverse(acc), state))
     [expr, ..rest_exprs], [expected, ..rest_expected] -> {
@@ -995,7 +1235,7 @@ fn eta_expand(
   locals: Dict(String, Scheme),
   name: String,
   expected: Option(types.Ty),
-) -> Result(#(Expr, State), String) {
+) -> Result(#(tmono.TExpr, State), String) {
   case dict.get(state.globals, name), expected {
     Ok(scheme), Some(Fun(expected_params, _)) -> {
       let Scheme(_, fun_ty) = scheme
@@ -1074,7 +1314,7 @@ fn lift_lambda(
         list.fold(
           list.index_map(with_types, fn(pair, index) {
             let #(name, ty) = pair
-            #(name, EEnvGet(env_ty, index, ty))
+            #(name, tmono.TEnvGet(env_ty, index, ty))
           }),
           dict.new(),
           fn(acc, pair) {
@@ -1084,8 +1324,8 @@ fn lift_lambda(
         )
       let captures2 =
         list.map(with_types, fn(pair) {
-          let #(name, _) = pair
-          EVar(name)
+          let #(name, ty) = pair
+          tmono.TVar(name, ty)
         })
       // Captures are locals of the lifted function: the body sees them as
       // ordinary variables, so a nested lambda captures them into its own
@@ -1115,7 +1355,7 @@ fn lift_lambda(
       let body2 = replace_vars(body_mono, replacements)
       let env_param = #("__env", TNamed("void*"))
       let fn_def =
-        Function(
+        tmono.TFunction(
           False,
           fname,
           [env_param, ..list.zip(names, param_surfaces)],
@@ -1124,7 +1364,7 @@ fn lift_lambda(
           0,
         )
       Ok(#(
-        EClosure("Gleamc_" <> fname, captures2, env_ty, fn_ty),
+        tmono.TClosure("Gleamc_" <> fname, captures2, env_ty, fn_ty, fn_ty),
         State(..state, fn_out: [fn_def, ..state.fn_out]),
       ))
     }
@@ -1315,7 +1555,7 @@ fn bind_names(names, bound) {
 
 fn replace_vars_bound(expr, replacements, bound) {
   case expr {
-    EVar(name) ->
+    tmono.TVar(name, _) ->
       case dict.get(bound, name) {
         Ok(_) -> expr
         Error(_) ->
@@ -1324,70 +1564,80 @@ fn replace_vars_bound(expr, replacements, bound) {
             Error(_) -> expr
           }
       }
-    ETuple(elements) ->
-      ETuple(
+    tmono.TTuple(elements, ty) ->
+      tmono.TTuple(
         list.map(elements, fn(e) { replace_vars_bound(e, replacements, bound) }),
+        ty,
       )
-    EClosure(code, captures, env_ty, fn_ty) ->
-      EClosure(
+    tmono.TClosure(code, captures, env_ty, fn_ty, ty) ->
+      tmono.TClosure(
         code,
         list.map(captures, fn(e) { replace_vars_bound(e, replacements, bound) }),
         env_ty,
         fn_ty,
+        ty,
       )
-    ECtor(name, args) ->
-      ECtor(
+    tmono.TCtor(name, args, ty) ->
+      tmono.TCtor(
         name,
         list.map(args, fn(e) { replace_vars_bound(e, replacements, bound) }),
+        ty,
       )
-    ECall(fun, args) ->
-      ECall(
+    tmono.TCall(fun, args, ty) ->
+      tmono.TCall(
         replace_vars_bound(fun, replacements, bound),
         list.map(args, fn(e) { replace_vars_bound(e, replacements, bound) }),
+        ty,
       )
-    EBinop(op, l, r) ->
-      EBinop(
+    tmono.TBinop(op, l, r, ty) ->
+      tmono.TBinop(
         op,
         replace_vars_bound(l, replacements, bound),
         replace_vars_bound(r, replacements, bound),
+        ty,
       )
-    EUnop(op, e) -> EUnop(op, replace_vars_bound(e, replacements, bound))
-    EBlock(statements) ->
-      EBlock(replace_statements(statements, replacements, bound))
-    ECase(subject, arms) ->
-      ECase(
+    tmono.TUnop(op, e, ty) ->
+      tmono.TUnop(op, replace_vars_bound(e, replacements, bound), ty)
+    tmono.TBlock(statements, ty) ->
+      tmono.TBlock(replace_statements(statements, replacements, bound), ty)
+    tmono.TCase(subject, arms, ty) ->
+      tmono.TCase(
         replace_vars_bound(subject, replacements, bound),
         list.map(arms, fn(arm) {
-          let Arm(pattern, guard, body) = arm
+          let tmono.TArm(pattern, guard, body) = arm
           let inner = bind_names(pattern_names(pattern), bound)
-          Arm(
+          tmono.TArm(
             pattern,
             replace_opt_bound(guard, replacements, inner),
             replace_vars_bound(body, replacements, inner),
           )
         }),
+        ty,
       )
-    EField(obj, name) ->
-      EField(replace_vars_bound(obj, replacements, bound), name)
-    ELabelled(label, value) ->
-      ELabelled(label, replace_vars_bound(value, replacements, bound))
-    ELambda(names, body) ->
-      ELambda(
+    tmono.TField(obj, name, ty) ->
+      tmono.TField(replace_vars_bound(obj, replacements, bound), name, ty)
+    tmono.TLabelled(label, value, ty) ->
+      tmono.TLabelled(label, replace_vars_bound(value, replacements, bound), ty)
+    tmono.TLambda(names, body, ty) ->
+      tmono.TLambda(
         names,
         replace_vars_bound(body, replacements, bind_names(names, bound)),
+        ty,
       )
-    EUpdate(name, base, fields) ->
-      EUpdate(
+    tmono.TUpdate(name, base, fields, ty) ->
+      tmono.TUpdate(
         name,
         replace_vars_bound(base, replacements, bound),
         list.map(fields, fn(field) {
           let #(label, value) = field
           #(label, replace_vars_bound(value, replacements, bound))
         }),
+        ty,
       )
-    EBitArray(elements) ->
-      EBitArray(
+    tmono.TBitArray(elements, ty) ->
+      tmono.TBitArray(
         list.map(elements, fn(e) { replace_vars_bound(e, replacements, bound) }),
+        ty,
       )
     _ -> expr
   }
@@ -1396,13 +1646,16 @@ fn replace_vars_bound(expr, replacements, bound) {
 fn replace_statements(statements, replacements, bound) {
   case statements {
     [] -> []
-    [Let(pattern, value), ..rest] -> {
+    [tmono.TLet(pattern, value), ..rest] -> {
       let value2 = replace_vars_bound(value, replacements, bound)
       let inner = bind_names(pattern_names(pattern), bound)
-      [Let(pattern, value2), ..replace_statements(rest, replacements, inner)]
+      [
+        tmono.TLet(pattern, value2),
+        ..replace_statements(rest, replacements, inner)
+      ]
     }
-    [Stmt(expr), ..rest] -> [
-      Stmt(replace_vars_bound(expr, replacements, bound)),
+    [tmono.TStmt(expr), ..rest] -> [
+      tmono.TStmt(replace_vars_bound(expr, replacements, bound)),
       ..replace_statements(rest, replacements, bound)
     ]
   }
@@ -1508,7 +1761,7 @@ fn mono_arms_ex(state, locals, subject_ty, result_expected, arms) {
   mono_arms_ex_acc(state, locals, subject_ty, result_expected, arms, [])
 }
 
-fn mono_arms_ex_acc(state, locals, subject_ty, result_expected, arms, acc) -> Result(#(List(Arm), State), String) {
+fn mono_arms_ex_acc(state, locals, subject_ty, result_expected, arms, acc) -> Result(#(List(tmono.TArm), State), String) {
   case arms {
     [] -> Ok(#(list.reverse(acc), state))
     [Arm(pattern, guard, body), ..rest] -> {
@@ -1532,7 +1785,7 @@ fn mono_arms_ex_acc(state, locals, subject_ty, result_expected, arms, acc) -> Re
         subject_ty,
         result_expected,
         rest,
-        [Arm(pattern2, guard2, body2), ..acc],
+        [tmono.TArm(pattern2, guard2, body2), ..acc],
       )
     }
   }
@@ -1545,9 +1798,9 @@ fn mono_block_ex(state, locals, expected, statements) {
 /// Tail-recursive: each statement is monomorphised in tail position and pushed
 /// onto the accumulator, so a long block runs in constant stack (the last
 /// statement keeps using the block's expected type).
-fn mono_block_ex_acc(state, locals, expected, statements, acc) -> Result(#(Expr, State), String) {
+fn mono_block_ex_acc(state, locals, expected, statements, acc) -> Result(#(tmono.TExpr, State), String) {
   case statements {
-    [] -> Ok(#(EBlock(list.reverse(acc)), state))
+    [] -> Ok(#(tmono.TBlock(list.reverse(acc), ast.TNil), state))
     [Stmt(expr)] -> {
       use #(expr2, state) <- result_try(mono_expr_ex(
         state,
@@ -1555,11 +1808,12 @@ fn mono_block_ex_acc(state, locals, expected, statements, acc) -> Result(#(Expr,
         expected,
         expr,
       ))
-      Ok(#(EBlock(list.reverse([Stmt(expr2), ..acc])), state))
+      let statements2 = list.reverse([tmono.TStmt(expr2), ..acc])
+      Ok(#(tmono.TBlock(statements2, block_ty(statements2)), state))
     }
     [Stmt(expr), ..rest] -> {
       use #(expr2, state) <- result_try(mono_expr(state, locals, expr))
-      mono_block_ex_acc(state, locals, expected, rest, [Stmt(expr2), ..acc])
+      mono_block_ex_acc(state, locals, expected, rest, [tmono.TStmt(expr2), ..acc])
     }
     [Let(pattern, value), ..rest] -> {
       let #(declared_ty, state) = type_of(state, locals, value)
@@ -1582,19 +1836,23 @@ fn mono_block_ex_acc(state, locals, expected, statements, acc) -> Result(#(Expr,
         locals,
         expected,
         rest,
-        [Let(pattern2, value2), ..acc],
+        [tmono.TLet(pattern2, value2), ..acc],
       )
     }
   }
 }
 
-fn mono_exprs(state: State, locals: Dict(String, Scheme), exprs: List(Expr)) {
+fn mono_exprs(
+  state: State,
+  locals: Dict(String, Scheme),
+  exprs: List(Expr),
+) -> Result(#(List(tmono.TExpr), State), String) {
   mono_exprs_acc(state, locals, exprs, [])
 }
 
 /// Tail-recursive (`list.reverse` at the end) so monomorphising a long list of
 /// expressions runs in constant stack.
-fn mono_exprs_acc(state, locals, exprs, acc) -> Result(#(List(Expr), State), String) {
+fn mono_exprs_acc(state, locals, exprs, acc) -> Result(#(List(tmono.TExpr), State), String) {
   case exprs {
     [] -> Ok(#(list.reverse(acc), state))
     [expr, ..rest] -> {
@@ -1610,7 +1868,7 @@ fn mono_call(
   fun,
   args,
   expected_opt,
-) {
+) -> Result(#(tmono.TExpr, State), String) {
   case fun {
     EVar(name) ->
       case dict.get(state.globals, name) {
@@ -1618,7 +1876,10 @@ fn mono_call(
           case dict.get(locals, name) {
             Error(_) -> {
               use #(args2, state) <- result_try(mono_exprs(state, locals, args))
-              Ok(#(ECall(EVar(name), args2), state))
+              Ok(#(
+                tmono.TCall(tmono.TVar(name, ast.TNil), args2, ast.TNil),
+                state,
+              ))
             }
             Ok(scheme) -> {
               // Calling a local function value: use its parameter types as
@@ -1626,7 +1887,7 @@ fn mono_call(
               let #(_, local_ty, counter) =
                 types.instantiate_vars(scheme, state.counter)
               let state = State(..state, counter: counter)
-              let #(param_tys, _) = fun_parts(local_ty)
+              let #(param_tys, local_ret) = fun_parts(local_ty)
               let expected =
                 list.map(param_tys, fn(param_ty) {
                   types.zonk(param_ty, state.subst)
@@ -1637,7 +1898,11 @@ fn mono_call(
                 expected,
                 args,
               ))
-              Ok(#(ECall(EVar(name), args2), state))
+              let #(fn_ty, state) =
+                specialised(state, types.zonk(local_ty, state.subst))
+              let #(ret_ty, state) =
+                specialised(state, types.zonk(local_ret, state.subst))
+              Ok(#(tmono.TCall(tmono.TVar(name, fn_ty), args2, ret_ty), state))
             }
           }
         Ok(scheme) -> {
@@ -1657,12 +1922,23 @@ fn mono_call(
             expected,
             args,
           ))
-          Ok(#(ECall(EVar(specialized), final_args), state))
+          let #(fn_ty, state) = fn_specialised_ty(state, name, type_args)
+          let ret_ty = case fn_ty {
+            ast.TFun(_, ret) -> ret
+            _ -> ast.TNil
+          }
+          Ok(#(
+            tmono.TCall(tmono.TVar(specialized, fn_ty), final_args, ret_ty),
+            state,
+          ))
         }
       }
     _ -> {
       use #(args2, state) <- result_try(mono_exprs(state, locals, args))
-      Ok(#(ECall(fun, args2), state))
+      let arg_tys = list.map(args2, fn(arg) { ty_of_surface(tmono.type_of(arg)) })
+      let ret_ty = global_call_ret_ty(state, fun, arg_tys, expected_opt)
+      use #(callee, state) <- result_try(callee_texpr(state, locals, fun))
+      Ok(#(tmono.TCall(callee, args2, ret_ty), state))
     }
   }
 }
@@ -1789,7 +2065,7 @@ fn mono_ctor_ex(state, locals, name, args, expected_opt) {
       let state = State(..state, subst: subst)
       let type_args =
         list.map(fresh_vars, fn(fv) { surface_of(types.zonk(fv, subst)) })
-      let #(_specialized_type, state) =
+      let #(specialized_type, state) =
         request_type(state, type_name, type_args)
       let state =
         State(
@@ -1801,7 +2077,10 @@ fn mono_ctor_ex(state, locals, name, args, expected_opt) {
           ),
         )
       let specialized = ctor_specialised_name(state, type_name, name, type_args)
-      Ok(#(ECtor(specialized, args2), state))
+      Ok(#(
+        tmono.TCtor(specialized, args2, ast.TNamed(specialized_type)),
+        state,
+      ))
     }
   }
 }
@@ -1812,7 +2091,7 @@ fn mono_ctor_args(state, locals, param_tys, args, subst) {
   mono_ctor_args_acc(state, locals, param_tys, args, subst, [])
 }
 
-fn mono_ctor_args_acc(state, locals, param_tys, args, subst, acc) -> Result(#(List(Expr), State, types.Subst), String) {
+fn mono_ctor_args_acc(state, locals, param_tys, args, subst, acc) -> Result(#(List(tmono.TExpr), State, types.Subst), String) {
   case args, param_tys {
     [], _ -> Ok(#(list.reverse(acc), state, subst))
     [arg, ..rest_args], [param_ty, ..rest_params] -> {
@@ -1952,16 +2231,17 @@ fn mono_block(state: State, locals: Dict(String, Scheme), statements) {
   mono_block_acc(state, locals, statements, [])
 }
 
-fn mono_block_acc(state, locals, statements, acc) -> Result(#(Expr, State), String) {
+fn mono_block_acc(state, locals, statements, acc) -> Result(#(tmono.TExpr, State), String) {
   case statements {
-    [] -> Ok(#(EBlock(list.reverse(acc)), state))
+    [] -> Ok(#(tmono.TBlock(list.reverse(acc), ast.TNil), state))
     [Stmt(expr)] -> {
       use #(expr2, state) <- result_try(mono_expr(state, locals, expr))
-      Ok(#(EBlock(list.reverse([Stmt(expr2), ..acc])), state))
+      let statements2 = list.reverse([tmono.TStmt(expr2), ..acc])
+      Ok(#(tmono.TBlock(statements2, block_ty(statements2)), state))
     }
     [Stmt(expr), ..rest] -> {
       use #(expr2, state) <- result_try(mono_expr(state, locals, expr))
-      mono_block_acc(state, locals, rest, [Stmt(expr2), ..acc])
+      mono_block_acc(state, locals, rest, [tmono.TStmt(expr2), ..acc])
     }
     [Let(pattern, value), ..rest] -> {
       let #(declared_ty, state) = type_of(state, locals, value)
@@ -1979,23 +2259,29 @@ fn mono_block_acc(state, locals, statements, acc) -> Result(#(Expr, State), Stri
         value_ty,
       ))
       let locals = merge_dicts(locals, bindings)
-      mono_block_acc(state, locals, rest, [Let(pattern2, value2), ..acc])
+      mono_block_acc(state, locals, rest, [tmono.TLet(pattern2, value2), ..acc])
     }
   }
 }
 
-fn mono_case(state: State, locals: Dict(String, Scheme), subject, arms) {
+fn mono_case(
+  state: State,
+  locals: Dict(String, Scheme),
+  subject,
+  arms,
+) -> Result(#(tmono.TExpr, State), String) {
   use #(subject2, state) <- result_try(mono_expr(state, locals, subject))
   let #(subject_ty, state) = type_of(state, locals, subject)
   use #(arms2, state) <- result_try(mono_arms(state, locals, subject_ty, arms))
-  Ok(#(ECase(subject2, arms2), state))
+  let ty = arms_result_ty(arms2)
+  Ok(#(tmono.TCase(subject2, arms2, ty), state))
 }
 
 fn mono_arms(state: State, locals: Dict(String, Scheme), subject_ty, arms) {
   mono_arms_acc(state, locals, subject_ty, arms, [])
 }
 
-fn mono_arms_acc(state, locals, subject_ty, arms, acc) -> Result(#(List(Arm), State), String) {
+fn mono_arms_acc(state, locals, subject_ty, arms, acc) -> Result(#(List(tmono.TArm), State), String) {
   case arms {
     [] -> Ok(#(list.reverse(acc), state))
     [Arm(pattern, guard, body), ..rest] -> {
@@ -2013,7 +2299,7 @@ fn mono_arms_acc(state, locals, subject_ty, arms, acc) -> Result(#(List(Arm), St
         locals,
         subject_ty,
         rest,
-        [Arm(pattern2, guard2, body2), ..acc],
+        [tmono.TArm(pattern2, guard2, body2), ..acc],
       )
     }
   }
@@ -2334,7 +2620,7 @@ fn mono_exprs_pair(
   locals: Dict(String, Scheme),
   exprs: List(Expr),
   typed_exprs: List(texpr.TExpr),
-) {
+) -> Result(#(List(tmono.TExpr), State), String) {
   case list.length(exprs) == list.length(typed_exprs) {
     True -> mono_exprs_pair_zip(state, locals, exprs, typed_exprs, [])
     False -> mono_exprs(state, locals, exprs)
@@ -2346,8 +2632,8 @@ fn mono_exprs_pair_zip(
   locals: Dict(String, Scheme),
   exprs: List(Expr),
   typed_exprs: List(texpr.TExpr),
-  acc: List(Expr),
-) {
+  acc: List(tmono.TExpr),
+) -> Result(#(List(tmono.TExpr), State), String) {
   case exprs, typed_exprs {
     [], _ -> Ok(#(list.reverse(acc), state))
     [expr, ..rest], [typed, ..typed_rest] -> {
@@ -2367,7 +2653,7 @@ fn mono_call_pair(
   args: List(Expr),
   args_t: List(texpr.TExpr),
   expected_opt,
-) {
+) -> Result(#(tmono.TExpr, State), String) {
   case fun {
     EVar(name) ->
       case dict.get(state.globals, name) {
@@ -2377,13 +2663,16 @@ fn mono_call_pair(
               use #(args2, state) <- result_try(
                 mono_exprs_pair(state, locals, args, args_t),
               )
-              Ok(#(ECall(EVar(name), args2), state))
+              Ok(#(
+                tmono.TCall(tmono.TVar(name, ast.TNil), args2, ast.TNil),
+                state,
+              ))
             }
             Ok(scheme) -> {
               let #(_, local_ty, counter) =
                 types.instantiate_vars(scheme, state.counter)
               let state = State(..state, counter: counter)
-              let #(param_tys, _) = fun_parts(local_ty)
+              let #(param_tys, local_ret) = fun_parts(local_ty)
               let expected =
                 list.map(param_tys, fn(param_ty) {
                   types.zonk(param_ty, state.subst)
@@ -2391,7 +2680,11 @@ fn mono_call_pair(
               use #(args2, state) <- result_try(
                 mono_args_expect_pair(state, locals, expected, args, args_t),
               )
-              Ok(#(ECall(EVar(name), args2), state))
+              let #(fn_ty, state) =
+                specialised(state, types.zonk(local_ty, state.subst))
+              let #(ret_ty, state) =
+                specialised(state, types.zonk(local_ret, state.subst))
+              Ok(#(tmono.TCall(tmono.TVar(name, fn_ty), args2, ret_ty), state))
             }
           }
         Ok(scheme) -> {
@@ -2411,14 +2704,25 @@ fn mono_call_pair(
           use #(final_args, state) <- result_try(
             mono_args_expect_pair(state, locals, expected, args, args_t),
           )
-          Ok(#(ECall(EVar(specialized), final_args), state))
+          let #(fn_ty, state) = fn_specialised_ty(state, name, type_args)
+          let ret_ty = case fn_ty {
+            ast.TFun(_, ret) -> ret
+            _ -> ast.TNil
+          }
+          Ok(#(
+            tmono.TCall(tmono.TVar(specialized, fn_ty), final_args, ret_ty),
+            state,
+          ))
         }
       }
     _ -> {
       use #(args2, state) <- result_try(
         mono_exprs_pair(state, locals, args, args_t),
       )
-      Ok(#(ECall(fun, args2), state))
+      let arg_tys = list.map(args2, fn(arg) { ty_of_surface(tmono.type_of(arg)) })
+      let ret_ty = global_call_ret_ty(state, fun, arg_tys, expected_opt)
+      use #(callee, state) <- result_try(callee_texpr(state, locals, fun))
+      Ok(#(tmono.TCall(callee, args2, ret_ty), state))
     }
   }
 }
@@ -2429,7 +2733,7 @@ fn mono_args_expect_pair(
   expected_list: List(types.Ty),
   args: List(Expr),
   typed_args: List(texpr.TExpr),
-) {
+) -> Result(#(List(tmono.TExpr), State), String) {
   use #(state, _) <- result_try(
     unify_arg_types_pair(state, locals, expected_list, args, typed_args),
   )
@@ -2465,8 +2769,8 @@ fn mono_args_expect_go_pair(
   expected_list: List(types.Ty),
   args: List(Expr),
   typed_args: List(texpr.TExpr),
-  acc: List(Expr),
-) {
+  acc: List(tmono.TExpr),
+) -> Result(#(List(tmono.TExpr), State), String) {
   case args, expected_list, typed_args {
     [], _, _ -> Ok(#(list.reverse(acc), state))
     [arg, ..rest], [expected, ..rest_expected], [typed, ..typed_rest] -> {
@@ -2564,7 +2868,14 @@ fn arg_types_pair(
   }
 }
 
-fn mono_ctor_ex_pair(state, locals, name, args, args_t, expected_opt) {
+fn mono_ctor_ex_pair(
+  state,
+  locals,
+  name,
+  args,
+  args_t,
+  expected_opt,
+) -> Result(#(tmono.TExpr, State), String) {
   case dict.get(state.ctors, name) {
     Error(_) -> Error("unknown constructor `" <> name <> "`")
     Ok(def) -> {
@@ -2594,7 +2905,7 @@ fn mono_ctor_ex_pair(state, locals, name, args, args_t, expected_opt) {
       let state = State(..state, subst: subst)
       let type_args =
         list.map(fresh_vars, fn(fv) { surface_of(types.zonk(fv, subst)) })
-      let #(_specialized_type, state) =
+      let #(specialized_type, state) =
         request_type(state, type_name, type_args)
       let state =
         State(
@@ -2606,7 +2917,10 @@ fn mono_ctor_ex_pair(state, locals, name, args, args_t, expected_opt) {
           ),
         )
       let specialized = ctor_specialised_name(state, type_name, name, type_args)
-      Ok(#(ECtor(specialized, args2), state))
+      Ok(#(
+        tmono.TCtor(specialized, args2, ast.TNamed(specialized_type)),
+        state,
+      ))
     }
   }
 }
@@ -2623,7 +2937,7 @@ fn mono_ctor_args_pair_acc(
   typed_args,
   subst,
   acc,
-) {
+) -> Result(#(List(tmono.TExpr), State, types.Subst), String) {
   case args, param_tys, typed_args {
     [], _, _ -> Ok(#(list.reverse(acc), state, subst))
     [arg, ..rest_args], [param_ty, ..rest_params], [typed, ..typed_rest] -> {
@@ -2666,7 +2980,15 @@ fn mono_ctor_args_pair_acc(
 
 /// `case` reached from `mono_expr` (no expected result type): arm bodies use
 /// `mono_expr`, exactly like `mono_arms`.
-fn mono_case_pair(state, locals, subject, arms, subject_t, arms_t) {
+fn mono_case_pair(
+  state,
+  locals,
+  subject,
+  arms,
+  subject_t,
+  arms_t,
+  _ty,
+) -> Result(#(tmono.TExpr, State), String) {
   use #(subject2, state) <- result_try(
     mono_expr_pair(state, locals, subject, Some(subject_t)),
   )
@@ -2674,7 +2996,7 @@ fn mono_case_pair(state, locals, subject, arms, subject_t, arms_t) {
   use #(arms2, state) <- result_try(
     mono_arms_pair(state, locals, subject_ty, arms, arms_t),
   )
-  Ok(#(ECase(subject2, arms2), state))
+  Ok(#(tmono.TCase(subject2, arms2, arms_result_ty(arms2)), state))
 }
 
 fn mono_arms_pair(state, locals, subject_ty, arms, typed_arms) {
@@ -2704,7 +3026,7 @@ fn mono_arms_pair_acc(state, locals, subject_ty, arms, typed_arms, acc) {
         subject_ty,
         rest,
         typed_rest,
-        [Arm(pattern2, guard2, body2), ..acc],
+        [tmono.TArm(pattern2, guard2, body2), ..acc],
       )
     }
     _, _ -> mono_arms(state, locals, subject_ty, arms)
@@ -2713,7 +3035,16 @@ fn mono_arms_pair_acc(state, locals, subject_ty, arms, typed_arms, acc) {
 
 /// `case` reached from `mono_expr_ex` (with the case's result expected type):
 /// arm bodies use `mono_expr_ex`, exactly like `mono_arms_ex`.
-fn mono_case_ex_pair(state, locals, subject, arms, subject_t, arms_t, expected) {
+fn mono_case_ex_pair(
+  state,
+  locals,
+  subject,
+  arms,
+  subject_t,
+  arms_t,
+  _ty,
+  expected,
+) -> Result(#(tmono.TExpr, State), String) {
   use #(subject2, state) <- result_try(
     mono_expr_pair(state, locals, subject, Some(subject_t)),
   )
@@ -2721,7 +3052,7 @@ fn mono_case_ex_pair(state, locals, subject, arms, subject_t, arms_t, expected) 
   use #(arms2, state) <- result_try(
     mono_arms_ex_pair(state, locals, subject_ty, expected, arms, arms_t),
   )
-  Ok(#(ECase(subject2, arms2), state))
+  Ok(#(tmono.TCase(subject2, arms2, arms_result_ty(arms2)), state))
 }
 
 fn mono_arms_ex_pair(state, locals, subject_ty, result_expected, arms, typed_arms) {
@@ -2774,7 +3105,7 @@ fn mono_arms_ex_pair_acc(
         result_expected,
         rest,
         typed_rest,
-        [Arm(pattern2, guard2, body2), ..acc],
+        [tmono.TArm(pattern2, guard2, body2), ..acc],
       )
     }
     _, _ -> mono_arms_ex(state, locals, subject_ty, result_expected, arms)
