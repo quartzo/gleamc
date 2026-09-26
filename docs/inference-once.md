@@ -1,11 +1,17 @@
 # Inference once: a typed AST as the product of the type layer
 
-Status: **partly landed.** Inference is now materialised as a typed AST
-(`texpr.TExpr`), and the monomorphiser reads subexpression types from it
-instead of re-inferring, which removed the dominant cost of `mono`
-(42.7s → 5.6s on the selfhost self-compile). The remaining consumers
-(`checker`, `lower`, and one `infer_t` per specialisation) still compute types
-themselves; the path to retire them is described below.
+Status: **largely landed.** Both type layers now produce a typed AST and their
+consumers read it instead of re-deriving types:
+
+- the **generic** stage (`infer.gleam`) elaborates to `texpr.TExpr`; the
+  monomorphiser reads subexpression types from it, which removed the dominant
+  cost of `mono` (42.7s → 5.6s on the selfhost self-compile);
+- the **monomorphic** stage (`checker.gleam`) elaborates the monomorphic module
+  into `tmono.TExpr`, and the backend (`lower.gleam`) consumes it, so `lower`
+  no longer re-runs `checker.infer` (5.7s → 2.2s).
+
+Types therefore have a single owner at each stage. What remains (optional,
+smaller) is described below.
 
 ## Motivation
 
@@ -32,29 +38,32 @@ which allocates `types.Ty` and refcounts them (the profile was dominated by
   re-inference under `GLEAMC_MONO_VERIFY=1`, logging divergences (compared up to
   alpha-equivalence) and falling back. Verified at zero real divergences for
   the migrated forms.
+- `src/gleamc/tmono.gleam` — `TExpr`, the typed **monomorphic** AST: every node
+  carries its `ast.Type`, plus `type_of` and `to_expr`.
+- `checker.check` **elaborates** the monomorphic module into `tmono.TExpr`
+  (`checker.infer_t`) and returns it as `Checked.typed`; `lower` consumes that
+  typed AST and reads node types via `tmono.type_of`, so it no longer re-runs
+  `checker.infer`.
 
-`mono` drops from 42.7s to 5.6s and the whole compiler from ~78s to ~43s on the
-selfhost self-compile. Validated by `gleam test`, `scripts/diff.sh`, an 8 MiB
+`mono` drops from 42.7s to 5.6s and `lower` from 5.7s to 2.2s on the selfhost
+self-compile. Validated by `gleam test`, `scripts/diff.sh`, an 8 MiB
 self-compile, AddressSanitizer, and `GLEAMC_MEM_REPORT`.
 
-## What remains (optional, further gains)
+## What remains (optional, smaller)
 
-- **`type_of` for synthesised expressions.** Eta-expansion, record-update
-  desugaring and lambda lifting build new expressions with no typed companion,
-  so they still call `type_of`. Small in practice (the fallback is rare).
 - **One `infer_t` per specialisation.** `specialise_fn_inner` still infers the
-  specialised body once. The generic typed bodies are already stashed in
+  specialised body once. The generic typed bodies are stashed in
   `infer.Program.typed`; specialising them by **substitution** (instantiate the
   scheme's quantifiers with the call's type arguments, `texpr.subst_types`)
-  would remove this pass. Note the earlier finding: `type_of` returned
-  deliberately *partial* types (fresh variables resolved later), whereas the
-  annotation is complete; specialisation by substitution must therefore be
-  paired with a mono typing flow that does not rely on re-inference side
-  effects.
-- **`checker` and `lower`.** `checker.check` still re-infers the monomorphic
-  module as a safety net (`signatures`/`ctors` come from `collect`), and
-  `lower` calls `checker.infer` at ~13 sites. To read annotations there, `mono`
-  must emit typed nodes (`TExpr`) and `dce`/`lower` consume them.
+  would remove this pass. It is blocked by the still-unpaired forms — mainly
+  `EUpdate` (record-update desugaring re-infers) and synthesised nodes — which
+  need the pre-inference substitution. Attempts break the selfhost.
+- **`type_of` for synthesised expressions** in `mono` (eta-expansion,
+  record-update desugaring): small; the paired fallback is rare.
+- **Unify the two inferencers.** The generic stage (`infer.gleam`, HM with
+  substitution) and the monomorphic stage (`checker.gleam`, no substitution)
+  are separate implementations. They serve different stages, but the
+  monomorphic one could in principle be a special case of the generic one.
 
 ## Cautions
 
