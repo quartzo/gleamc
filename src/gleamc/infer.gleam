@@ -1262,7 +1262,10 @@ fn infer_block_loop(env, st, statements, acc, last_ty) {
       use #(value_t, st) <- result_try(infer_t(env, st, value))
       let value_ty = texpr.type_of(value_t)
       use #(bound, st) <- result_try(bind_pattern(env, pattern, value_ty, st))
-      let scheme = generalize_in(env, st, value_ty)
+      // Local `let` bindings are monomorphic, as in Gleam: no generalisation.
+      // Generalising would instantiate a fresh copy at every use, so a
+      // unification on one use would not propagate to another.
+      let scheme = Scheme([], types.zonk(value_ty, st.subst))
       let locals = bind_let(env.locals, pattern, bound, scheme)
       infer_block_loop(
         Env(..env, locals: locals),
@@ -1758,18 +1761,6 @@ fn unify_lists(expected, actual, st, context) {
     }
     _, _ -> Error(InferError("arity mismatch in `" <> context <> "`"))
   }
-}
-
-fn generalize_in(env: Env, st: St, ty: Ty) -> Scheme {
-  let env_free =
-    list.flat_map(dict.to_list(env.locals), fn(entry) {
-      let #(_, scheme) = entry
-      let Scheme(vars, scheme_ty) = scheme
-      list.filter(types.free_vars(scheme_ty), fn(id) {
-        !list.contains(vars, id)
-      })
-    })
-  types.generalize(env_free, types.zonk(ty, st.subst))
 }
 
 fn result_try(result, next) {
