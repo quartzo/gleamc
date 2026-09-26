@@ -8,6 +8,8 @@
 //// published package) and under `gleamc` (its own `std/simplifile.gleam`).
 
 import gleam/bit_array
+import gleam/list
+import gleam/result
 import gleam/string
 import host
 import simplifile
@@ -35,6 +37,48 @@ pub fn read_file(path: String) -> Result(String, String) {
 /// Writes UTF-8 text to a file (creates/overwrites).
 pub fn write_file(path: String, contents: String) -> Result(Nil, String) {
   case simplifile.write(to: path, contents: contents) {
+    Ok(Nil) -> Ok(Nil)
+    Error(error) -> Error(simplifile.describe_error(error))
+  }
+}
+
+/// Bytes buffered before each flush when streaming chunks (see `write_chunks`).
+const flush_bytes = 4194304
+
+/// Writes a sequence of chunks to a file without ever materialising the whole
+/// document: chunks are buffered and flushed every `flush_bytes`, so peak
+/// memory stays bounded and the file is written through one open at a time.
+pub fn write_chunks(path: String, chunks: List(String)) -> Result(Nil, String) {
+  do_write_chunks(path, chunks, [], 0, True)
+}
+
+fn do_write_chunks(path, chunks, buf, size, first) {
+  case chunks {
+    [] ->
+      case buf {
+        [] -> Ok(Nil)
+        _ -> flush_chunks(path, buf, first)
+      }
+    [chunk, ..rest] -> {
+      let size = size + string.byte_size(chunk)
+      case size >= flush_bytes {
+        True -> {
+          use _ <- result.try(flush_chunks(path, [chunk, ..buf], first))
+          do_write_chunks(path, rest, [], 0, False)
+        }
+        False -> do_write_chunks(path, rest, [chunk, ..buf], size, first)
+      }
+    }
+  }
+}
+
+fn flush_chunks(path, buf, first) {
+  let text = string.join(list.reverse(buf), "")
+  let result = case first {
+    True -> simplifile.write(to: path, contents: text)
+    False -> simplifile.append(to: path, contents: text)
+  }
+  case result {
     Ok(Nil) -> Ok(Nil)
     Error(error) -> Error(simplifile.describe_error(error))
   }

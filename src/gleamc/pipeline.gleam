@@ -8,6 +8,7 @@ import gleam/int
 import gleam/io
 import gleam/list
 import gleam/result
+import gleam/string
 import gleamc/aliases
 import gleamc/async
 import gleamc/ffi
@@ -40,11 +41,20 @@ pub fn compile_to_ir(source: String) -> Result(ir.Module, String) {
 pub fn compile_modules_llvm(
   modules: List(#(String, Module)),
 ) -> Result(String, String) {
+  use chunks <- result.try(compile_modules_llvm_chunks(modules))
+  Ok(string.join(chunks, ""))
+}
+
+/// Like `compile_modules_llvm`, but returns the IR as ordered chunks so the
+/// caller can stream it to a file without materialising the whole document.
+pub fn compile_modules_llvm_chunks(
+  modules: List(#(String, Module)),
+) -> Result(List(String), String) {
   use #(_module, owned, ctors, custom_types) <- result.try(cascade(modules))
   let t = ffi.now_ms()
-  let output = llvm.emit(owned, custom_types, ctors)
+  let chunks = llvm.emit_chunks(owned, custom_types, ctors)
   let _ = mark("emit", t)
-  Ok(output)
+  Ok(chunks)
 }
 
 pub fn compile_ir_modules(

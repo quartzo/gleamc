@@ -73,11 +73,24 @@ type FrameInfo {
 // entry point
 // ---------------------------------------------------------------------------
 
+/// Render the whole module to one string. Prefer `emit_chunks` for large
+/// modules: it avoids materialising the full document in memory.
 pub fn emit(
   ir_module: ir.Module,
   custom_types: List(ast.CustomType),
   ctors: Dict(String, checker.CtorInfo),
 ) -> String {
+  string.join(emit_chunks(ir_module, custom_types, ctors), "")
+}
+
+/// Render the module as an ordered list of chunks — one per function body plus
+/// the smaller sections — so a caller can stream them to a file. Joining the
+/// result with `""` yields exactly the string `emit` returns.
+pub fn emit_chunks(
+  ir_module: ir.Module,
+  custom_types: List(ast.CustomType),
+  ctors: Dict(String, checker.CtorInfo),
+) -> List(String) {
   // Canonical ordering: emission order must depend only on the input, never
   // on `dict` iteration order (which differs between hosts).
   let ir.Module(functions) = ir_module
@@ -137,13 +150,10 @@ pub fn emit(
     |> list.index_map(fn(content, index) { #(content, index) })
     |> dict.from_list
 
-  let globals =
-    string.join(
-      list.index_map(lit_list, fn(content, index) {
-        literal_global(content, index)
-      }),
-      "\n",
-    )
+  let global_decls =
+    list.index_map(lit_list, fn(content, index) {
+      literal_global(content, index)
+    })
 
   let type_code =
     string.join(
@@ -179,53 +189,50 @@ pub fn emit(
       "\n",
     )
 
-  let defs =
-    string.join(
-      list.map(functions, fn(function) {
-        case dict.has_key(suspends, function.name) {
-          True ->
-            emit_machine_function(
-              function,
-              recursive,
-              lits,
-              custom_types,
-              custom_by_name,
-              ctors,
-              tuples,
-              signatures,
-              machine_fns,
-            )
-          False ->
-            case dict.has_key(machines, function.name) {
-              True ->
-                emit_frame_function(
-                  function,
-                  recursive,
-                  lits,
-                  custom_types,
-                  custom_by_name,
-                  ctors,
-                  tuples,
-                  signatures,
-                  machine_fns,
-                )
-              False ->
-                emit_function(
-                  function,
-                  recursive,
-                  lits,
-                  custom_types,
-                  custom_by_name,
-                  ctors,
-                  tuples,
-                  signatures,
-                  machine_fns,
-                )
-            }
-        }
-      }),
-      "\n\n",
-    )
+  let defs_bodies =
+    list.map(functions, fn(function) {
+      case dict.has_key(suspends, function.name) {
+        True ->
+          emit_machine_function(
+            function,
+            recursive,
+            lits,
+            custom_types,
+            custom_by_name,
+            ctors,
+            tuples,
+            signatures,
+            machine_fns,
+          )
+        False ->
+          case dict.has_key(machines, function.name) {
+            True ->
+              emit_frame_function(
+                function,
+                recursive,
+                lits,
+                custom_types,
+                custom_by_name,
+                ctors,
+                tuples,
+                signatures,
+                machine_fns,
+              )
+            False ->
+              emit_function(
+                function,
+                recursive,
+                lits,
+                custom_types,
+                custom_by_name,
+                ctors,
+                tuples,
+                signatures,
+                machine_fns,
+              )
+          }
+      }
+    })
   let wrappers =
     string.join(
       list.map(collect_wrappers(functions, recursive), fn(entry) { entry }),
@@ -245,64 +252,49 @@ pub fn emit(
       tuples,
     )
   let glue_seeds = list.append(seeds, buffer_seeds)
-  let eq_glue =
-    string.join(
-      list.map(glue_seeds, fn(ty) { emit_eq_glue(recursive, custom_types, ty) }),
-      "\n\n",
-    )
-  let cmp_glue =
-    string.join(
-      list.append(
-        [
-          emit_cmp_glue(recursive, custom_types, ast.TInt),
-          emit_cmp_glue(recursive, custom_types, ast.TFloat),
-          emit_cmp_glue(recursive, custom_types, ast.TBool),
-          emit_cmp_glue(recursive, custom_types, TString),
-          emit_cmp_glue(recursive, custom_types, TNamed("BitArray")),
-          emit_cmp_glue(recursive, custom_types, ast.TNil),
-        ],
-        list.map(glue_seeds, fn(ty) {
-          emit_cmp_glue(recursive, custom_types, ty)
-        }),
-      ),
-      "\n\n",
-    )
-  let rc_glue =
-    string.join(
-      list.flat_map(seeds, fn(ty) {
-        [
-          emit_rc_glue(lits, recursive, custom_types, fields_of, "retain", ty),
-          emit_rc_glue(lits, recursive, custom_types, fields_of, "drop", ty),
-        ]
+  let eq_glue_fns =
+    list.map(glue_seeds, fn(ty) { emit_eq_glue(recursive, custom_types, ty) })
+  let cmp_glue_fns =
+    list.append(
+      [
+        emit_cmp_glue(recursive, custom_types, ast.TInt),
+        emit_cmp_glue(recursive, custom_types, ast.TFloat),
+        emit_cmp_glue(recursive, custom_types, ast.TBool),
+        emit_cmp_glue(recursive, custom_types, TString),
+        emit_cmp_glue(recursive, custom_types, TNamed("BitArray")),
+        emit_cmp_glue(recursive, custom_types, ast.TNil),
+      ],
+      list.map(glue_seeds, fn(ty) {
+        emit_cmp_glue(recursive, custom_types, ty)
       }),
-      "\n\n",
     )
-  let buffer_glue =
-    string.join(
-      list.map(
-        collect_buffer_elems(custom_types, functions),
-        fn(elem) {
-          emit_buffer_glue(lits, recursive, custom_types, fields_of, elem)
-        },
-      ),
-      "\n\n",
+  let rc_glue_fns =
+    list.flat_map(seeds, fn(ty) {
+      [
+        emit_rc_glue(lits, recursive, custom_types, fields_of, "retain", ty),
+        emit_rc_glue(lits, recursive, custom_types, fields_of, "drop", ty),
+      ]
+    })
+  let buffer_glue_fns =
+    list.map(
+      collect_buffer_elems(custom_types, functions),
+      fn(elem) {
+        emit_buffer_glue(lits, recursive, custom_types, fields_of, elem)
+      },
     )
-  let show_glue =
-    string.join(
-      list.append(
-        [
-          emit_show_glue(recursive, custom_types, lits, ast.TInt),
-          emit_show_glue(recursive, custom_types, lits, ast.TFloat),
-          emit_show_glue(recursive, custom_types, lits, ast.TBool),
-          emit_show_glue(recursive, custom_types, lits, TString),
-          emit_show_glue(recursive, custom_types, lits, TNamed("BitArray")),
-          emit_show_glue(recursive, custom_types, lits, ast.TNil),
-        ],
-        list.map(glue_seeds, fn(ty) {
-          emit_show_glue(recursive, custom_types, lits, ty)
-        }),
-      ),
-      "\n\n",
+  let show_glue_fns =
+    list.append(
+      [
+        emit_show_glue(recursive, custom_types, lits, ast.TInt),
+        emit_show_glue(recursive, custom_types, lits, ast.TFloat),
+        emit_show_glue(recursive, custom_types, lits, ast.TBool),
+        emit_show_glue(recursive, custom_types, lits, TString),
+        emit_show_glue(recursive, custom_types, lits, TNamed("BitArray")),
+        emit_show_glue(recursive, custom_types, lits, ast.TNil),
+      ],
+      list.map(glue_seeds, fn(ty) {
+        emit_show_glue(recursive, custom_types, lits, ty)
+      }),
     )
 
   let main_code = case list.any(functions, fn(f) { f.name == "main" }) {
@@ -325,43 +317,41 @@ pub fn emit(
       }),
       "\n\n",
     )
-  let out =
-    string.join(
-      [
-        header(),
-        globals,
-        "\n\n",
-        type_code,
-        "\n\n",
-        builtins,
-        "\n\n",
-        defs,
-        "\n\n",
-        frame_drops,
-        "\n\n",
-        wrappers,
-        "\n\n",
-        eq_glue,
-        "\n\n",
-        rc_glue,
-        "\n\n",
-        buffer_glue,
-        "\n\n",
-        show_glue,
-        "\n\n",
-        cmp_glue,
-        "\n",
-        main_code,
-      ],
-      "",
-    )
+  let chunks =
+    list.flatten([
+      [header()],
+      intersperse(global_decls, "\n"),
+      ["\n\n", type_code, "\n\n", builtins, "\n\n"],
+      intersperse(defs_bodies, "\n\n"),
+      ["\n\n", frame_drops, "\n\n", wrappers, "\n\n"],
+      intersperse(eq_glue_fns, "\n\n"),
+      ["\n\n"],
+      intersperse(rc_glue_fns, "\n\n"),
+      ["\n\n"],
+      intersperse(buffer_glue_fns, "\n\n"),
+      ["\n\n"],
+      intersperse(show_glue_fns, "\n\n"),
+      ["\n\n"],
+      intersperse(cmp_glue_fns, "\n\n"),
+      ["\n", main_code],
+    ])
   // Optional call-depth probe (debug aid): the generated code bumps the
   // `@__gleamc_depth` global directly on entry (load/add/store) and before each
   // return (load/sub/store); only the limit path calls into the runtime to name
-  // the function that went deepest and abort.
+  // the function that went deepest and abort. It rewrites the whole document,
+  // so it collapses the chunks back into one.
   case ffi.get_env("GLEAMC_CALL_DEPTH") {
-    Ok(_) -> instrument_depth(out)
-    Error(_) -> out
+    Ok(_) -> [instrument_depth(string.join(chunks, ""))]
+    Error(_) -> chunks
+  }
+}
+
+/// `[a, sep, b, sep, c]`: the chunk-list form of `string.join(items, sep)`.
+fn intersperse(items: List(String), sep: String) -> List(String) {
+  case items {
+    [] -> []
+    [only] -> [only]
+    [first, ..rest] -> [first, sep, ..intersperse(rest, sep)]
   }
 }
 

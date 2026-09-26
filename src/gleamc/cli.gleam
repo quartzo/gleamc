@@ -131,39 +131,45 @@ fn compile_file(source: String, options: Options) -> Nil {
 }
 
 fn compile_modules(modules, base: String, options: Options) -> Nil {
-  let result = case options.ir {
-    True -> ownership_ir(modules)
-    False -> pipeline.compile_modules_llvm(modules)
+  case options.ir {
+    True -> compile_ir_dump(modules, base)
+    False -> compile_llvm(modules, base, options)
   }
-  case result {
+}
+
+/// Ownership-phase IR dump: a text artifact, nothing to link.
+fn compile_ir_dump(modules, base: String) -> Nil {
+  case ownership_ir(modules) {
     Error(err) -> io.println(base <> ".gleam: " <> err)
-    Ok(output) -> {
-      case options.ir {
-        // Ownership-phase IR dump: a text artifact, nothing to link.
-        True -> case ffi.write_file(base <> ".ir", output) {
-          Error(err) -> io.println("error writing " <> base <> ".ir: " <> err)
-          Ok(_) -> Nil
-        }
-        False -> {
-          let audit = case ffi.get_env("GLEAMC_RC_AUDIT") {
-            Ok(_) -> True
-            Error(_) -> False
-          }
-          // Audit builds carry extra refcount site strings, so they get their
-          // own files (`_debug`) and never clobber the normal artifacts.
-          let ll_path = case audit {
-            True -> base <> "_debug.ll"
-            False -> base <> ".ll"
-          }
-          let bin_path = case audit {
-            True -> base <> "_debug"
-            False -> base
-          }
-          case ffi.write_file(ll_path, output) {
-            Error(err) -> io.println("error writing " <> ll_path <> ": " <> err)
-            Ok(_) -> build(ll_path, bin_path, options)
-          }
-        }
+    Ok(output) -> case ffi.write_file(base <> ".ir", output) {
+      Error(err) -> io.println("error writing " <> base <> ".ir: " <> err)
+      Ok(_) -> Nil
+    }
+  }
+}
+
+fn compile_llvm(modules, base: String, options: Options) -> Nil {
+  case pipeline.compile_modules_llvm_chunks(modules) {
+    Error(err) -> io.println(base <> ".gleam: " <> err)
+    Ok(chunks) -> {
+      let audit = case ffi.get_env("GLEAMC_RC_AUDIT") {
+        Ok(_) -> True
+        Error(_) -> False
+      }
+      // Audit builds carry extra refcount site strings, so they get their
+      // own files (`_debug`) and never clobber the normal artifacts.
+      let ll_path = case audit {
+        True -> base <> "_debug.ll"
+        False -> base <> ".ll"
+      }
+      let bin_path = case audit {
+        True -> base <> "_debug"
+        False -> base
+      }
+      // Stream the chunks to the file instead of building one huge string.
+      case ffi.write_chunks(ll_path, chunks) {
+        Error(err) -> io.println("error writing " <> ll_path <> ": " <> err)
+        Ok(_) -> build(ll_path, bin_path, options)
       }
     }
   }
