@@ -8,10 +8,12 @@
 
 import gleam/dict.{type Dict}
 import gleam/int
+import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import gleamc/util
+import gleamc/ffi
 import gleamc/ast.{
   type Arm, type CustomType, type Expr, type Function, type Module, type Pattern,
   type Type, type Variant, Arm, CustomType, DCustomType, DExternal, DFunction,
@@ -667,6 +669,37 @@ fn node_ty(state: State, typed: texpr.TExpr) -> types.Ty {
   types.zonk(texpr.type_of(typed), state.subst)
 }
 
+/// Read a node's inferred type from its annotation. With `GLEAMC_MONO_VERIFY`
+/// set, cross-check against the state-advancing re-inference (`type_of`) and
+/// report divergences, falling back to `type_of` to stay correct while the
+/// migration proceeds.
+fn read_ty(
+  state: State,
+  locals: Dict(String, Scheme),
+  expr: Expr,
+  typed: texpr.TExpr,
+) -> #(types.Ty, State) {
+  let annotated = node_ty(state, typed)
+  case ffi.get_env("GLEAMC_MONO_VERIFY") {
+    Ok(_) -> {
+      let #(re_inferred, state2) = type_of(state, locals, expr)
+      case types.describe(annotated) == types.describe(re_inferred) {
+        True -> #(annotated, state2)
+        False -> {
+          io.println(
+            "mono: type divergence: annotated="
+            <> types.describe(annotated)
+            <> " re-inferred="
+            <> types.describe(re_inferred),
+          )
+          #(re_inferred, state2)
+        }
+      }
+    }
+    Error(_) -> #(annotated, state)
+  }
+}
+
 /// Paired walk: the surface expression together with its typed companion (from
 /// the single elaboration). Handled forms read the inferred type from the typed
 /// node instead of re-inferring; everything else falls back to the surface walk
@@ -682,7 +715,7 @@ fn mono_expr_pair(
       use #(left2, state) <- result_try(
         mono_expr_pair(state, locals, left, Some(left_t)),
       )
-      let left_ty = node_ty(state, left_t)
+      let #(left_ty, state) = read_ty(state, locals, left, left_t)
       use #(right2, state) <- result_try(mono_expr_ex_pair(
         state,
         locals,
@@ -760,11 +793,11 @@ fn mono_block_ex_pair_acc(
       )
     }
     [Let(pattern, value), ..rest], [texpr.TLet(_, value_t), ..trest] -> {
-      let declared_ty = node_ty(state, value_t)
+      let #(declared_ty, state) = read_ty(state, locals, value, value_t)
       use #(value2, state) <- result_try(
         mono_expr_ex_pair(state, locals, Some(declared_ty), value, Some(value_t)),
       )
-      let value_ty = node_ty(state, value_t)
+      let #(value_ty, state) = read_ty(state, locals, value, value_t)
       use #(pattern2, bindings, state) <- result_try(
         mono_pattern(state, locals, pattern, value_ty),
       )
