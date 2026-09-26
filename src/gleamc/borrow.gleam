@@ -198,34 +198,90 @@ fn consumed_params(function, ffi, state) {
         _ -> acc
       }
     })
-  list.fold(blocks, dict.new(), fn(acc, block) {
-    let ir.Block(_, ops, term) = block
-    let acc =
-      list.fold(ops, acc, fn(set, op) {
-        let set =
-          ir.op_owning_modes(op, state, ffi)
-          |> list.fold(set, fn(set, operand) {
-            consume_param(set, param_set, operand)
+  let owning =
+    list.fold(blocks, dict.new(), fn(acc, block) {
+      let ir.Block(_, ops, term) = block
+      let acc =
+        list.fold(ops, acc, fn(set, op) {
+          let set =
+            ir.op_owning_modes(op, state, ffi)
+            |> list.fold(set, fn(set, operand) {
+              consume_param(set, param_set, operand)
+            })
+          // A parameter copied into a returned local is returned (through the
+          // `case` join): `OpCopy(res, param) ... ; Ret(res)`.
+          case op {
+            ir.OpCopy(dest, src, _) ->
+              case dict.get(returned, dest) {
+                Ok(_) -> consume_param(set, param_set, src)
+                Error(_) -> set
+              }
+            _ -> set
+          }
+        })
+      case term {
+        ir.Ret(ir.Var(name)) -> consume_param(acc, param_set, ir.Var(name))
+        // Tail calls move their arguments (the caller does not return).
+        ir.Tailcall(_, args) ->
+          list.fold(args, acc, fn(set, arg) {
+            consume_param(set, param_set, arg)
           })
-        // A parameter copied into a returned local is returned (through the
-        // `case` join): `OpCopy(res, param) ... ; Ret(res)`.
-        case op {
-          ir.OpCopy(dest, src, _) ->
-            case dict.get(returned, dest) {
-              Ok(_) -> consume_param(set, param_set, src)
-              Error(_) -> set
-            }
-          _ -> set
+        ir.TailcallIndirect(_, args) ->
+          list.fold(args, acc, fn(set, arg) {
+            consume_param(set, param_set, arg)
+          })
+        _ -> acc
+      }
+    })
+  // A parameter that is only ever destructured (every read is the subject of a
+  // field/tuple extraction) is consumed: the fields are moved/copied out and
+  // the container is never needed again, so the caller may transfer it.
+  let destructured = destructured_params(blocks, param_set)
+  list.fold(dict.keys(destructured), owning, fn(acc, name) {
+    dict.insert(acc, name, True)
+  })
+}
+
+/// Parameters read at least once and whose every read is an extraction
+/// subject, i.e. fully destructured and never used as a whole.
+fn destructured_params(blocks, param_set) {
+  let non_extract =
+    list.fold(blocks, dict.new(), fn(acc, block) {
+      let ir.Block(_, ops, term) = block
+      let acc =
+        list.fold(ops, acc, fn(acc, op) {
+          case op {
+            ir.OpField(_, ir.Var(_), _, _, _) -> acc
+            ir.OpTupleGet(_, ir.Var(_), _, _) -> acc
+            _ ->
+              list.fold(ir.op_reads(op), acc, fn(set, operand) {
+                consume_param(set, param_set, operand)
+              })
+          }
+        })
+      list.fold(ir.term_reads(term), acc, fn(set, operand) {
+        consume_param(set, param_set, operand)
+      })
+    })
+  let extract_reads =
+    list.fold(blocks, dict.new(), fn(acc, block) {
+      let ir.Block(_, ops, _) = block
+      list.fold(ops, acc, fn(acc, op) {
+        let subject = case op {
+          ir.OpField(_, ir.Var(subject), _, _, _) -> subject
+          ir.OpTupleGet(_, ir.Var(subject), _, _) -> subject
+          _ -> ""
+        }
+        case dict.get(param_set, subject) {
+          Ok(_) -> dict.insert(acc, subject, True)
+          Error(_) -> acc
         }
       })
-    case term {
-      ir.Ret(ir.Var(name)) -> consume_param(acc, param_set, ir.Var(name))
-      // Tail calls move their arguments (the caller does not return).
-      ir.Tailcall(_, args) ->
-        list.fold(args, acc, fn(set, arg) { consume_param(set, param_set, arg) })
-      ir.TailcallIndirect(_, args) ->
-        list.fold(args, acc, fn(set, arg) { consume_param(set, param_set, arg) })
-      _ -> acc
+    })
+  list.fold(dict.keys(extract_reads), dict.new(), fn(acc, name) {
+    case dict.get(non_extract, name) {
+      Error(_) -> dict.insert(acc, name, True)
+      Ok(_) -> acc
     }
   })
 }

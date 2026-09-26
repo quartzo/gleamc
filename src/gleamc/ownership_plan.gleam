@@ -219,10 +219,24 @@ pub fn compute(
           defs_map,
           moved_map,
         )
-      // A container that is a pure, root temporary: not a parameter, not
-      // extracted from another aggregate, and read only by field/tuple
-      // extractions.
-      let pure_subjects = pure_extraction_subjects(blocks, handles, params)
+      // An owned parameter was transferred by the caller, so it is a root
+      // owner like a fresh temporary and its fields may be moved out.
+      let owned_params =
+        list.index_map(params, fn(param, index) {
+          #(param, ffi_modes.mode_at(param_modes, index))
+        })
+        |> list.fold(dict.new(), fn(acc, pair) {
+          let #(param, mode) = pair
+          case mode {
+            ffi_modes.Owned -> dict.insert(acc, param, True)
+            ffi_modes.Borrow -> acc
+          }
+        })
+      // A container that is a pure, root-owned value: a fresh temporary or an
+      // owned parameter, not extracted from another aggregate, and read only by
+      // field/tuple extractions.
+      let pure_subjects =
+        pure_extraction_subjects(blocks, handles, params, owned_params)
 
       let block_plans =
         list.fold(blocks, dict.new(), fn(acc, block) {
@@ -505,10 +519,16 @@ fn extraction_views(blocks, borrow, params) -> Dict(String, String) {
 // extraction move-out
 // ---------------------------------------------------------------------------
 
-/// A handle local eligible for the extraction move-out: not a parameter, not
-/// itself extracted from another aggregate (a nested value), and read only by
-/// field/tuple extractions (a pure root temporary).
-fn pure_extraction_subjects(blocks, handles: Dict(String, Type), params) {
+/// A handle local eligible for the extraction move-out: a root-owned value
+/// (a fresh temporary, or an owned parameter), not itself extracted from
+/// another aggregate (a nested value), and read only by field/tuple
+/// extractions.
+fn pure_extraction_subjects(
+  blocks,
+  handles: Dict(String, Type),
+  params,
+  owned_params,
+) {
   let param_set =
     list.fold(params, dict.new(), fn(acc, param) {
       dict.insert(acc, param, True)
@@ -541,7 +561,7 @@ fn pure_extraction_subjects(blocks, handles: Dict(String, Type), params) {
     })
   list.fold(dict.keys(handles), dict.new(), fn(acc, name) {
     case
-      dict.has_key(param_set, name)
+      dict.has_key(param_set, name) && !has_key(owned_params, name)
       || dict.has_key(impure, name)
       || dict.has_key(extraction_dests, name)
     {
@@ -565,13 +585,17 @@ fn full_destructure_moves(
   pure_subjects,
 ) {
   let ir.Block(_, ops, _) = block
-  let owning =
-    list.fold(ops, dict.new(), fn(acc, op) {
+  // A field read by more than one owning extraction cannot be moved: both
+  // dests would alias the container's single reference, so `repeated` marks
+  // those subjects as ineligible.
+  let #(owning, repeated) =
+    list.fold(ops, #(dict.new(), dict.new()), fn(acc, op) {
+      let #(owning, repeated) = acc
       case op {
         ir.OpField(dest, ir.Var(subject), _, index, _) ->
-          add_owning_extract(acc, subject, dest, index, handles)
+          add_owning_extract(owning, repeated, subject, dest, index, handles)
         ir.OpTupleGet(dest, ir.Var(subject), index, _) ->
-          add_owning_extract(acc, subject, dest, index, handles)
+          add_owning_extract(owning, repeated, subject, dest, index, handles)
         _ -> acc
       }
     })
@@ -594,9 +618,8 @@ fn full_destructure_moves(
   list.fold(dict.to_list(owning), #(dict.new(), dict.new()), fn(acc, entry) {
     let #(moved, elided) = acc
     let #(subject, indices) = entry
-    case dict.get(dead, subject) {
-      Error(_) -> acc
-      Ok(_) ->
+    case dict.get(dead, subject), dict.get(repeated, subject) {
+      Ok(_), Error(_) ->
         case dict.get(pure_subjects, subject) {
           Error(_) -> acc
           Ok(_) ->
@@ -628,20 +651,25 @@ fn full_destructure_moves(
                 }
             }
         }
+      _, _ -> acc
     }
   })
 }
 
-fn add_owning_extract(acc, subject, dest, index, handles) {
+fn add_owning_extract(owning, repeated, subject, dest, index, handles) {
   case dict.get(handles, dest) {
     Ok(_) -> {
-      let existing = case dict.get(acc, subject) {
+      let existing = case dict.get(owning, subject) {
         Ok(found) -> found
         Error(_) -> dict.new()
       }
-      dict.insert(acc, subject, dict.insert(existing, index, True))
+      let repeated = case dict.has_key(existing, index) {
+        True -> dict.insert(repeated, subject, True)
+        False -> repeated
+      }
+      #(dict.insert(owning, subject, dict.insert(existing, index, True)), repeated)
     }
-    Error(_) -> acc
+    Error(_) -> #(owning, repeated)
   }
 }
 

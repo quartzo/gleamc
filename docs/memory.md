@@ -8,8 +8,10 @@ runtime implements them.
 
 ## The ownership pass
 
-The memory decisions are made by `src/gleamc/ownership.gleam` together with
-`src/gleamc/borrow.gleam`. The pass runs on the IR, between `lower` and `cps`.
+The memory decisions are made by `src/gleamc/ownership.gleam` (the applier)
+together with `src/gleamc/ownership_plan.gleam` (the analysis) and
+`src/gleamc/borrow.gleam` (parameter modes). The pass runs on the IR, between
+`frame` and the backend.
 
 Every local that holds a *handle* (`String`, `BitArray`, a function value, or a
 data type that contains one) owns exactly one reference. The pass walks the
@@ -55,6 +57,21 @@ degrading every caller of a function just because its value is taken once.
 `ownership.needs_drop` decides whether a local participates at all. Scalars
 (`Int`, `Float`, `Bool`, `Nil`) and type variables do not. `String`, `BitArray`,
 function values, tuples/ADTs that contain a handle, and recursive types do.
+
+### Extraction move-out
+
+Destructuring a consumed container whose owned fields are all read moves those
+fields out instead of retaining them, and the container is not dropped: the
+container's references are transferred to the extracted values. A container is
+eligible when it is a *root-owned* value — a fresh temporary, or a parameter the
+caller transferred (`Owned`) — that is dead and read only by field/tuple
+extractions, with every owned field read exactly once (a field read twice falls
+back to retain + drop, since both dests would alias one reference). A
+fully-destructured parameter is therefore classified `Owned` by `borrow.analyze`.
+
+This is what lets `Person(..p, age: ...)` and
+`State(..state, d: dict.insert(state.d, k, v))` hand the dict to the update in
+place, so the write half of copy-on-write triggers.
 
 ## The runtime kernel
 

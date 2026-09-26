@@ -70,3 +70,25 @@ pub fn ownership_move_no_retain_test() {
   assert !string.contains(text, "retain")
   assert !string.contains(text, "drop")
 }
+
+/// A fully-destructured parameter is consumed, so its owned fields are moved
+/// out (no retain) and the container is not dropped.
+pub fn ownership_param_field_move_no_retain_test() {
+  let text =
+    run(
+      "type Box { Box(s: String, n: Int) }\n\nfn unbox(b: Box) -> String { b.s }",
+    )
+  assert !string.contains(text, "retain")
+  assert !string.contains(text, "drop")
+}
+
+/// A field read by two owning extractions must not be moved (both dests would
+/// alias the container's single reference); fall back to retain + drop.
+pub fn ownership_repeated_field_retains_test() {
+  let text =
+    run(
+      "type Box { Box(s: String, n: Int) }\n\nfn dup(b: Box) -> #(String, String) { #(b.s, b.s) }",
+    )
+  assert string.contains(text, "retain")
+  assert string.contains(text, "drop")
+}
