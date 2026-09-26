@@ -59,11 +59,15 @@ fn grow(functions, known) {
   }
 }
 
+/// A real suspension awaiting something external (`time.timer`, `uv.fs_*`) or a
+/// boxed mailbox/task value (`process.receive`, `task.await`). `Machine` is the
+/// mode the async pass itself emits, so it does not count here.
 fn has_host_suspend(function: ir.Function) -> Bool {
   let ir.Function(_, _, _, blocks, _) = function
   list.any(blocks, fn(block) {
     case block.term {
-      ir.Suspend(_, _, _, False) -> True
+      ir.Suspend(_, _, _, ir.Host) -> True
+      ir.Suspend(_, _, _, ir.Boxed) -> True
       _ -> False
     }
   })
@@ -127,7 +131,7 @@ fn normalize_ops(ops, term, ret, asyncs, locals, counter, label) {
                 ir.Block(
                   label,
                   [ir.OpMachineStart(fut, fun, args, dest)],
-                  ir.Suspend(ir.Var(fut), dest, resume, True),
+                  ir.Suspend(ir.Var(fut), dest, resume, ir.Machine),
                 )
               let #(more, locals, counter) =
                 normalize_ops(rest, term, ret, asyncs, locals, counter, resume)

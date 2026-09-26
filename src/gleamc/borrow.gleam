@@ -57,6 +57,8 @@ fn callers_map(functions) -> Dict(String, List(String)) {
             case op {
               ir.OpCall(_, fun, _, _) -> Ok(fun)
               ir.OpMachineStart(_, fun, _, _) -> Ok(fun)
+              ir.OpTaskStart(_, fun, _, _) -> Ok(fun)
+              ir.OpTaskStartClosure(_, fun, _, _) -> Ok(fun)
               _ -> Error(Nil)
             }
           })
@@ -93,6 +95,16 @@ fn tail_targets(functions) -> Dict(String, List(String)) {
         list.fold(ops, acc, fn(acc, op) {
           case op {
             ir.OpMachineStart(_, fun, _, _) ->
+              case dict.get(params_by_name, fun) {
+                Ok(params) -> dict.insert(acc, fun, params)
+                Error(_) -> acc
+              }
+            ir.OpTaskStart(_, fun, _, _) ->
+              case dict.get(params_by_name, fun) {
+                Ok(params) -> dict.insert(acc, fun, params)
+                Error(_) -> acc
+              }
+            ir.OpTaskStartClosure(_, fun, _, _) ->
               case dict.get(params_by_name, fun) {
                 Ok(params) -> dict.insert(acc, fun, params)
                 Error(_) -> acc

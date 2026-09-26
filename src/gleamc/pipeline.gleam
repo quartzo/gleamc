@@ -26,6 +26,7 @@ import gleamc/opacity
 import gleamc/ownership
 import gleamc/parser
 import gleamc/qualify
+import gleamc/spawn
 import gleamc/tmono
 
 /// Single-module convenience (entry module name "").
@@ -106,6 +107,10 @@ fn cascade(modules: List(#(String, Module))) {
     lower.describe_error,
   ))
   let t = mark("lower", t)
+  // Turn `process.spawn` / `task.async` into explicit task starts before the
+  // async rewrite (which would otherwise rewrite the eta forwarder).
+  use ir_module <- result.try(spawn.rewrite(ir_module))
+  let t = mark("spawn", t)
   // Make suspension explicit at every async call: the caller starts the callee
   // as a task and suspends on its completion, so one driver owns the uv loop.
   let ir_module = async.normalize(ir_module)

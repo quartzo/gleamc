@@ -13,7 +13,7 @@ import gleam/result
 import gleamc/ast.{
   type Pattern, type Type, PAs, PBitArray, PBool, PCtor, PFloat, PInt, PLabelled,
   PNil, PString, PTuple, PVar, PWildcard, TApp, TBool, TFun, TInt, TNamed, TNil,
-  TString, TTuple, buffer_elem_name,
+  TString, TTuple, buffer_elem_name, subject_elem_name,
 }
 import gleamc/checker
 import gleamc/infer
@@ -834,19 +834,28 @@ fn lower_call(
       }
     tmono.TField(tmono.TVar(module, _), name, _) -> {
       let builtin = module <> "." <> name
-      case is_suspending(builtin) {
-        // Async host call: starts an internal `Future` and suspends; the
-        // scheduler loop resumes when it completes, binding the awaited value
-        // (the Gleam-visible result).
-        True -> lower_suspend(b, args, builtin, ret_ty)
-        False -> {
-          use #(operands, b1) <- result.try(lower_args(b, args))
-          let #(dest, b2) = fresh_local(b1, "call", ret_ty)
-          Ok(#(
-            ir.Var(dest),
-            emit(b2, ir.OpBuiltin(dest, builtin, operands, ret_ty)),
-          ))
-        }
+      case builtin {
+        // `task_ffi.await(task)` suspends on a task handle that is already started
+        // (no host call to start a future): bind the awaited result.
+        "task_ffi.await" -> lower_await(b, args, ret_ty)
+        // `process_ffi.receive` is a boxed suspension: the future carries a box
+        // whose payload is moved out on resume.
+        "process_ffi.receive" -> lower_suspend_mode(b, args, builtin, ret_ty, ir.Boxed)
+        _ ->
+          case is_suspending(builtin) {
+            // Async host call: starts an internal `Future` and suspends; the
+            // scheduler loop resumes when it completes, binding the awaited
+            // value (the Gleam-visible result).
+            True -> lower_suspend(b, args, builtin, ret_ty)
+            False -> {
+              use #(operands, b1) <- result.try(lower_args(b, args))
+              let #(dest, b2) = fresh_local(b1, "call", ret_ty)
+              Ok(#(
+                ir.Var(dest),
+                emit(b2, ir.OpBuiltin(dest, builtin, operands, ret_ty)),
+              ))
+            }
+          }
       }
     }
     _ -> {
@@ -884,15 +893,38 @@ fn is_suspending(builtin: String) -> Bool {
       "uv.fs_realpath",
       "uv.fs_readdir",
       "uv.fs_cwd",
+      "process_ffi.receive",
     ],
     builtin,
   )
+}
+
+/// `task_ffi.await(task)`: suspends on an already-started task's completion
+/// future and binds the result the task boxed into it. Unlike a host suspend
+/// there is no builtin call: the handle is the future and the resume moves the
+/// boxed value into `dest_ty`.
+fn lower_await(b, args, dest_ty) {
+  case args {
+    [task_expr] -> {
+      use #(fut, b1) <- result.try(lower_expr(b, task_expr))
+      let #(dest, b2) = fresh_local(b1, "awaited", dest_ty)
+      let #(resume, b3) = new_label(b2, "await")
+      let b4 = end_block(b3, ir.Suspend(fut, dest, resume, ir.Boxed))
+      let b5 = start_block(b4, resume)
+      Ok(#(ir.Var(dest), b5))
+    }
+    _ -> Error(LowerError("task_ffi.await expects one task handle"))
+  }
 }
 
 /// Suspending host call (`time.timer`, `uv.fs_read`, ...): starts the future
 /// (internal handle) and suspends, binding the awaited value to a fresh local.
 /// The Gleam-visible result is that local (unwrapped from the future).
 fn lower_suspend(b, args, builtin, dest_ty) {
+  lower_suspend_mode(b, args, builtin, dest_ty, ir.Host)
+}
+
+fn lower_suspend_mode(b, args, builtin, dest_ty, mode) {
   use #(operands, b1) <- result.try(lower_args(b, args))
   let future_ty = TNamed("Future")
   let #(fut, b2) = fresh_local(b1, "future", future_ty)
@@ -900,7 +932,7 @@ fn lower_suspend(b, args, builtin, dest_ty) {
   let #(dest, b4) = fresh_local(b3, "awaited", dest_ty)
   // The suspension is a terminator: control yields and resumes at `resume`.
   let #(resume, b5) = new_label(b4, "await")
-  let b6 = end_block(b5, ir.Suspend(ir.Var(fut), dest, resume, False))
+  let b6 = end_block(b5, ir.Suspend(ir.Var(fut), dest, resume, mode))
   let b7 = start_block(b6, resume)
   Ok(#(ir.Var(dest), b7))
 }
@@ -1005,6 +1037,19 @@ fn is_buffer_like(ty: Type) -> Bool {
   }
 }
 
+fn is_subject_like(ty: Type) -> Bool {
+  case ty {
+    TApp("Subject", _) -> True
+    TNamed(name) ->
+      case subject_elem_name(name) {
+        Ok(_) -> True
+        Error(_) -> False
+      }
+    _ -> False
+  }
+}
+
+
 /// Like `lower_expr`, but a result-polymorphic builtin (`buffer.new`) adopts
 /// its element type from the expected type (a constructor field).
 fn lower_expect(b, expected, expr) -> Result(#(ir.Operand, Builder), LowerError) {
@@ -1021,6 +1066,24 @@ fn lower_expect(b, expected, expr) -> Result(#(ir.Operand, Builder), LowerError)
           Ok(#(
             ir.Var(dest),
             emit(b2, ir.OpBuiltin(dest, "buffer.new", operands, expected)),
+          ))
+        }
+        False -> lower_expr(b, expr)
+      }
+    // `process_ffi.new_subject()` adopts its message type from an expected
+    // `Subject(elem)` at the call site.
+    tmono.TCall(
+      tmono.TField(tmono.TVar("process_ffi", _), "new_subject", _),
+      args,
+      _,
+    ) ->
+      case is_subject_like(expected) {
+        True -> {
+          use #(operands, b1) <- result.try(lower_args(b, args))
+          let #(dest, b2) = fresh_local(b1, "subject", expected)
+          Ok(#(
+            ir.Var(dest),
+            emit(b2, ir.OpBuiltin(dest, "process_ffi.new_subject", operands, expected)),
           ))
         }
         False -> lower_expr(b, expr)

@@ -1286,12 +1286,11 @@ fn lift_lambda(
         dict.new(),
         list.map(param_tys, surface_of),
       ))
-      use #(ret_surface, state) <- result_try(mono_type(
+      use #(_expected_ret, state) <- result_try(mono_type(
         state,
         dict.new(),
         surface_of(ret_ty),
       ))
-      let fn_ty = TFun(param_surfaces, ret_surface)
       let env_ty = "__Env_" <> fname
       let #(with_types, state) =
         list.fold(captured, #([], state), fn(acc, name) {
@@ -1353,6 +1352,11 @@ fn lift_lambda(
         body_t,
       ))
       let body2 = replace_vars(body_mono, replacements)
+      // The lambda's return type is its body's type: the expected type may still
+      // be an unresolved variable here (e.g. `task.async(fn() { work() })`),
+      // which would otherwise default to `Nil`.
+      let ret_surface = tmono.type_of(body2)
+      let fn_ty = TFun(param_surfaces, ret_surface)
       let env_param = #("__env", TNamed("void*"))
       let fn_def =
         tmono.TFunction(
@@ -1933,13 +1937,45 @@ fn mono_call(
           ))
         }
       }
-    _ -> {
-      use #(args2, state) <- result_try(mono_exprs(state, locals, args))
-      let arg_tys = list.map(args2, fn(arg) { ty_of_surface(tmono.type_of(arg)) })
-      let ret_ty = global_call_ret_ty(state, fun, arg_tys, expected_opt)
-      use #(callee, state) <- result_try(callee_texpr(state, locals, fun))
-      Ok(#(tmono.TCall(callee, args2, ret_ty), state))
-    }
+    _ ->
+      case builtin_expect_scheme(state, fun) {
+        Ok(scheme) -> {
+          let #(_, ty, counter) = types.instantiate_vars(scheme, state.counter)
+          let state = State(..state, counter: counter)
+          let #(param_tys, ret_t) = fun_parts(ty)
+          let expected =
+            list.map(param_tys, fn(t) { types.zonk(t, state.subst) })
+          use #(args2, state) <- result_try(
+            mono_args_expect(state, locals, expected, args),
+          )
+          let #(ret_ty, state) = specialised(state, types.zonk(ret_t, state.subst))
+          use #(callee, state) <- result_try(callee_texpr(state, locals, fun))
+          Ok(#(tmono.TCall(callee, args2, ret_ty), state))
+        }
+        Error(_) -> {
+          use #(args2, state) <- result_try(mono_exprs(state, locals, args))
+          let arg_tys = list.map(args2, fn(arg) {
+            ty_of_surface(tmono.type_of(arg))
+          })
+          let ret_ty = global_call_ret_ty(state, fun, arg_tys, expected_opt)
+          use #(callee, state) <- result_try(callee_texpr(state, locals, fun))
+          Ok(#(tmono.TCall(callee, args2, ret_ty), state))
+        }
+      }
+  }
+}
+
+/// A dotted builtin whose arguments need an expected type (a lambda passed to
+/// `process.spawn` / `task.async`), so mono lifts it correctly.
+fn builtin_expect_scheme(state: State, fun: Expr) -> Result(Scheme, Nil) {
+  case fun {
+    EField(EVar(module), name) ->
+      case module, name {
+        "process", "spawn" -> dict.get(state.globals, "process.spawn")
+        "task", "async" -> dict.get(state.globals, "task.async")
+        _, _ -> Error(Nil)
+      }
+    _ -> Error(Nil)
   }
 }
 
@@ -2715,15 +2751,33 @@ fn mono_call_pair(
           ))
         }
       }
-    _ -> {
-      use #(args2, state) <- result_try(
-        mono_exprs_pair(state, locals, args, args_t),
-      )
-      let arg_tys = list.map(args2, fn(arg) { ty_of_surface(tmono.type_of(arg)) })
-      let ret_ty = global_call_ret_ty(state, fun, arg_tys, expected_opt)
-      use #(callee, state) <- result_try(callee_texpr(state, locals, fun))
-      Ok(#(tmono.TCall(callee, args2, ret_ty), state))
-    }
+    _ ->
+      case builtin_expect_scheme(state, fun) {
+        Ok(scheme) -> {
+          let #(_, ty, counter) = types.instantiate_vars(scheme, state.counter)
+          let state = State(..state, counter: counter)
+          let #(param_tys, ret_t) = fun_parts(ty)
+          let expected =
+            list.map(param_tys, fn(t) { types.zonk(t, state.subst) })
+          use #(args2, state) <- result_try(
+            mono_args_expect_pair(state, locals, expected, args, args_t),
+          )
+          let #(ret_ty, state) = specialised(state, types.zonk(ret_t, state.subst))
+          use #(callee, state) <- result_try(callee_texpr(state, locals, fun))
+          Ok(#(tmono.TCall(callee, args2, ret_ty), state))
+        }
+        Error(_) -> {
+          use #(args2, state) <- result_try(
+            mono_exprs_pair(state, locals, args, args_t),
+          )
+          let arg_tys = list.map(args2, fn(arg) {
+            ty_of_surface(tmono.type_of(arg))
+          })
+          let ret_ty = global_call_ret_ty(state, fun, arg_tys, expected_opt)
+          use #(callee, state) <- result_try(callee_texpr(state, locals, fun))
+          Ok(#(tmono.TCall(callee, args2, ret_ty), state))
+        }
+      }
   }
 }
 

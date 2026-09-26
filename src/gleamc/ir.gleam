@@ -71,6 +71,21 @@ pub type Op {
     args: List(Operand),
     result_dest: String,
   )
+  /// Starts the machine of `fun` as a task **without suspending** the caller.
+  /// `into_future` stores a scalar result in the completion future itself (the
+  /// `task.async` / `task_ffi.await` pair); otherwise the task is fire-and-forget
+  /// (`process.spawn`). `fut` binds the task handle. Emitted by the spawn pass.
+  OpTaskStart(fut: String, fun: String, args: List(Operand), into_future: Bool)
+  /// Starts the machine of a **closure value** (`process.spawn` /
+  /// `task.async` take `fn() -> ...`). `code` is the closure code
+  /// (`Gleamc___lambda_N`); the backend resolves the machine frame and adopts
+  /// the closure's environment as the callee frame's `__env`.
+  OpTaskStartClosure(
+    fut: String,
+    fun: String,
+    closure: Operand,
+    into_future: Bool,
+  )
   /// Defines the function's frame: a composite, reference-counted heap cell
   /// holding the variables that must survive a jump (captured by a closure or
   /// live across a suspension). Fields are read/written with `OpFrameGet` and
@@ -80,6 +95,16 @@ pub type Op {
   OpFrameGet(dest: String, frame: Operand, index: Int, ty: Type)
   /// Writes `value` into field `index` of a frame value.
   OpFrameSet(frame: Operand, index: Int, value: Operand)
+}
+
+/// How a suspended machine resumes: `Host` reads the awaited value out of a
+/// host future, `Machine` releases a started machine's completion future (the
+/// result was copied into `dest` outright), `Boxed` moves a boxed value out of
+/// the future (`process_ffi.receive` / `task_ffi.await`).
+pub type ResumeMode {
+  Host
+  Machine
+  Boxed
 }
 
 pub type Terminator {
@@ -99,7 +124,7 @@ pub type Terminator {
   /// the local `dest`. `machine` distinguishes awaiting a started machine (the
   /// result is already in `dest`, so the backend only releases the future) from
   /// awaiting a host future (the value is read from it).
-  Suspend(fut: Operand, dest: String, resume: String, machine: Bool)
+  Suspend(fut: Operand, dest: String, resume: String, mode: ResumeMode)
   Unreachable
 }
 
@@ -150,6 +175,8 @@ pub fn op_dest(op: Op) -> Result(String, Nil) {
     OpRetain(_, _) -> Error(Nil)
     OpDrop(_, _) -> Error(Nil)
     OpMachineStart(fut, _, _, _) -> Ok(fut)
+    OpTaskStart(fut, _, _, _) -> Ok(fut)
+    OpTaskStartClosure(fut, _, _, _) -> Ok(fut)
     OpFrameNew(dest, _) -> Ok(dest)
     OpFrameGet(dest, _, _, _) -> Ok(dest)
     OpFrameSet(_, _, _) -> Error(Nil)
@@ -184,6 +211,8 @@ pub fn op_reads(op: Op) -> List(Operand) {
     OpRetain(src, _) -> [Var(src)]
     OpDrop(src, _) -> [Var(src)]
     OpMachineStart(_, _, args, _) -> args
+    OpTaskStart(_, _, args, _) -> args
+    OpTaskStartClosure(_, _, closure, _) -> [closure]
     OpFrameNew(_, _) -> []
     OpFrameGet(_, frame, _, _) -> [frame]
     OpFrameSet(frame, _, value) -> [frame, value]
@@ -195,6 +224,10 @@ pub fn op_owning(op: Op) -> List(Operand) {
   case op {
     OpCall(_, _, args, _) -> args
     OpMachineStart(_, _, args, _) -> args
+    OpTaskStart(_, _, args, _) -> args
+    // The task takes its own reference to the closure's environment; the
+    // closure value itself stays owned by the caller.
+    OpTaskStartClosure(_, _, _, _) -> []
     OpCtor(_, _, _, args, _) -> args
     OpTuple(_, elems, _) -> elems
     OpBitArray(_, elems, _) -> elems
@@ -246,6 +279,12 @@ pub fn op_owning_modes(
         Ok(modes) -> owned_args(args, modes)
         Error(_) -> args
       }
+    OpTaskStart(_, fun, args, _) ->
+      case dict.get(fn_modes, fun) {
+        Ok(modes) -> owned_args(args, modes)
+        Error(_) -> args
+      }
+    OpTaskStartClosure(_, _, _, _) -> []
     OpCtor(_, _, _, args, _) -> args
     OpTuple(_, elems, _) -> elems
     OpBitArray(_, elems, _) -> elems
@@ -494,6 +533,30 @@ fn op_text(op: Op) -> String {
       <> string.join(list.map(args, operand_text), ", ")
       <> ") -> "
       <> result_dest
+    OpTaskStart(fut, fun, args, into_future) ->
+      "    "
+      <> fut
+      <> " = taskstart "
+      <> fun
+      <> "("
+      <> string.join(list.map(args, operand_text), ", ")
+      <> ") into_future="
+      <> case into_future {
+        True -> "true"
+        False -> "false"
+      }
+    OpTaskStartClosure(fut, fun, closure, into_future) ->
+      "    "
+      <> fut
+      <> " = taskstartclosure "
+      <> fun
+      <> "("
+      <> operand_text(closure)
+      <> ") into_future="
+      <> case into_future {
+        True -> "true"
+        False -> "false"
+      }
     OpFrameNew(dest, frame_ty) ->
       "    " <> dest <> " = framenew " <> frame_ty
     OpFrameGet(dest, frame, index, ty) ->
@@ -539,9 +602,25 @@ fn term_text(term: Terminator) -> String {
       <> "("
       <> string.join(list.map(args, operand_text), ", ")
       <> ")"
-    Suspend(fut, dest, resume, _machine) ->
-      "suspend " <> operand_text(fut) <> " -> " <> dest <> " @" <> resume
+    Suspend(fut, dest, resume, mode) ->
+      "suspend "
+      <> operand_text(fut)
+      <> " -> "
+      <> dest
+      <> " @"
+      <> resume
+      <> " ["
+      <> resume_mode_text(mode)
+      <> "]"
     Unreachable -> "unreachable"
+  }
+}
+
+fn resume_mode_text(mode: ResumeMode) -> String {
+  case mode {
+    Host -> "host"
+    Machine -> "machine"
+    Boxed -> "boxed"
   }
 }
 

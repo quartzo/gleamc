@@ -879,6 +879,33 @@ fn builtins() -> Dict(String, Scheme) {
     "host.int64_at",
     Scheme(none, Fun([Con("BitArray", []), i], i)),
   )
+  |> dict.insert(
+    "process_ffi.new_subject",
+    Scheme([9100], Fun([], Con("Subject", [Var(9100)]))),
+  )
+  |> dict.insert(
+    "process_ffi.send",
+    Scheme(
+      [9101],
+      Fun([Con("Subject", [Var(9101)]), Var(9101)], n),
+    ),
+  )
+  |> dict.insert(
+    "process_ffi.receive",
+    Scheme([9102], Fun([Con("Subject", [Var(9102)])], Var(9102))),
+  )
+  |> dict.insert(
+    "process.spawn",
+    Scheme([9103], Fun([Fun([], n)], Con("Pid", []))),
+  )
+  |> dict.insert(
+    "task.async",
+    Scheme([9104], Fun([Fun([], Var(9104))], Con("Task", [Var(9104)]))),
+  )
+  |> dict.insert(
+    "task_ffi.await",
+    Scheme([9106], Fun([Con("Task", [Var(9106)])], Var(9106))),
+  )
 }
 
 /// The names of every builtin, used by `ffi_modes` coverage checks.
@@ -1255,6 +1282,19 @@ fn infer_block(env: Env, st: St, statements) {
   infer_block_loop(env, st, statements, [], Con("Nil", []))
 }
 
+/// Whether an expression is a syntactic value (eligible for `let`
+/// generalisation under the value restriction).
+fn is_syntactic_value(expr: Expr) -> Bool {
+  case expr {
+    EInt(_) | EFloat(_) | EString(_) | EBool(_) | ENil | EVar(_) | EField(_, _)
+    | ELambda(_, _) | EClosure(_, _, _, _) -> True
+    ECtor(_, args) -> list.all(args, is_syntactic_value)
+    ETuple(items) -> list.all(items, is_syntactic_value)
+    ELabelled(_, inner) -> is_syntactic_value(inner)
+    _ -> False
+  }
+}
+
 fn infer_block_loop(env, st, statements, acc, last_ty) {
   case statements {
     [] -> Ok(#(texpr.TBlock(list.reverse(acc), last_ty), st))
@@ -1262,7 +1302,14 @@ fn infer_block_loop(env, st, statements, acc, last_ty) {
       use #(value_t, st) <- result_try(infer_t(env, st, value))
       let value_ty = texpr.type_of(value_t)
       use #(bound, st) <- result_try(bind_pattern(env, pattern, value_ty, st))
-      let scheme = generalize_in(env, st, value_ty)
+      // Value restriction: only generalise syntactic values. A `let` bound to a
+      // function application keeps its (possibly free) type variable so later
+      // uses can unify it, matching Gleam (`let s = new_subject()` then
+      // `send(s, 1)`).
+      let scheme = case is_syntactic_value(value) {
+        True -> generalize_in(env, st, value_ty)
+        False -> Scheme([], value_ty)
+      }
       let locals = bind_let(env.locals, pattern, bound, scheme)
       infer_block_loop(
         Env(..env, locals: locals),

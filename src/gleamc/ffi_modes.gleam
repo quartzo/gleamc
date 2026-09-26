@@ -69,6 +69,15 @@ pub fn table() -> Dict(String, FfiSig) {
   |> dict.insert("uv.fs_realpath", FfiSig([Borrow], OwnedResult))
   |> dict.insert("uv.fs_readdir", FfiSig([Borrow], OwnedResult))
   |> dict.insert("uv.fs_cwd", FfiSig([], OwnedResult))
+  // Processes and tasks: handles and scalar messages are borrowed; the
+  // subject handle is an owned result.
+  |> dict.insert("process_ffi.new_subject", FfiSig([], OwnedResult))
+  // The message is moved into a box; the mailbox then owns that reference.
+  |> dict.insert("process_ffi.send", FfiSig([Borrow, Owned], OwnedResult))
+  |> dict.insert("process_ffi.receive", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("process.spawn", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("task.async", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("task_ffi.await", FfiSig([Borrow], OwnedResult))
   |> dict.insert("int.to_string", FfiSig([Borrow], OwnedResult))
   |> dict.insert("float.to_string", FfiSig([Borrow], OwnedResult))
   |> dict.insert("bool.to_string", FfiSig([Borrow], OwnedResult))
