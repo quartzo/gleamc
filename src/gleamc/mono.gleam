@@ -22,6 +22,7 @@ import gleamc/ast.{
   PTuple, PVar, PWildcard, Stmt, TApp, TFun, TNamed, TTuple, TVar, Variant,
 }
 import gleamc/infer
+import gleamc/texpr
 import gleamc/types.{type Scheme, Con, Fun, Scheme, Tup, Var}
 
 pub fn monomorphize(module: Module) -> Result(Module, String) {
@@ -310,19 +311,32 @@ fn specialise_fn_inner(state: State, name, type_args) {
       // before monomorphisation specialises those expressions. Variables that
       // stay free are genuinely unconstrained and default to `Nil`.
       let env = infer.Env(state.globals, locals, state.ctors, state.types)
-      let #(pre_subst, pre_counter) = case
-        infer.infer(env, infer.St(types.empty(), state.counter), body)
-      {
-        Ok(#(_, st2)) -> #(st2.subst, st2.counter)
-        Error(_) -> #(types.empty(), state.counter)
-      }
-      let state0 = State(..state, subst: pre_subst, counter: pre_counter)
-      use #(body2, state1) <- result_try(mono_expr_ex(
-        state0,
-        locals,
-        Some(internal_ret),
+      // Elaborate the body once; the typed tree carries every node's type, so
+      // the monomorphiser reads types from it instead of re-inferring. An
+      // inference failure is non-fatal, exactly as before: fall back to the
+      // surface body with an empty substitution.
+      let body_result = case infer.infer_t(
+        env,
+        infer.St(types.empty(), state.counter),
         body,
-      ))
+      ) {
+        Ok(#(body_t, st2)) -> {
+          let state0 = State(..state, subst: st2.subst, counter: st2.counter)
+          mono_expr_ex_pair(
+            state0,
+            locals,
+            Some(internal_ret),
+            body,
+            Some(body_t),
+          )
+        }
+        Error(_) -> {
+          let state0 =
+            State(..state, subst: types.empty(), counter: state.counter)
+          mono_expr_ex(state0, locals, Some(internal_ret), body)
+        }
+      }
+      use #(body2, state1) <- result_try(body_result)
       let specialized = fn_specialised_name(state1, name, type_args)
       // Register the specialised signature so later `type_of` calls (on
       // already-specialised calls) can resolve its type.
@@ -645,6 +659,126 @@ fn mono_expr_ex(state, locals, expected, expr) {
       }
     }
     _ -> mono_expr(state, locals, expr)
+  }
+}
+
+/// The inferred type of a typed node, resolved under the current substitution.
+fn node_ty(state: State, typed: texpr.TExpr) -> types.Ty {
+  types.zonk(texpr.type_of(typed), state.subst)
+}
+
+/// Paired walk: the surface expression together with its typed companion (from
+/// the single elaboration). Handled forms read the inferred type from the typed
+/// node instead of re-inferring; everything else falls back to the surface walk
+/// with the **original** expression (never a round-tripped one).
+fn mono_expr_pair(
+  state,
+  locals,
+  expr: Expr,
+  typed: Option(texpr.TExpr),
+) -> Result(#(Expr, State), String) {
+  case expr, typed {
+    EBinop(op, left, right), Some(texpr.TBinop(_, left_t, right_t, _)) -> {
+      use #(left2, state) <- result_try(
+        mono_expr_pair(state, locals, left, Some(left_t)),
+      )
+      let left_ty = node_ty(state, left_t)
+      use #(right2, state) <- result_try(mono_expr_ex_pair(
+        state,
+        locals,
+        Some(left_ty),
+        right,
+        Some(right_t),
+      ))
+      Ok(#(EBinop(op, left2, right2), state))
+    }
+    _, _ -> mono_expr(state, locals, expr)
+  }
+}
+
+/// Like `mono_expr_pair`, but with an expected type for constructors/lambdas.
+fn mono_expr_ex_pair(
+  state,
+  locals,
+  expected,
+  expr: Expr,
+  typed: Option(texpr.TExpr),
+) -> Result(#(Expr, State), String) {
+  case expr, typed {
+    EBinop(_, _, _), Some(texpr.TBinop(_, _, _, _)) ->
+      mono_expr_pair(state, locals, expr, typed)
+    EBlock(statements), _ ->
+      mono_block_ex_pair(state, locals, expected, statements, typed)
+    _, _ -> mono_expr_ex(state, locals, expected, expr)
+  }
+}
+
+/// Paired block walk: each statement is monomorphised with its typed
+/// companion, so `let` value types are read instead of re-inferred.
+fn mono_block_ex_pair(state, locals, expected, statements, typed) {
+  case typed {
+    Some(texpr.TBlock(typed_statements, _)) ->
+      mono_block_ex_pair_acc(
+        state,
+        locals,
+        expected,
+        statements,
+        typed_statements,
+        [],
+      )
+    _ -> mono_block_ex(state, locals, expected, statements)
+  }
+}
+
+fn mono_block_ex_pair_acc(
+  state,
+  locals,
+  expected,
+  statements,
+  typed_statements,
+  acc,
+) -> Result(#(Expr, State), String) {
+  case statements, typed_statements {
+    [], _ -> Ok(#(EBlock(list.reverse(acc)), state))
+    [Stmt(expr)], [texpr.TStmt(expr_t), ..] -> {
+      use #(expr2, state) <- result_try(
+        mono_expr_ex_pair(state, locals, expected, expr, Some(expr_t)),
+      )
+      Ok(#(EBlock(list.reverse([Stmt(expr2), ..acc])), state))
+    }
+    [Stmt(expr), ..rest], [texpr.TStmt(expr_t), ..trest] -> {
+      use #(expr2, state) <- result_try(
+        mono_expr_pair(state, locals, expr, Some(expr_t)),
+      )
+      mono_block_ex_pair_acc(
+        state,
+        locals,
+        expected,
+        rest,
+        trest,
+        [Stmt(expr2), ..acc],
+      )
+    }
+    [Let(pattern, value), ..rest], [texpr.TLet(_, value_t), ..trest] -> {
+      let declared_ty = node_ty(state, value_t)
+      use #(value2, state) <- result_try(
+        mono_expr_ex_pair(state, locals, Some(declared_ty), value, Some(value_t)),
+      )
+      let value_ty = node_ty(state, value_t)
+      use #(pattern2, bindings, state) <- result_try(
+        mono_pattern(state, locals, pattern, value_ty),
+      )
+      let locals = merge_dicts(locals, bindings)
+      mono_block_ex_pair_acc(
+        state,
+        locals,
+        expected,
+        rest,
+        trest,
+        [Let(pattern2, value2), ..acc],
+      )
+    }
+    _, _ -> mono_block_ex(state, locals, expected, statements)
   }
 }
 
