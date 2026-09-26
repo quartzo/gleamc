@@ -40,14 +40,18 @@ which allocates `types.Ty` and refcounts them (the profile was dominated by
   the migrated forms.
 - `src/gleamc/tmono.gleam` — `TExpr`, the typed **monomorphic** AST: every node
   carries its `ast.Type`, plus `type_of` and `to_expr`.
-- `checker.check` **elaborates** the monomorphic module into `tmono.TExpr`
-  (`checker.infer_t`) and returns it as `Checked.typed`; `lower` consumes that
-  typed AST and reads node types via `tmono.type_of`, so it no longer re-runs
-  `checker.infer`.
+- `mono.monomorphize` **produces** the typed monomorphic module
+  (`tmono.TModule`): its walk attaches each node's specialised `ast.Type`, so
+  the typed product is created by the pass that owns it, in one pass. The
+  cascade then reads it: `dce.prune`, `checker.check` (collect signatures/ctors
+  and check exhaustiveness from `tmono` — no inference) and `lower` (reads node
+  types via `tmono.type_of`, no `checker.infer`).
 
-`mono` drops from 42.7s to 5.6s and `lower` from 5.7s to 2.2s on the selfhost
-self-compile. Validated by `gleam test`, `scripts/diff.sh`, an 8 MiB
-self-compile, AddressSanitizer, and `GLEAMC_MEM_REPORT`.
+`mono` drops from 42.7s to ~5.6s and `lower` from 5.7s to ~2.9s on the selfhost
+self-compile (compiler-only ~138s -> ~31s). The generated `.ll` is
+byte-identical on the differential corpus. Validated by `gleam test`,
+`scripts/diff.sh`, an 8 MiB self-compile, AddressSanitizer, and
+`GLEAMC_MEM_REPORT`.
 
 ## What remains (optional, smaller)
 
