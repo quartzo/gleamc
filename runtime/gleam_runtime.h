@@ -359,6 +359,36 @@ void gleamc_task_tail(bool (*step)(void*), void* frame,
  * drives only up to its own completion future. */
 void gleamc_run_until(GleamcFuture* target);
 
+/* Starts a task for `task.async`: the worker's result is copied into `box`
+ * (an owned heap cell of the result's size) and `box` is published on the
+ * completion future as `value_p`, so `task.await` can move it out. */
+GleamcFuture* gleamc_task_async(bool (*step)(void*), void* frame,
+                                GleamcFuture** fut_slot,
+                                void (*copy_result)(void*, void*),
+                                void (*frame_drop)(void*), void* box);
+/* Starts a fire-and-forget task (`process.spawn`): its completion future is
+ * owned by the driver and released when the task finishes. */
+GleamcFuture* gleamc_task_spawn(bool (*step)(void*), void* frame,
+                                GleamcFuture** fut_slot,
+                                void (*frame_drop)(void*));
+
+/* A box is a refcounted heap cell whose payload is an arbitrary Gleam value
+ * (moved in when sent, moved out when received). */
+void* gleamc_box_alloc(int64_t size);
+void gleamc_box_free(void* box);
+
+/* ------------------------------------------------------------------ */
+/* Processes and mailboxes (cooperative `gleam/erlang/process` shape). */
+/*                                                                     */
+/* A subject is an opaque handle (pointer as i64) to a FIFO mailbox of */
+/* boxed messages. `send` is synchronous; `receive` returns a future    */
+/* that the caller suspends on. A queued message resolves immediately.  */
+/* ------------------------------------------------------------------ */
+
+int64_t Gleamc_process_ffi_new_subject(void);
+int32_t Gleamc_process_ffi_send(int64_t handle, void* box);
+GleamcFuture* Gleamc_process_ffi_receive(int64_t handle);
+
 /* Host async surface (Vesper docs 09/11/14): starts return a Future,
  * `await` (Gleamc_uv_await_*) drives the scheduler to completion. */
 GleamcFuture* Gleamc_uv_fs_open(GleamcString path, int64_t flags, int64_t mode);
@@ -385,6 +415,9 @@ GleamcFuture* Gleamc_time_timer(int64_t ms);
 int64_t Gleamc_uv_await_int(GleamcFuture* f);
 void Gleamc_uv_await_nil(GleamcFuture* f);
 GleamcBitArray Gleamc_uv_await_bytes(GleamcFuture* f);
+/* Boxed await (`process.receive` / `task.await`): waits and returns the box
+ * (`value_p`); the caller moves the payload out and frees the box. */
+void* Gleamc_uv_await_box(GleamcFuture* f);
 int64_t Gleamc_uv_error(GleamcFuture* f);
 
 /* Byte-indexed string access for the tokenizer. */

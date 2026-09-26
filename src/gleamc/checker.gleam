@@ -18,7 +18,8 @@ import gleamc/ast.{
   ELambda, ENil, EPanic, EString, ETuple, EUnop, EUpdate, EVar, Function, Let,
   Module, PAs, PBitArray, PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString,
   PTuple, PVar, PWildcard, Stmt, TApp, TBool, TFloat, TFun, TInt, TNamed, TNil,
-  TString, TTuple, TVar, Variant, buffer_elem_name, type_of_mangled,
+  TString, TTuple, TVar, Variant, buffer_elem_name, subject_elem_name,
+  task_elem_name, type_of_mangled,
 }
 import gleamc/tmono
 
@@ -473,6 +474,16 @@ fn infer_expect(env, signatures, ctors, expected, expr) {
         }
         Error(_) -> elaborate_t(env, signatures, ctors, expr)
       }
+    // `process_ffi.new_subject()` is polymorphic; the expected `Subject(elem)` at
+    // the call site pins the message type.
+    ECall(EField(EVar("process_ffi"), "new_subject"), args) ->
+      case subject_elem_type(expected) {
+        Ok(_) -> {
+          use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+          Ok(builtin_call("process_ffi", "new_subject", [], expected, typed_args))
+        }
+        Error(_) -> elaborate_t(env, signatures, ctors, expr)
+      }
     _ -> elaborate_t(env, signatures, ctors, expr)
   }
 }
@@ -484,6 +495,33 @@ pub fn buffer_elem_type(ty: Type) -> Result(Type, Nil) {
     TApp("Buffer", [elem]) -> Ok(elem)
     TNamed(name) ->
       case buffer_elem_name(name) {
+        Ok(mangled) -> Ok(type_of_mangled(mangled))
+        Error(_) -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
+}
+
+/// The message type of a `Subject`, in either the surface (`Subject(a)`) or the
+/// monomorphised (`TNamed("Subject_Int")`) representation.
+pub fn subject_elem_type(ty: Type) -> Result(Type, Nil) {
+  case ty {
+    TApp("Subject", [elem]) -> Ok(elem)
+    TNamed(name) ->
+      case subject_elem_name(name) {
+        Ok(mangled) -> Ok(type_of_mangled(mangled))
+        Error(_) -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
+}
+
+/// The result type of a `Task`, in either representation.
+pub fn task_elem_type(ty: Type) -> Result(Type, Nil) {
+  case ty {
+    TApp("Task", [elem]) -> Ok(elem)
+    TNamed(name) ->
+      case task_elem_name(name) {
         Ok(mangled) -> Ok(type_of_mangled(mangled))
         Error(_) -> Error(Nil)
       }
@@ -2055,6 +2093,117 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         TInt,
         "host.int64_at",
       )
+    // Cooperative processes and tasks. Message/result types are generic; the
+    // `Subject(a)` / `Task(a)` handles carry the type (the backend boxes the
+    // concrete value at the boundary).
+    "process_ffi", "new_subject" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      Ok(builtin_call(
+        "process_ffi",
+        "new_subject",
+        [],
+        TApp("Subject", [TVar("__subject_elem")]),
+        typed_args,
+      ))
+    }
+    "process_ffi", "send" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [subject, message] ->
+          case subject_elem_type(tmono.type_of(subject)) {
+            Ok(elem) ->
+              case elem == tmono.type_of(message) {
+                True ->
+                  Ok(builtin_call(
+                    "process_ffi",
+                    "send",
+                    [tmono.type_of(subject), elem],
+                    TNil,
+                    typed_args,
+                  ))
+                False ->
+                  Error(CheckError(
+                    "process_ffi.send: message type does not match the Subject",
+                  ))
+              }
+            Error(_) -> Error(CheckError("process_ffi.send expects (Subject(a), a)"))
+          }
+        _ -> Error(CheckError("process_ffi.send expects (Subject(a), a)"))
+      }
+    }
+    "process_ffi", "receive" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [subject] ->
+          case subject_elem_type(tmono.type_of(subject)) {
+            Ok(elem) ->
+              Ok(builtin_call(
+                "process_ffi",
+                "receive",
+                [tmono.type_of(subject)],
+                elem,
+                typed_args,
+              ))
+            Error(_) ->
+              Error(CheckError("process_ffi.receive expects a Subject(a)"))
+          }
+        _ -> Error(CheckError("process_ffi.receive expects a Subject(a)"))
+      }
+    }
+    "process", "spawn" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [worker] ->
+          case tmono.type_of(worker) {
+            TFun([], TNil) ->
+              Ok(builtin_call(
+                "process",
+                "spawn",
+                [tmono.type_of(worker)],
+                TNamed("Pid"),
+                typed_args,
+              ))
+            _ -> Error(CheckError("process.spawn expects fn() -> Nil"))
+          }
+        _ -> Error(CheckError("process.spawn expects fn() -> Nil"))
+      }
+    }
+    "task", "async" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [worker] ->
+          case tmono.type_of(worker) {
+            TFun([], ret_ty) ->
+              Ok(builtin_call(
+                "task",
+                "async",
+                [tmono.type_of(worker)],
+                TApp("Task", [ret_ty]),
+                typed_args,
+              ))
+            _ -> Error(CheckError("task.async expects fn() -> a"))
+          }
+        _ -> Error(CheckError("task.async expects fn() -> a"))
+      }
+    }
+    "task_ffi", "await" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [task] ->
+          case task_elem_type(tmono.type_of(task)) {
+            Ok(elem) ->
+              Ok(builtin_call(
+                "task_ffi",
+                "await",
+                [tmono.type_of(task)],
+                elem,
+                typed_args,
+              ))
+            Error(_) -> Error(CheckError("task_ffi.await expects a Task(a)"))
+          }
+        _ -> Error(CheckError("task_ffi.await expects a Task(a)"))
+      }
+    }
     _, _ ->
       Error(CheckError(
         "unknown module function `" <> module <> "." <> name <> "`",

@@ -488,7 +488,15 @@ fn header(audit: Bool) -> String {
   <> "declare i64 @Gleamc_uv_value_int(i8*)\n"
   <> "declare i64 @Gleamc_uv_result(i8*)\n"
   <> "declare %GleamcBitArray @Gleamc_uv_await_bytes(i8*)\n"
+  <> "declare i8* @Gleamc_uv_await_box(i8*)\n"
+  <> "declare i8* @gleamc_box_alloc(i64)\n"
+  <> "declare void @gleamc_box_free(i8*)\n"
+  <> "declare i64 @Gleamc_process_ffi_new_subject()\n"
+  <> "declare i32 @Gleamc_process_ffi_send(i64, i8*)\n"
+  <> "declare i8* @Gleamc_process_ffi_receive(i64)\n"
   <> "declare i8* @gleamc_task_start(i1 (i8*)*, i8*, i8**, void (i8*, i8*)*, i8*, void (i8*)*)\n"
+  <> "declare i8* @gleamc_task_async(i1 (i8*)*, i8*, i8**, void (i8*, i8*)*, void (i8*)*, i8*)\n"
+  <> "declare i8* @gleamc_task_spawn(i1 (i8*)*, i8*, i8**, void (i8*)*)\n"
   <> "declare void @gleamc_task_tail(i1 (i8*)*, i8*, void (i8*, i8*)*, i8**, void (i8*)*)\n"
   <> "declare void @gleamc_run_until(i8*)\n"
   <> "declare %GleamcString @gleamc_string_lit(i8*, i64)\n"
@@ -659,6 +667,8 @@ fn llvm_ty(ty: Type, recursive: Dict(String, Bool)) -> String {
     TNamed("FileResult") -> "%GleamcFileResult"
     // Internal async handle (`GleamcFuture*`); never visible to Gleam.
     TNamed("Future") -> "i8*"
+    // A process identifier (the task's completion future).
+    TNamed("Pid") -> "i8*"
     // Async I/O handle (a file descriptor); opaque scalar.
     TNamed("Handle") -> "i64"
     ast.TNil -> "i32"
@@ -669,13 +679,23 @@ fn llvm_ty(ty: Type, recursive: Dict(String, Bool)) -> String {
         // `Buffer(a)` is an opaque refcounted cell.
         Ok(_) -> "i8*"
         Error(_) ->
-          case is_recursive(recursive, name) {
-            True -> "%" <> name <> "*"
-            False -> "%" <> name
+          case ast.subject_elem_name(name), ast.task_elem_name(name) {
+            // `Subject(a)` is a handle (i64); `Task(a)` is a future (`i8*`).
+            Ok(_), _ -> "i64"
+            _, Ok(_) -> "i8*"
+            _, Error(_) ->
+              case is_recursive(recursive, name) {
+                True -> "%" <> name <> "*"
+                False -> "%" <> name
+              }
           }
       }
     // `Buffer(a)` is a type-erased refcounted cell (opaque `void*`).
     ast.TApp("Buffer", _) -> "i8*"
+    // `Subject(a)` is an opaque mailbox handle (pointer as i64); `Task(a)` is
+    // the completion future itself (`i8*`).
+    ast.TApp("Subject", _) -> "i64"
+    ast.TApp("Task", _) -> "i8*"
     ast.TApp(name, args) ->
       "%" <> name <> "_" <> string.join(list.map(args, mangle_type), "_")
     ast.TTuple(types) ->
@@ -1007,8 +1027,13 @@ fn machine_set(module: ir.Module) -> Dict(String, Bool) {
 /// suspend or that delegate to another machine (an async tail call).
 fn suspend_set(module: ir.Module) -> Dict(String, Bool) {
   let ir.Module(functions) = module
+  let targets = frame.task_targets(module)
   list.fold(functions, dict.new(), fn(acc, function) {
-    case frame.has_suspend(function) || frame.has_tail_machine(function) {
+    case
+      frame.has_suspend(function)
+      || frame.has_tail_machine(function)
+      || list.contains(targets, function.name)
+    {
       True -> dict.insert(acc, function.name, True)
       False -> acc
     }
@@ -1283,6 +1308,42 @@ fn emit_frame_drop(function, recursive, fields_of, lits) -> String {
         emit_line(b, "  " <> fv <> " = load " <> ty_s <> ", " <> ty_s <> "* " <> gp)
       rc_expr(lits, recursive, fields_of, "drop", ty, ty_s, fv, "frame", b)
     })
+  // Release a captured environment (retained when the frame was allocated by
+  // the wrapper or `OpTaskStartClosure`).
+  let b = case frame.env_capture(function) {
+    Ok(env_ty) ->
+      case dict.get(fields, "__env") {
+        Ok(slot) -> {
+          let #(gp, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> gp
+                <> " = getelementptr "
+                <> fr_ty
+                <> ", "
+                <> fr_ty
+                <> "* "
+                <> e
+                <> ", i32 0, i32 "
+                <> int.to_string(slot),
+            )
+          let #(ev, b) = fresh(b)
+          let b = emit_line(b, "  " <> ev <> " = load i8*, i8** " <> gp)
+          emit_line(
+            b,
+            "  call void @"
+              <> frame_drop_sym("%" <> env_ty)
+              <> "(i8* "
+              <> ev
+              <> ")",
+          )
+        }
+        Error(_) -> b
+      }
+    Error(_) -> b
+  }
   let b =
     emit_line(
       b,
@@ -1361,13 +1422,47 @@ fn emit_await_read(ctx: Ctx, dest: String, fut_v: String, b: Builder) -> Builder
   emit_line(b, "  call void @Gleamc_rc_release(i8* " <> fut_v <> ", i8* null)")
 }
 
+/// Boxed await (`process_ffi.receive` / `task_ffi.await`): the future carries a box
+/// (`value_p`); move the payload into `dest`, free the (now empty) box, then
+/// release the future. Works for any destination representation.
+fn emit_await_box(ctx: Ctx, dest: String, fut_v: String, b: Builder) -> Builder {
+  let dest_ty = local_type(ctx.by_name, dest)
+  let #(box, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  " <> box <> " = call i8* @Gleamc_uv_await_box(i8* " <> fut_v <> ")",
+    )
+  let b = case is_nil_type(dest_ty) {
+    True -> b
+    False -> {
+      let ty_s = llvm_ty(dest_ty, ctx.recursive)
+      let #(slot, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> slot <> " = bitcast i8* " <> box <> " to " <> ty_s <> "*",
+        )
+      let #(val, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> val <> " = load " <> ty_s <> ", " <> ty_s <> "* " <> slot,
+        )
+      store_local(ctx, dest, ty_s, val, b)
+    }
+  }
+  let b = emit_line(b, "  call void @gleamc_box_free(i8* " <> box <> ")")
+  emit_line(b, "  call void @Gleamc_rc_release(i8* " <> fut_v <> ", i8* null)")
+}
+
 /// Emits the blocks of a machine `step`: a suspension stores the pending future
 /// and the resume state and returns "not done"; a resume block reads the awaited
 /// value; a `Ret` stores the result and returns "done".
 fn emit_machine_blocks(
   ctx: Ctx,
   info: FrameInfo,
-  resumes: Dict(String, #(String, Bool)),
+  resumes: Dict(String, #(String, ir.ResumeMode)),
   blocks: List(ir.Block),
   b: Builder,
 ) {
@@ -1378,19 +1473,20 @@ fn emit_machine_blocks(
       let ir.Block(label, ops, term) = block
       let b = emit_line(b, "\n" <> block_name(ctx, label) <> ":")
       let b = case dict.get(resumes, label) {
-        Ok(#(dest, machine)) -> {
+        Ok(#(dest, mode)) -> {
           let #(fp, b) = frame_gep("%__fr", fr_ty, fut_idx, b)
           let #(fv, b) = fresh(b)
           let b = emit_line(b, "  " <> fv <> " = load i8*, i8** " <> fp)
-          let b = case machine {
+          let b = case mode {
             // A started machine already wrote the result into `dest`; just
             // release the completion future.
-            True ->
+            ir.Machine ->
               emit_line(
                 b,
                 "  call void @Gleamc_rc_release(i8* " <> fv <> ", i8* null)",
               )
-            False -> emit_await_read(ctx, dest, fv, b)
+            ir.Host -> emit_await_read(ctx, dest, fv, b)
+            ir.Boxed -> emit_await_box(ctx, dest, fv, b)
           }
           let #(fp2, b) = frame_gep("%__fr", fr_ty, fut_idx, b)
           emit_line(b, "  store i8* null, i8** " <> fp2)
@@ -1780,6 +1876,13 @@ fn emit_machine_wrapper(function: ir.Function, info: FrameInfo, recursive: Dict(
         "  store " <> pty <> " %arg." <> safe(param) <> ", " <> pty <> "* " <> ptr,
       )
     })
+  // A capturing machine owns a reference to its environment for the life of the
+  // frame (released by the frame drop).
+  let b = case frame.env_capture(function) {
+    Ok(_) ->
+      emit_line(b, "  call void @Gleamc_rc_retain(i8* %arg.__env, i8* null)")
+    Error(_) -> b
+  }
   let #(sp, b) = frame_gep("%__fr", fr_ty, state_idx, b)
   let b = emit_line(b, "  store i32 0, i32* " <> sp)
   let #(fp, b) = frame_gep("%__fr", fr_ty, fut_idx, b)
@@ -1981,6 +2084,12 @@ fn emit_frame_function(
         "  store " <> pty <> " %arg." <> safe(param) <> ", " <> pty <> "* " <> ptr,
       )
     })
+  // Retain the captured environment (released by the frame drop).
+  let b = case frame.env_capture(function) {
+    Ok(_) ->
+      emit_line(b, "  call void @Gleamc_rc_retain(i8* %arg.__env, i8* null)")
+    Error(_) -> b
+  }
   let b = emit_frame_locals(ctx, fr_ty, locals, b)
   let b = emit_line(b, "  br label %" <> ctx.entry)
   let #(b, _) = emit_block_list(ctx, blocks, b)
@@ -2592,6 +2701,297 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
         }
       }
     }
+    ir.OpTaskStart(fut, fun, args, into_future) -> {
+      case dict.get(ctx.machine_fns, fun) {
+        Error(_) -> #(b, Nil)
+        Ok(callee) -> {
+          let info = frame_info(callee, ctx.recursive)
+          let FrameInfo(fr_ty, _reg, fields, state_idx, fut_idx, _result_idx, _) = info
+          let ir.Function(_, cparams, cret, _, _) = callee
+          let #(raw, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> raw
+                <> " = call i8* @gleamc_alloc0(i64 ptrtoint ("
+                <> fr_ty
+                <> "* getelementptr ("
+                <> fr_ty
+                <> ", "
+                <> fr_ty
+                <> "* null, i32 1) to i64))",
+            )
+          let #(frp, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  " <> frp <> " = bitcast i8* " <> raw <> " to " <> fr_ty <> "*",
+            )
+          let #(sp, b) = frame_gep(frp, fr_ty, state_idx, b)
+          let b = emit_line(b, "  store i32 0, i32* " <> sp)
+          let #(fp, b) = frame_gep(frp, fr_ty, fut_idx, b)
+          let b = emit_line(b, "  store i8* null, i8** " <> fp)
+          let b =
+            list.fold(list.index_map(args, fn(a, i) { #(a, i) }), b, fn(b, pair) {
+              let #(arg, i) = pair
+              case list_nth(cparams, i) {
+                Ok(pname) -> {
+                  let #(ty, v, b) = read_val(ctx, arg, b)
+                  let aty = operand_type(ctx.by_name, arg)
+                  let b = case arg_needs_retain(ctx, arg) {
+                    True ->
+                      rc_expr(
+                        ctx.lits,
+                        ctx.recursive,
+                        dict.new(),
+                        "retain",
+                        aty,
+                        ty,
+                        v,
+                        "task_start",
+                        b,
+                      )
+                    False -> b
+                  }
+                  let slot = case dict.get(fields, pname) {
+                    Ok(found) -> found
+                    Error(_) -> 0
+                  }
+                  let #(ptr, b) = frame_gep(frp, fr_ty, slot, b)
+                  emit_line(
+                    b,
+                    "  store " <> ty <> " " <> v <> ", " <> ty <> "* " <> ptr,
+                  )
+                }
+                Error(_) -> b
+              }
+            })
+          let #(futp, b) = frame_gep(frp, fr_ty, fut_idx, b)
+          let copy = case is_nil_type(cret) {
+            True -> "void (i8*, i8*)* null"
+            False ->
+              "void (i8*, i8*)* bitcast (void ("
+              <> fr_ty
+              <> "*, i8*)* @"
+              <> copy_sym(fr_ty)
+              <> " to void (i8*, i8*)*)"
+          }
+          let step =
+            "i1 (i8*)* bitcast (i1 ("
+            <> fr_ty
+            <> "*)* @Gleamc_"
+            <> fun
+            <> "_step to i1 (i8*)*)"
+          let fd =
+            "void (i8*)* bitcast (void ("
+            <> fr_ty
+            <> "*)* @"
+            <> frame_drop_sym(fr_ty)
+            <> " to void (i8*)*)"
+          // `task.async` boxes the worker's result so `task_ffi.await` can move any
+          // type out; a nil result needs no box.
+          let #(box, b) = case is_nil_type(cret) {
+            True -> #("null", b)
+            False -> {
+              let #(bx, b) = fresh(b)
+              let b =
+                emit_line(
+                  b,
+                  "  "
+                    <> bx
+                    <> " = call i8* @gleamc_box_alloc(i64 "
+                    <> ty_size_expr(cret, ctx.recursive)
+                    <> ")",
+                )
+              #(bx, b)
+            }
+          }
+          let #(donef, b) = fresh(b)
+          let b = case into_future {
+            True ->
+              emit_line(
+                b,
+                "  "
+                  <> donef
+                  <> " = call i8* @gleamc_task_async("
+                  <> step
+                  <> ", i8* "
+                  <> raw
+                  <> ", i8** "
+                  <> futp
+                  <> ", "
+                  <> copy
+                  <> ", "
+                  <> fd
+                  <> ", i8* "
+                  <> box
+                  <> ")",
+              )
+            False ->
+              emit_line(
+                b,
+                "  "
+                  <> donef
+                  <> " = call i8* @gleamc_task_spawn("
+                  <> step
+                  <> ", i8* "
+                  <> raw
+                  <> ", i8** "
+                  <> futp
+                  <> ", "
+                  <> fd
+                  <> ")",
+              )
+          }
+          let b = store_local(ctx, fut, "i8*", donef, b)
+          #(b, Nil)
+        }
+      }
+    }
+    ir.OpTaskStartClosure(fut, fun, closure, into_future) -> {
+      case dict.get(ctx.machine_fns, fun) {
+        Error(_) -> #(b, Nil)
+        Ok(callee) -> {
+          let info = frame_info(callee, ctx.recursive)
+          let FrameInfo(fr_ty, _reg, fields, state_idx, fut_idx, _result_idx, _) = info
+          let ir.Function(_, cparams, cret, _, _) = callee
+          // Read the closure value and take its environment (field 1).
+          let clo_ty = operand_type(ctx.by_name, closure)
+          let clo_s = llvm_ty(clo_ty, ctx.recursive)
+          let #(_, fv, b) = read_val(ctx, closure, b)
+          let #(env, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  " <> env <> " = extractvalue " <> clo_s <> " " <> fv <> ", 1",
+            )
+          // The task's frame owns a reference to the environment; the frame
+          // drop releases it.
+          let b = case frame.env_capture(callee) {
+            Ok(_) ->
+              emit_line(
+                b,
+                "  call void @Gleamc_rc_retain(i8* " <> env <> ", i8* null)",
+              )
+            Error(_) -> b
+          }
+          let #(raw, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> raw
+                <> " = call i8* @gleamc_alloc0(i64 ptrtoint ("
+                <> fr_ty
+                <> "* getelementptr ("
+                <> fr_ty
+                <> ", "
+                <> fr_ty
+                <> "* null, i32 1) to i64))",
+            )
+          let #(frp, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  " <> frp <> " = bitcast i8* " <> raw <> " to " <> fr_ty <> "*",
+            )
+          let #(sp, b) = frame_gep(frp, fr_ty, state_idx, b)
+          let b = emit_line(b, "  store i32 0, i32* " <> sp)
+          let #(fp, b) = frame_gep(frp, fr_ty, fut_idx, b)
+          let b = emit_line(b, "  store i8* null, i8** " <> fp)
+          // Store the environment into the callee's `__env` field (param 0).
+          let b = case cparams {
+            [first_param, ..] -> {
+              let slot = case dict.get(fields, first_param) {
+                Ok(found) -> found
+                Error(_) -> 0
+              }
+              let #(ptr, b) = frame_gep(frp, fr_ty, slot, b)
+              emit_line(b, "  store i8* " <> env <> ", i8** " <> ptr)
+            }
+            [] -> b
+          }
+          let #(futp, b) = frame_gep(frp, fr_ty, fut_idx, b)
+          let copy = case is_nil_type(cret) {
+            True -> "void (i8*, i8*)* null"
+            False ->
+              "void (i8*, i8*)* bitcast (void ("
+              <> fr_ty
+              <> "*, i8*)* @"
+              <> copy_sym(fr_ty)
+              <> " to void (i8*, i8*)*)"
+          }
+          let step =
+            "i1 (i8*)* bitcast (i1 ("
+            <> fr_ty
+            <> "*)* @Gleamc_"
+            <> fun
+            <> "_step to i1 (i8*)*)"
+          let fd =
+            "void (i8*)* bitcast (void ("
+            <> fr_ty
+            <> "*)* @"
+            <> frame_drop_sym(fr_ty)
+            <> " to void (i8*)*)"
+          let #(box, b) = case is_nil_type(cret) {
+            True -> #("null", b)
+            False -> {
+              let #(bx, b) = fresh(b)
+              let b =
+                emit_line(
+                  b,
+                  "  "
+                    <> bx
+                    <> " = call i8* @gleamc_box_alloc(i64 "
+                    <> ty_size_expr(cret, ctx.recursive)
+                    <> ")",
+                )
+              #(bx, b)
+            }
+          }
+          let #(donef, b) = fresh(b)
+          let b = case into_future {
+            True ->
+              emit_line(
+                b,
+                "  "
+                  <> donef
+                  <> " = call i8* @gleamc_task_async("
+                  <> step
+                  <> ", i8* "
+                  <> raw
+                  <> ", i8** "
+                  <> futp
+                  <> ", "
+                  <> copy
+                  <> ", "
+                  <> fd
+                  <> ", i8* "
+                  <> box
+                  <> ")",
+              )
+            False ->
+              emit_line(
+                b,
+                "  "
+                  <> donef
+                  <> " = call i8* @gleamc_task_spawn("
+                  <> step
+                  <> ", i8* "
+                  <> raw
+                  <> ", i8** "
+                  <> futp
+                  <> ", "
+                  <> fd
+                  <> ")",
+              )
+          }
+          let b = store_local(ctx, fut, "i8*", donef, b)
+          #(b, Nil)
+        }
+      }
+    }
     ir.OpBuiltin(dest, builtin, args, ret_ty) -> {
       case builtin {
         "gleamc.show" -> {
@@ -2661,6 +3061,48 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
             }
           }
           let b = store_local(ctx, dest, "i64", r, b)
+          #(b, Nil)
+        }
+        "process_ffi.send" -> {
+          // Box the message (ownership moves into the box) and hand the box to
+          // the mailbox; the receiver moves the payload out.
+          let #(subject_arg, msg_arg) = case args {
+            [s, m, ..] -> #(s, m)
+            _ -> #(ir.Lit(ir.LUnit), ir.Lit(ir.LUnit))
+          }
+          let #(_, subject, b) = read_val(ctx, subject_arg, b)
+          let #(ty, value, b) = read_val(ctx, msg_arg, b)
+          let #(box, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> box
+                <> " = call i8* @gleamc_box_alloc(i64 "
+                <> ty_size_expr(operand_type(ctx.by_name, msg_arg), ctx.recursive)
+                <> ")",
+            )
+          let #(slot, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  " <> slot <> " = bitcast i8* " <> box <> " to " <> ty <> "*",
+            )
+          let b =
+            emit_line(b, "  store " <> ty <> " " <> value <> ", " <> ty <> "* " <> slot)
+          let #(r, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> r
+                <> " = call i32 @Gleamc_process_ffi_send(i64 "
+                <> subject
+                <> ", i8* "
+                <> box
+                <> ")",
+            )
+          let b = store_local(ctx, dest, "i32", r, b)
           #(b, Nil)
         }
         "buffer.new" -> {
@@ -3686,6 +4128,9 @@ fn runtime_declared(name: String) -> Bool {
     | "Gleamc_hash_string"
     | "Gleamc_hash_i64"
     | "Gleamc_hash_f64"
+    | "Gleamc_process_ffi_new_subject"
+    | "Gleamc_process_ffi_send"
+    | "Gleamc_process_ffi_receive"
     | "Gleamc_buffer_new"
     | "Gleamc_buffer_len"
     | "Gleamc_buffer_slot"
@@ -3987,6 +4432,7 @@ fn special_builtin(name: String) -> Bool {
   case name {
     "gleamc.show"
     | "gleamc.hash"
+    | "process_ffi.send"
     | "buffer.new"
     | "buffer.len"
     | "buffer.get"
@@ -4195,11 +4641,9 @@ fn wrapper_def(function: ir.Function, code: String, recursive) -> String {
       <> " %a"
       <> int.to_string(index)
     })
-  let args =
-    string.join(
-      list.index_map(params, fn(_, index) { "%a" <> int.to_string(index) }),
-      ", ",
-    )
+  // First-class aggregates must repeat their type at the call site, so use the
+  // typed parameter declarations for the call arguments too.
+  let args = string.join(decls, ", ")
   let ret_s = llvm_ty(ret, recursive)
   let sret = ret_needs_sret(ret, recursive)
   let params_decl = case sret {
@@ -4521,6 +4965,20 @@ fn compare_fields(
   }
 }
 
+fn is_handle_like(ty: Type) -> Bool {
+  case ty {
+    ast.TApp("Subject", _) | ast.TApp("Task", _) | ast.TApp("Pid", _) -> True
+    TNamed("Pid") -> True
+    TNamed(name) ->
+      case ast.subject_elem_name(name), ast.task_elem_name(name) {
+        Ok(_), _ -> True
+        _, Ok(_) -> True
+        _, Error(_) -> False
+      }
+    _ -> False
+  }
+}
+
 fn eq_expr(recursive, ty, left, right, b) {
   case ty {
     TString -> {
@@ -4605,34 +5063,47 @@ fn eq_expr(recursive, ty, left, right, b) {
       let b = emit_line(b, "  " <> r <> " = and i1 " <> c0 <> ", " <> c1)
       #(r, b)
     }
-    _ -> {
-      let ty_s = llvm_ty(ty, recursive)
-      let #(r, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  "
-            <> r
-            <> " = call i1 @"
-            <> eq_name_ty(ty)
-            <> "("
-            <> ty_s
-            <> " "
-            <> left
-            <> ", "
-            <> ty_s
-            <> " "
-            <> right
-            <> ")",
-        )
-      #(r, b)
+    _ -> case is_handle_like(ty) {
+      // `Subject(a)` / `Task(a)` are opaque handles: compare the raw word.
+      True -> {
+        let ty_s = llvm_ty(ty, recursive)
+        let #(r, b) = fresh(b)
+        let b =
+          emit_line(
+            b,
+            "  " <> r <> " = icmp eq " <> ty_s <> " " <> left <> ", " <> right,
+          )
+        #(r, b)
+      }
+      False -> {
+        let ty_s = llvm_ty(ty, recursive)
+        let #(r, b) = fresh(b)
+        let b =
+          emit_line(
+            b,
+            "  "
+              <> r
+              <> " = call i1 @"
+              <> eq_name_ty(ty)
+              <> "("
+              <> ty_s
+              <> " "
+              <> left
+              <> ", "
+              <> ty_s
+              <> " "
+              <> right
+              <> ")",
+          )
+        #(r, b)
+      }
     }
   }
 }
 
 fn glue_literals(custom_types: List(ast.CustomType)) -> List(String) {
   list.append(
-    ["#(", "(", ")", ", ", "[", "]", "Nil", "<function>", "?"],
+    ["#(", "(", ")", ", ", "[", "]", "Nil", "<function>", "<handle>", "?"],
     list.flat_map(custom_types, fn(custom) {
       let ast.CustomType(_, name, _, variants, _) = custom
       list.map(variants, fn(variant) {
@@ -4694,24 +5165,28 @@ fn concat_ss(b: Builder, x: String, y: String) {
 fn inspect_val(recursive, lits, ty: Type, val: String, b: Builder) {
   case ty {
     ast.TFun(_, _) -> literal_struct(lits, "<function>", b)
-    _ -> {
-      let ty_s = llvm_ty(ty, recursive)
-      let #(r, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  "
-            <> r
-            <> " = call %GleamcString @Gleamc_Inspect_"
-            <> mangle_glue(ty)
-            <> "("
-            <> ty_s
-            <> " "
-            <> val
-            <> ")",
-        )
-      #(r, b)
-    }
+    _ ->
+      case is_handle_like(ty) {
+        True -> literal_struct(lits, "<handle>", b)
+        False -> {
+          let ty_s = llvm_ty(ty, recursive)
+          let #(r, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> r
+                <> " = call %GleamcString @Gleamc_Inspect_"
+                <> mangle_glue(ty)
+                <> "("
+                <> ty_s
+                <> " "
+                <> val
+                <> ")",
+            )
+          #(r, b)
+        }
+      }
   }
 }
 
@@ -5335,27 +5810,31 @@ fn cmp_expr(recursive, _custom_types, ty, left, right, b) {
       #(r, b)
     }
     ast.TNil | TNamed("Nil") | ast.TFun(_, _) -> #("0", b)
-    _ -> {
-      let ty_s = llvm_ty(ty, recursive)
-      let #(r, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  "
-            <> r
-            <> " = call i32 @Gleamc_Cmp_"
-            <> mangle_glue(ty)
-            <> "("
-            <> ty_s
-            <> " "
-            <> left
-            <> ", "
-            <> ty_s
-            <> " "
-            <> right
-            <> ")",
-        )
-      #(r, b)
+    _ -> case is_handle_like(ty) {
+      // Opaque handles compare by their raw word.
+      True -> int_cmp_i(b, llvm_ty(ty, recursive), "sgt", "slt", left, right)
+      False -> {
+        let ty_s = llvm_ty(ty, recursive)
+        let #(r, b) = fresh(b)
+        let b =
+          emit_line(
+            b,
+            "  "
+              <> r
+              <> " = call i32 @Gleamc_Cmp_"
+              <> mangle_glue(ty)
+              <> "("
+              <> ty_s
+              <> " "
+              <> left
+              <> ", "
+              <> ty_s
+              <> " "
+              <> right
+              <> ")",
+          )
+        #(r, b)
+      }
     }
   }
 }

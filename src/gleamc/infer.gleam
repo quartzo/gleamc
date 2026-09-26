@@ -939,6 +939,33 @@ fn builtins() -> Dict(String, Scheme) {
     "host.int64_at",
     Scheme(none, Fun([Con("BitArray", []), i], i)),
   )
+  |> dict.insert(
+    "process_ffi.new_subject",
+    Scheme([9100], Fun([], Con("Subject", [Var(9100)]))),
+  )
+  |> dict.insert(
+    "process_ffi.send",
+    Scheme(
+      [9101],
+      Fun([Con("Subject", [Var(9101)]), Var(9101)], n),
+    ),
+  )
+  |> dict.insert(
+    "process_ffi.receive",
+    Scheme([9102], Fun([Con("Subject", [Var(9102)])], Var(9102))),
+  )
+  |> dict.insert(
+    "process.spawn",
+    Scheme([9103], Fun([Fun([], n)], Con("Pid", []))),
+  )
+  |> dict.insert(
+    "task.async",
+    Scheme([9104], Fun([Fun([], Var(9104))], Con("Task", [Var(9104)]))),
+  )
+  |> dict.insert(
+    "task_ffi.await",
+    Scheme([9106], Fun([Con("Task", [Var(9106)])], Var(9106))),
+  )
 }
 
 /// The names of every builtin, used by `ffi_modes` coverage checks.

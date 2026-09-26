@@ -90,3 +90,64 @@ nested.
 The runtime (`runtime/gleam_runtime.[ch]`) carries `GleamcFuture`,
 `gleamc_task_start` / `gleamc_task_tail` / `gleamc_run_until` and the
 `gleamc_uv_*` wrappers. libuv is required; there is no synchronous fallback.
+
+## Processes and tasks
+
+A second, non-suspending start mode makes the driver useful for concurrency
+rather than only for awaiting callees. `process.spawn(fn() -> Nil)` starts the
+closure's machine on the driver and **returns immediately** (a `Pid`);
+`task.async(fn() -> a)` is the same but returns a `Task(a)` whose completion
+future carries the closure's boxed result, read back by `task.await`.
+
+The public surface is `std/gleam/erlang/process.gleam` and
+`std/gleam/otp/task.gleam`, written in Gleam on top of the `process_ffi.*` /
+`task_ffi.*` builtins. `process.spawn` and `task.async` themselves stay builtins
+under their public names so the compiler can start the closure at the call
+site; the rest (`new_subject`, `send`, `receive`, `receive_forever`, `sleep`,
+`await`, `try_await`, ...) are Gleam wrappers, which is what lets labelled
+arguments (`receive(from:, within:)`) work.
+
+The `spawn` pass (`spawn.gleam`) runs between `lower` and `async`. It reads the
+single `fn() -> ...` argument's `OpClosure`: a bare named function
+(`__gv_<name>`) becomes `ir.OpTaskStart` with no arguments, while a lifted
+lambda (`Gleamc___lambda_N`, possibly capturing) becomes
+`ir.OpTaskStartClosure`. The backend allocates the callee frame exactly as
+`OpMachineStart` does, adopts the closure's environment as the frame's `__env`
+(a retained reference, released by the frame drop), and calls
+`gleamc_task_spawn` (fire-and-forget) or `gleamc_task_async` (result into a
+box). A lambda that does not suspend is still emitted as a machine
+(`frame.task_targets` forces it). A spawned task is *detached*: the driver owns
+its completion future and releases it when the task finishes.
+
+Mailboxes are the communication primitive. `process.new_subject()` returns a
+`Subject(a)` handle to a runtime `GleamcMailbox`; `process.send(subject,
+message)` is a plain synchronous call that hands the box to the oldest waiting
+`receive`, completing its future, or enqueues it. `receive_forever(from:)`
+returns an already-done future when a box is queued and otherwise registers a
+waiter, so it never blocks the driver on a non-empty mailbox. Because `send`
+runs inside a task's `step`, the driver's `progressed` flag guarantees the
+woken receiver is re-stepped.
+
+### Boxed values
+
+`Subject(a)` and `Task(a)` are phantom handle types (`llvm_ty` maps them to
+`i64`/`i8*`), so the payload type is carried entirely by the type checker. At
+the boundary the concrete value is **boxed**: `send` allocates a refcounted
+cell of the message's size and moves the value into it (`Owned` mode), and the
+resume moves it out and frees the cell without dropping the payload. The same
+box carries a `task.async` result. `ir.Suspend`'s mode distinguishes the three
+resume shapes: `Host` reads a host future, `Machine` releases a started
+machine's completion future, and `Boxed` moves a box out (`Gleamc_uv_await_box`
++ `emit_await_box`). Any representation works — `Int`, `String`, records, and
+lists all round-trip.
+
+`process.new_subject()` is polymorphic; `let s = process.new_subject()` keeps a
+free type variable that later `send`/`receive` calls unify, thanks to the
+**value restriction** on `let` generalisation (only syntactic values are
+generalised, matching Gleam), so no annotation is needed.
+
+`process.spawn` is fire-and-forget: draining a mailbox does **not** join the
+senders. Detached tasks still running at exit are not cleaned up (their frames
+leak), and a `Subject` handle is not refcount-dropped (one leak per subject),
+so a program that wants a clean leak report should let tasks settle and is
+expected to show the subjects.

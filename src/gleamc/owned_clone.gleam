@@ -115,6 +115,16 @@ fn rewrite_op(op: ir.Op, clones: Dict(String, String)) {
         Ok(clone) -> ir.OpMachineStart(fut, clone, args, dest)
         Error(_) -> op
       }
+    ir.OpTaskStart(fut, fun, args, into_future) ->
+      case dict.get(clones, fun) {
+        Ok(clone) -> ir.OpTaskStart(fut, clone, args, into_future)
+        Error(_) -> op
+      }
+    ir.OpTaskStartClosure(fut, fun, closure, into_future) ->
+      case dict.get(clones, fun) {
+        Ok(clone) -> ir.OpTaskStartClosure(fut, clone, closure, into_future)
+        Error(_) -> op
+      }
     _ -> op
   }
 }

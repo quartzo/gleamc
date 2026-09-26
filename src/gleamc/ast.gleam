@@ -30,6 +30,22 @@ pub fn buffer_elem_name(type_name: String) -> Result(String, Nil) {
   }
 }
 
+/// Like `buffer_elem_name`, for the phantom `Subject(a)` handle type.
+pub fn subject_elem_name(type_name: String) -> Result(String, Nil) {
+  case string.starts_with(type_name, "Subject_") {
+    True -> Ok(string.drop_start(type_name, 8))
+    False -> Error(Nil)
+  }
+}
+
+/// Like `buffer_elem_name`, for the phantom `Task(a)` handle type.
+pub fn task_elem_name(type_name: String) -> Result(String, Nil) {
+  case string.starts_with(type_name, "Task_") {
+    True -> Ok(string.drop_start(type_name, 5))
+    False -> Error(Nil)
+  }
+}
+
 /// Rebuilds a type from its monomorphised mangled name: scalars map back to
 /// their primitive; anything else is a (specialised) named type.
 pub fn type_of_mangled(name: String) -> Type {

@@ -13,7 +13,7 @@ import gleam/dict.{type Dict}
 import gleam/list
 import gleamc/ast.{
   type Type, TApp, TBool, TFloat, TFun, TInt, TNamed, TNil, TString, TTuple,
-  TVar, buffer_elem_name,
+  TVar, buffer_elem_name, subject_elem_name, task_elem_name,
 }
 import gleamc/checker
 import gleamc/ffi_modes
@@ -319,6 +319,9 @@ fn needs_drop_seen(ty, fields_of, recursive, seen) -> Bool {
     // `Buffer(a)` is a refcounted cell that must be released even when its
     // element type is trivial (e.g. `Buffer(Int)`).
     TApp("Buffer", _) -> True
+    // `Subject(a)` / `Task(a)` are opaque handles (scalars): nothing to drop.
+    TApp("Subject", _) -> False
+    TApp("Task", _) -> False
     TApp(_, args) ->
       list.any(args, fn(inner) {
         needs_drop_seen(inner, fields_of, recursive, seen)
@@ -328,23 +331,29 @@ fn needs_drop_seen(ty, fields_of, recursive, seen) -> Bool {
         // A monomorphised `Buffer(a)` (`TNamed("Buffer_<elem>")`).
         Ok(_) -> True
         Error(_) ->
-          case dict.get(recursive, name) {
-            Ok(True) -> True
-            _ ->
-              case list.contains(seen, name) {
-                True -> False
-                False ->
-                  case dict.get(fields_of, name) {
-                    Error(_) -> False
-                    Ok(fields) ->
-                      list.any(fields, fn(inner) {
-                        needs_drop_seen(
-                          inner,
-                          fields_of,
-                          recursive,
-                          [name, ..seen],
-                        )
-                      })
+          case subject_elem_name(name), task_elem_name(name) {
+            // Monomorphised `Subject(a)` / `Task(a)` handles (scalars).
+            Ok(_), _ -> False
+            _, Ok(_) -> False
+            _, Error(_) ->
+              case dict.get(recursive, name) {
+                Ok(True) -> True
+                _ ->
+                  case list.contains(seen, name) {
+                    True -> False
+                    False ->
+                      case dict.get(fields_of, name) {
+                        Error(_) -> False
+                        Ok(fields) ->
+                          list.any(fields, fn(inner) {
+                            needs_drop_seen(
+                              inner,
+                              fields_of,
+                              recursive,
+                              [name, ..seen],
+                            )
+                          })
+                      }
                   }
               }
           }

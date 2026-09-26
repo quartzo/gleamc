@@ -1041,6 +1041,9 @@ typedef struct {
      * `gleamc_run_until` (a synchronous call into an async closure) never
      * re-enters a task that is already running. */
     bool running;
+    /* Fire-and-forget (`process.spawn`): the driver owns the completion
+     * future and releases it when the task finishes. */
+    bool detached;
 } GleamcTask2;
 
 static GleamcTask2 gleamc_tasks2[GLEAMC_TASKS_MAX];
@@ -1080,11 +1083,12 @@ static GleamcFuture* gleamc_future_new(void) {
     return f;
 }
 
-GleamcFuture* gleamc_task_start(bool (*step)(void*), void* frame,
-                                GleamcFuture** fut_slot,
-                                void (*copy_result)(void*, void*),
-                                void* result_dst,
-                                void (*frame_drop)(void*)) {
+static GleamcFuture* gleamc_task_push(bool (*step)(void*), void* frame,
+                                      GleamcFuture** fut_slot,
+                                      void (*copy_result)(void*, void*),
+                                      void* result_dst,
+                                      void (*frame_drop)(void*),
+                                      bool detached) {
     GleamcFuture* done = gleamc_future_new();
     if (gleamc_tasks2_n >= GLEAMC_TASKS_MAX) {
         fprintf(stderr, "gleamc: task overflow (%d)\n", GLEAMC_TASKS_MAX);
@@ -1104,7 +1108,139 @@ GleamcFuture* gleamc_task_start(bool (*step)(void*), void* frame,
     t->done = done;
     t->finished = false;
     t->running = false;
+    t->detached = detached;
     return done;
+}
+
+GleamcFuture* gleamc_task_start(bool (*step)(void*), void* frame,
+                                GleamcFuture** fut_slot,
+                                void (*copy_result)(void*, void*),
+                                void* result_dst,
+                                void (*frame_drop)(void*)) {
+    return gleamc_task_push(
+        step, frame, fut_slot, copy_result, result_dst, frame_drop, false
+    );
+}
+
+GleamcFuture* gleamc_task_async(bool (*step)(void*), void* frame,
+                                GleamcFuture** fut_slot,
+                                void (*copy_result)(void*, void*),
+                                void (*frame_drop)(void*), void* box) {
+    GleamcFuture* done = gleamc_task_push(
+        step, frame, fut_slot, copy_result, box, frame_drop, false
+    );
+    /* The worker's `copy_result` writes its result into `box`; publish the box
+     * on the completion future so `task.await` can move the value out. */
+    done->value_p = box;
+    return done;
+}
+
+GleamcFuture* gleamc_task_spawn(bool (*step)(void*), void* frame,
+                                GleamcFuture** fut_slot,
+                                void (*frame_drop)(void*)) {
+    return gleamc_task_push(
+        step, frame, fut_slot, NULL, NULL, frame_drop, true
+    );
+}
+
+/* A box is a refcounted heap cell holding an arbitrary Gleam value. The sender
+ * moves the value in; the receiver moves it out and frees the cell (no payload
+ * drop: ownership was transferred). */
+void* gleamc_box_alloc(int64_t size) {
+    return gleamc_alloc(size > 0 ? (size_t)size : 1);
+}
+
+void gleamc_box_free(void* box) {
+    gleamc_release(box);
+}
+
+static void gleamc_future_wait(GleamcFuture* f);
+
+void* Gleamc_uv_await_box(GleamcFuture* f) {
+    gleamc_future_wait(f);
+    return f == NULL ? NULL : f->value_p;
+}
+
+/* ------------------------------------------------------------------ */
+/* Processes and mailboxes.                                            */
+/*                                                                     */
+/* A mailbox is a FIFO of boxed messages plus a FIFO of pending        */
+/* `receive` futures. `send` hands the box to the oldest waiter,       */
+/* completing its future; the cooperative driver then re-steps that    */
+/* task because a step made progress (`progressed = 1`). With no       */
+/* waiter it enqueues. `receive` returns an already-done future when a  */
+/* box is queued, so it never suspends on a non-empty mailbox.         */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    GleamcHdr hdr;
+    void** msgs;
+    int nmsg;
+    int mcap;
+    GleamcFuture** waiters;
+    int nwait;
+    int wcap;
+} GleamcMailbox;
+
+int64_t Gleamc_process_ffi_new_subject(void) {
+    GleamcMailbox* mb = (GleamcMailbox*)gleamc_alloc0(sizeof(GleamcMailbox));
+    return (int64_t)(intptr_t)mb;
+}
+
+int32_t Gleamc_process_ffi_send(int64_t handle, void* box) {
+    GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)handle;
+    if (mb == NULL) {
+        gleamc_box_free(box);
+        return 0;
+    }
+    if (mb->nwait > 0) {
+        GleamcFuture* f = mb->waiters[0];
+        for (int i = 1; i < mb->nwait; i++)
+            mb->waiters[i - 1] = mb->waiters[i];
+        mb->nwait--;
+        f->value_p = box;
+        f->done = true;
+        return 0;
+    }
+    if (mb->nmsg == mb->mcap) {
+        int cap = mb->mcap == 0 ? 8 : mb->mcap * 2;
+        void** grown = (void**)realloc(mb->msgs, (size_t)cap * sizeof(void*));
+        if (grown == NULL) {
+            gleamc_box_free(box);
+            return 0;
+        }
+        mb->msgs = grown;
+        mb->mcap = cap;
+    }
+    mb->msgs[mb->nmsg++] = box;
+    return 0;
+}
+
+GleamcFuture* Gleamc_process_ffi_receive(int64_t handle) {
+    GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)handle;
+    GleamcFuture* f = (GleamcFuture*)gleamc_alloc0(sizeof(GleamcFuture));
+    if (mb != NULL && mb->nmsg > 0) {
+        void* box = mb->msgs[0];
+        for (int i = 1; i < mb->nmsg; i++)
+            mb->msgs[i - 1] = mb->msgs[i];
+        mb->nmsg--;
+        f->value_p = box;
+        f->done = true;
+        return f;
+    }
+    if (mb != NULL) {
+        if (mb->nwait == mb->wcap) {
+            int cap = mb->wcap == 0 ? 4 : mb->wcap * 2;
+            GleamcFuture** grown = (GleamcFuture**)realloc(
+                mb->waiters, (size_t)cap * sizeof(GleamcFuture*));
+            if (grown != NULL) {
+                mb->waiters = grown;
+                mb->wcap = cap;
+            }
+        }
+        if (mb->nwait < mb->wcap) mb->waiters[mb->nwait++] = f;
+    }
+    return f;
 }
 
 void gleamc_run_until(GleamcFuture* target) {
@@ -1151,6 +1287,11 @@ void gleamc_run_until(GleamcFuture* target) {
                 /* `frame_drop` releases the frame (it ends in an rc_release). */
                 if (t->frame_drop != NULL) t->frame_drop(t->frame);
                 else gleamc_release(t->frame);
+                /* A spawned task owns its completion future; release it here
+                 * (a detached `t->done` may be the only reference left). */
+                if (t->detached && t->done != NULL) {
+                    gleamc_release(t->done);
+                }
                 t->finished = true;
                 if (!nested) {
                     gleamc_tasks2[i] = gleamc_tasks2[gleamc_tasks2_n - 1];

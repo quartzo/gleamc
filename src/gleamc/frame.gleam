@@ -28,12 +28,47 @@ pub fn frame_type_name(function_name: String) -> String {
 /// locals.
 pub fn machine_functions(module: ir.Module) -> List(String) {
   let ir.Module(functions) = module
+  let targets = task_targets(module)
   functions
   |> list.filter(fn(function) {
-    has_capture(function) || has_suspend(function) || has_tail_machine(function)
+    has_capture(function)
+    || has_suspend(function)
+    || has_tail_machine(function)
+    || list.contains(targets, function.name)
   })
   |> list.map(fn(function) { function.name })
   |> list.sort(fn(a, b) { string.compare(a, b) })
+}
+
+/// Names of the machine functions started as a task by `OpTaskStartClosure`.
+/// These must be emitted as machines (`_step` + wrapper) even when their body
+/// does not suspend.
+pub fn task_targets(module: ir.Module) -> List(String) {
+  let ir.Module(functions) = module
+  functions
+  |> list.flat_map(op_list)
+  |> list.filter_map(fn(op) {
+    case op {
+      ir.OpTaskStartClosure(_, fun, _, _) -> Ok(fun)
+      _ -> Error(Nil)
+    }
+  })
+  |> dedupe
+}
+
+/// The environment frame type a function reads its captures from, if any
+/// (`OpEnvGet`'s `env_ty`, the defining function's frame).
+pub fn env_capture(function: ir.Function) -> Result(String, Nil) {
+  list.fold(op_list(function), Error(Nil), fn(acc, op) {
+    case acc {
+      Ok(_) -> acc
+      Error(_) ->
+        case op {
+          ir.OpEnvGet(_, env_ty, _, _) -> Ok(env_ty)
+          _ -> Error(Nil)
+        }
+    }
+  })
 }
 
 /// A function that creates a closure capturing at least one variable: its frame
@@ -354,6 +389,10 @@ fn rewrite_op(op: ir.Op, repl) -> ir.Op {
     // (otherwise ownership retains it a second time). `fut`/`dest` are names.
     ir.OpMachineStart(fut, fun, args, dest) ->
       ir.OpMachineStart(fut, fun, subs(args, repl), dest)
+    ir.OpTaskStart(fut, fun, args, into_future) ->
+      ir.OpTaskStart(fut, fun, subs(args, repl), into_future)
+    ir.OpTaskStartClosure(fut, fun, closure, into_future) ->
+      ir.OpTaskStartClosure(fut, fun, sub(closure, repl), into_future)
     _ -> op
   }
 }
