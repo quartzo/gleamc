@@ -97,7 +97,11 @@ pub fn check_resolved(
     dict.fold(globals, dict.new(), fn(acc, _, scheme) {
       counts_add(acc, type_var_counts(types.env_free_vars([scheme])))
     })
-  use #(functions, st) <- result_try(infer_in_order(
+  // Infer, then re-infer. A single topological pass uses the declared (collect)
+  // signature for a function not yet inferred, so a mutually-recursive group of
+  // unannotated functions only gets precise types once a later pass sees the
+  // group's inferred schemes.
+  use #(functions, st) <- result_try(infer_rounds(
     order_functions(definitions),
     functions_by_name,
     ctors,
@@ -107,10 +111,66 @@ pub fn check_resolved(
     globals,
     env_counts,
     st,
+    3,
   ))
   let #(resolved, functions) =
     resolve_definitions(definitions, functions, var_ids, st.subst)
   Ok(#(Module(resolved), Program(functions, ctors, types_map)))
+}
+
+fn globals_for(functions, ctors) {
+  builtins()
+  |> merge_globals(functions)
+  |> merge_globals(ctor_schemes(ctors))
+}
+
+fn env_counts_for(globals) {
+  dict.fold(globals, dict.new(), fn(acc, _, scheme) {
+    counts_add(acc, type_var_counts(types.env_free_vars([scheme])))
+  })
+}
+
+fn infer_rounds(
+  order,
+  functions_by_name,
+  ctors,
+  types_map,
+  var_ids,
+  functions,
+  globals,
+  counts,
+  st,
+  rounds,
+) {
+  case rounds <= 0 {
+    True -> Ok(#(functions, st))
+    False -> {
+      use #(functions, st) <- result_try(infer_in_order(
+        order,
+        functions_by_name,
+        ctors,
+        types_map,
+        var_ids,
+        functions,
+        globals,
+        counts,
+        st,
+      ))
+      let globals = globals_for(functions, ctors)
+      infer_rounds(
+        order,
+        functions_by_name,
+        ctors,
+        types_map,
+        var_ids,
+        functions,
+        globals,
+        env_counts_for(globals),
+        st,
+        rounds - 1,
+      )
+    }
+  }
 }
 
 /// Rewrites inferred parameter/return types into the module and rebuilds each
