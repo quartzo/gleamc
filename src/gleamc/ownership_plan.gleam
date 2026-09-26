@@ -844,11 +844,30 @@ fn successors_live(
 }
 
 fn add_term_reads(live, term: ir.Terminator, handles, views) {
-  list.fold(
-    handle_names(expand_names(ir.term_reads(term), views), handles),
-    live,
-    set_add,
-  )
+  set_union(live, read_set(ir.term_reads(term), handles, views))
+}
+
+/// The handle names read by `operands`, as a set, without building the
+/// intermediate lists `expand_names`/`handle_names` would allocate.
+fn read_set(operands, handles, views) -> Dict(String, Bool) {
+  list.fold(operands, dict.new(), fn(acc, operand) {
+    add_read(acc, operand, handles, views)
+  })
+}
+
+fn add_read(acc, operand, handles, views) {
+  case operand {
+    ir.Var(name) ->
+      case dict.has_key(handles, name) {
+        True -> dict.insert(acc, name, True)
+        False ->
+          case dict.get(views, name) {
+            Ok(container) -> add_read(acc, ir.Var(container), handles, views)
+            Error(_) -> acc
+          }
+      }
+    ir.Lit(_) -> acc
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -859,7 +878,7 @@ fn back_ops(reversed_ops, index, handles, live, pre, moved, modes, ffi, views) {
   case reversed_ops {
     [] -> #(pre, moved)
     [op, ..rest] -> {
-      let reads = handle_names(expand_names(ir.op_reads(op), views), handles)
+      let reads = read_set(ir.op_reads(op), handles, views)
       let defs = case ir.op_dest(op) {
         Ok(dest_name) ->
           case dict.get(handles, dest_name) {
@@ -895,7 +914,7 @@ fn back_ops(reversed_ops, index, handles, live, pre, moved, modes, ffi, views) {
             }
           },
         )
-      let live = set_union(sets_from(reads), set_diff(live, sets_from(defs)))
+      let live = set_union(reads, set_diff(live, sets_from(defs)))
       back_ops(rest, index - 1, handles, live, pre, moved, modes, ffi, views)
     }
   }
@@ -1169,44 +1188,41 @@ fn sets_from(names: List(String)) -> Dict(String, Bool) {
   list.fold(names, dict.new(), set_add)
 }
 
+// Sets are `Dict(String, Bool)`. These fold the dictionary directly instead of
+// `dict.keys`, which would allocate a list on every liveness iteration.
 fn set_union(
   a: Dict(String, Bool),
   b: Dict(String, Bool),
 ) -> Dict(String, Bool) {
-  list.fold(dict.keys(b), a, set_add)
+  dict.fold(b, a, fn(acc, name, _) { set_add(acc, name) })
 }
 
 fn set_diff(
   a: Dict(String, Bool),
   b: Dict(String, Bool),
 ) -> Dict(String, Bool) {
-  list.fold(dict.keys(b), a, fn(acc, name) { dict.delete(acc, name) })
+  dict.fold(b, a, fn(acc, name, _) { dict.delete(acc, name) })
 }
 
 fn set_intersect(
   a: Dict(String, Bool),
   b: Dict(String, Bool),
 ) -> Dict(String, Bool) {
-  list.fold(dict.keys(a), dict.new(), fn(acc, name) {
-    case dict.get(b, name) {
-      Ok(_) -> set_add(acc, name)
-      Error(_) -> acc
+  dict.fold(a, dict.new(), fn(acc, name, _) {
+    case dict.has_key(b, name) {
+      True -> set_add(acc, name)
+      False -> acc
     }
   })
 }
 
 fn sets_equal(a: Dict(String, Bool), b: Dict(String, Bool)) -> Bool {
   dict.size(a) == dict.size(b)
-  && list.all(dict.keys(a), fn(name) {
-    case dict.get(b, name) {
-      Ok(_) -> True
-      Error(_) -> False
-    }
-  })
+  && dict.fold(a, True, fn(acc, name, _) { acc && dict.has_key(b, name) })
 }
 
 fn all_handles(handles) {
-  sets_from(dict.keys(handles))
+  dict.fold(handles, dict.new(), fn(acc, name, _) { set_add(acc, name) })
 }
 
 fn handle_names(operands, handles) {
