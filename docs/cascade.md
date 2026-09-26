@@ -42,7 +42,14 @@ after `lower` speaks IR; IR is the only cross-layer currency.
 | `checker` | `checker.gleam`, `infer.gleam` | AST | AST + signatures + ctors | type-check; produce signatures/ctor info | insert runtime ops |
 | `lower` | `lower.gleam` | AST | `ir.Module` | emit blocks/ops; decide **tail position** (`Tailcall`, `TailcallIndirect`) | insert retain/drop |
 | `frame` | `frame.gleam` | IR | IR | materialize the heap frame of capture/suspend functions | insert retain/drop |
-| `ownership` | `ownership.gleam`, `borrow.gleam`, `ffi_modes.gleam`, `owned_clone.gleam` | IR | IR | classify parameters (`Borrow`/`Owned`); insert **all** `OpRetain`/`OpDrop` | create tail calls; know the backend |
+| `ownership` | `ownership.gleam`, `ownership_plan.gleam`, `borrow.gleam`, `ffi_modes.gleam`, `owned_clone.gleam` | IR | IR | classify parameters (`Borrow`/`Owned`); insert **all** `OpRetain`/`OpDrop` | create tail calls; know the backend |
+
+`ownership_plan.gleam` is the **analysis** half of the layer: it computes a
+`Plan` of retain/drop/move decisions and never mutates the IR. `ownership.gleam`
+is the **applier**: it applies that plan and is the only place that builds
+`OpRetain`/`OpDrop`. Splitting them keeps the move/borrow analysis unit-testable
+without touching op insertion; it is **not** a new cascade phase (the layer's
+`IR -> IR` product is unchanged).
 | `llvm` | `llvm.gleam` | IR | LLVM IR text | render IR, `musttail` tail calls, frames | invent retain/release or tail calls |
 
 ## The contract (invariants)

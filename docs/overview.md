@@ -57,8 +57,10 @@ The stages that matter most for correctness are:
 - **`lower`** (`lower.gleam`) walks the monomorphic AST and emits IR. Tail
   position is known here, so direct tail calls become `Tailcall` and calls
   through a function value in tail position become `TailcallIndirect`.
-- **`ownership`** (`ownership.gleam` + `borrow.gleam`) is the memory-management
-  pass. See [memory.md](memory.md).
+- **`ownership`** (`ownership.gleam` + `ownership_plan.gleam` + `borrow.gleam`)
+  is the memory-management pass: `ownership_plan.gleam` computes the
+  retain/drop/move `Plan`, `ownership.gleam` applies it. See
+  [memory.md](memory.md).
 - **`cps`** (`cps.gleam`) makes suspension explicit. See [machine.md](machine.md).
 - **`plan`** (`plan.gleam`) is a pure, deterministic planner that turns the
   owned IR into the machine plan (frames, mutual groups, states). It does not
