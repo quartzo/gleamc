@@ -115,6 +115,14 @@ void Gleamc_buffer_retain(void* buf);
 void Gleamc_buffer_release(void* buf);
 void* Gleamc_buffer_cow(void* buf, size_t elem_size,
                         void (*elem_retain)(void*), void (*elem_drop)(void*));
+/* Lazy-universe probe: a NULL buffer slot means "not materialized yet". */
+bool Gleamc_buffer_is_null(void* buf);
+/* Destructive read of one slot. If the buffer is uniquely owned (rc == 1) the
+ * element reference is *moved* out and the slot zeroed (sentinel); otherwise a
+ * reference is retained (like `get`) and the slot is left untouched. Either way
+ * `out` receives an owned element and the buffer handle is unchanged. */
+void Gleamc_buffer_take(void* buf, int64_t i, void (*elem_retain)(void*),
+                        void* out);
 
 #ifdef GLEAMC_RC_AUDIT
 #define gleamc_string_retain(s) Gleamc_rc_retain((s).data, "runtime")

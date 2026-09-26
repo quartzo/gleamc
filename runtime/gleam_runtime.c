@@ -139,10 +139,21 @@ void gleamc_depth_die(const char* fn) {
     abort();
 }
 
+/* Optional counters for the BigDict evaluation (GLEAMC_BIGDICT_STATS=1). */
+static int _bd_stats = 0;
+static size_t _bd_cow_calls = 0, _bd_cow_copies = 0, _bd_cow_bytes = 0;
+static size_t _bd_take_calls = 0, _bd_take_moves = 0, _bd_take_retains = 0;
+
 static void _gleamc_report_leaks(void) {
     const char* flag = getenv("GLEAMC_MEM_REPORT");
     if (flag != NULL) {
         fprintf(stderr, "gleamc: live blocks = %zu\n", _gleamc_live);
+    }
+    if (_bd_stats) {
+        fprintf(stderr, "bigdict stats: cow calls=%zu copies=%zu bytes=%zu\n",
+                _bd_cow_calls, _bd_cow_copies, _bd_cow_bytes);
+        fprintf(stderr, "bigdict stats: take calls=%zu moves=%zu retains=%zu\n",
+                _bd_take_calls, _bd_take_moves, _bd_take_retains);
     }
 #ifdef GLEAMC_RC_AUDIT
     {
@@ -162,6 +173,7 @@ static void _gleamc_report_leaks(void) {
 
 __attribute__((constructor)) static void _gleamc_init(void) {
     atexit(_gleamc_report_leaks);
+    if (getenv("GLEAMC_BIGDICT_STATS") != NULL) _bd_stats = 1;
     {
         const char* depth = getenv("GLEAMC_CALL_DEPTH");
         if (depth != NULL) {
@@ -336,7 +348,12 @@ void Gleamc_buffer_release(void* buf) {
 void* Gleamc_buffer_cow(void* buf, size_t elem_size,
                         void (*elem_retain)(void*), void (*elem_drop)(void*)) {
     GleamcBufferHdr* h = (GleamcBufferHdr*)buf;
+    if (_bd_stats) _bd_cow_calls++;
     if (gleamc_refcount_of(buf) > 1) {
+        if (_bd_stats) {
+            _bd_cow_copies++;
+            _bd_cow_bytes += h->len * elem_size;
+        }
         GleamcBufferHdr* nh = (GleamcBufferHdr*)gleamc_alloc0(
             sizeof(GleamcBufferHdr) + h->len * elem_size);
         nh->len = h->len;
@@ -352,6 +369,26 @@ void* Gleamc_buffer_cow(void* buf, size_t elem_size,
     }
     Gleamc_rc_retain(buf, NULL);
     return buf;
+}
+
+bool Gleamc_buffer_is_null(void* buf) { return buf == NULL; }
+
+void Gleamc_buffer_take(void* buf, int64_t i, void (*elem_retain)(void*),
+                        void* out) {
+    GleamcBufferHdr* h = (GleamcBufferHdr*)buf;
+    uint8_t* slot =
+        (uint8_t*)h + sizeof(GleamcBufferHdr) + (size_t)i * h->elem_size;
+    if (_bd_stats) _bd_take_calls++;
+    memcpy(out, slot, h->elem_size);
+    if (gleamc_refcount_of(buf) == 1) {
+        /* Unique owner: move the reference out and leave the default sentinel. */
+        if (_bd_stats) _bd_take_moves++;
+        memset(slot, 0, h->elem_size);
+    } else {
+        /* Shared owner: the container keeps its reference; hand out a new one. */
+        if (_bd_stats) _bd_take_retains++;
+        if (elem_retain != NULL) elem_retain(out);
+    }
 }
 
 bool gleamc_string_eq(GleamcString a, GleamcString b) {

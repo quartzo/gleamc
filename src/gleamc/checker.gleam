@@ -1080,6 +1080,41 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         _ -> Error(CheckError("buffer.set expects (Buffer(a), Int, a)"))
       }
     }
+    "buffer", "is_null" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [buf] ->
+          case buffer_elem_type(tmono.type_of(buf)) {
+            Ok(_) ->
+              Ok(builtin_call("buffer", "is_null", [tmono.type_of(buf)], TBool, typed_args))
+            Error(_) -> Error(CheckError("buffer.is_null expects a Buffer"))
+          }
+        _ -> Error(CheckError("buffer.is_null expects a Buffer"))
+      }
+    }
+    "buffer", "take" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [buf, index] ->
+          case tmono.type_of(index) {
+            TInt ->
+              case buffer_elem_type(tmono.type_of(buf)) {
+                Ok(elem) ->
+                  Ok(builtin_call(
+                    "buffer",
+                    "take",
+                    [tmono.type_of(buf), TInt],
+                    elem,
+                    typed_args,
+                  ))
+                Error(_) ->
+                  Error(CheckError("buffer.take expects (Buffer(a), Int)"))
+              }
+            _ -> Error(CheckError("buffer.take expects (Buffer(a), Int)"))
+          }
+        _ -> Error(CheckError("buffer.take expects (Buffer(a), Int)"))
+      }
+    }
     "io", "println" ->
       check_builtin(env, signatures, ctors, args, [TString], TNil, "io.println")
     "io", "print" ->

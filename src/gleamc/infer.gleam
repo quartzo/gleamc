@@ -785,6 +785,14 @@ fn builtins() -> Dict(String, Scheme) {
       ])),
     ),
   )
+  |> dict.insert(
+    "buffer.is_null",
+    Scheme([9009], Fun([Con("Buffer", [Var(9009)])], b)),
+  )
+  |> dict.insert(
+    "buffer.take",
+    Scheme([9010], Fun([Con("Buffer", [Var(9010)]), i], Var(9010))),
+  )
   |> dict.insert("io.debug", Scheme([9003], Fun([Var(9003)], n)))
   |> dict.insert("int.to_float", Scheme(none, Fun([i], f)))
   |> dict.insert("string.compare_bytes", Scheme(none, Fun([s, s], i)))

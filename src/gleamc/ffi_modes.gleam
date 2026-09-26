@@ -149,6 +149,8 @@ pub fn table() -> Dict(String, FfiSig) {
   |> dict.insert("buffer.len", FfiSig([Borrow], OwnedResult))
   |> dict.insert("buffer.get", FfiSig([Borrow, Borrow], OwnedResult))
   |> dict.insert("buffer.set", FfiSig([Borrow, Borrow, Borrow], OwnedResult))
+  |> dict.insert("buffer.is_null", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("buffer.take", FfiSig([Borrow, Borrow], OwnedResult))
   |> dict.insert("io.debug", FfiSig([Borrow], OwnedResult))
   |> dict.insert("bit_array.is_utf8", FfiSig([Borrow], OwnedResult))
   |> dict.insert("host.run", FfiSig([Borrow], OwnedResult))

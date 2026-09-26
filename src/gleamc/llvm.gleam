@@ -506,6 +506,8 @@ fn header(audit: Bool) -> String {
   <> "declare i8* @Gleamc_buffer_cow(i8*, i64, void (i8*)*, void (i8*)*)\n"
   <> "declare void @Gleamc_buffer_retain(i8*)\n"
   <> "declare void @Gleamc_buffer_release(i8*)\n"
+  <> "declare i1 @Gleamc_buffer_is_null(i8*)\n"
+  <> "declare void @Gleamc_buffer_take(i8*, i64, void (i8*)*, i8*)\n"
   <> "declare void @Gleamc_panic(%GleamcString)\n"
   <> "declare i32 @Gleamc_io_debug(%GleamcString)\n"
   <> "declare i32 @memcmp(i8*, i8*, i64)\n"
@@ -2833,6 +2835,47 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
           let b = store_local(ctx, dest, "i8*", nb, b)
           #(b, Nil)
         }
+        "buffer.take" -> {
+          let buf_arg = first_arg(args)
+          let #(_, buf, b) = read_val(ctx, buf_arg, b)
+          let elem = case buffer_elem(operand_type(ctx.by_name, buf_arg)) {
+            Ok(e) -> e
+            Error(_) -> ast.TNil
+          }
+          let elem_s = llvm_ty(elem, ctx.recursive)
+          let idx = case args {
+            [_, i, ..] -> i
+            _ -> ir.Lit(ir.LUnit)
+          }
+          let #(_, i, b) = read_val(ctx, idx, b)
+          let #(outp, b) = local_addr(ctx, dest, b)
+          let #(outp_i8, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> outp_i8
+                <> " = bitcast "
+                <> elem_s
+                <> "* "
+                <> outp
+                <> " to i8*",
+            )
+          let b =
+            emit_line(
+              b,
+              "  call void @Gleamc_buffer_take(i8* "
+                <> buf
+                <> ", i64 "
+                <> i
+                <> ", "
+                <> buffer_glue_fp(elem, "retain")
+                <> ", i8* "
+                <> outp_i8
+                <> ")",
+            )
+          #(b, Nil)
+        }
         "io.debug" -> {
           let first = first_arg(args)
           let oty = operand_type(ctx.by_name, first)
@@ -3649,6 +3692,8 @@ fn runtime_declared(name: String) -> Bool {
     | "Gleamc_buffer_cow"
     | "Gleamc_buffer_retain"
     | "Gleamc_buffer_release"
+    | "Gleamc_buffer_is_null"
+    | "Gleamc_buffer_take"
     | "Gleamc_bit_array_eq"
     | "Gleamc_bit_array_new"
     | "Gleamc_bit_array_from_bytes"
@@ -3946,6 +3991,7 @@ fn special_builtin(name: String) -> Bool {
     | "buffer.len"
     | "buffer.get"
     | "buffer.set"
+    | "buffer.take"
     | "io.debug"
     | "gleamc.key_compare"
     | "panic" -> True
