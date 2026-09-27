@@ -131,10 +131,7 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   `Timeout` (no `Exit(Dynamic)`). A
   `Subject` handle is not refcount-dropped (one leak per subject) and boxes
   queued but never received leak; a timed-out task's boxed result also leaks.
-  Draining a mailbox does not join the spawned senders. Capturing a
-  **compile-time-constant** binding in a closure (e.g. `let base = 41; fn() {
-  f(base) }`) reads the wrong environment slot — a pre-existing
-  `frame.link_closures` corner case, not specific to tasks.
+  Draining a mailbox does not join the spawned senders.
 
 ## Standard library coverage
 

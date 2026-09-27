@@ -16,6 +16,13 @@ import gleamc/ir
 /// The synthetic local that holds the frame handle.
 pub const frame_local = "__frame"
 
+/// Where a lifted lambda's capture comes from: a slot in the defining frame, or
+/// a compile-time literal (const-folded) that is inlined instead.
+type Capture {
+  Slot(Int)
+  Lit(ir.Literal)
+}
+
 /// The composite type of a function's frame. The name matches the machine
 /// frame type emitted by the backend (`%__frame_<fn>`).
 pub fn frame_type_name(function_name: String) -> String {
@@ -160,8 +167,8 @@ fn relink(function: ir.Function, infos) -> ir.Function {
   let ir.Function(name, params, ret, blocks, locals) = function
   let own_frame = frame_type_name(name)
   // A lifted lambda reads its captures from the *defining* function's frame.
-  let #(env_frame, own_slots) = case dict.get(infos, name) {
-    Ok(#(defining_frame, slots)) -> #(defining_frame, slots)
+  let #(env_frame, own_captures) = case dict.get(infos, name) {
+    Ok(#(defining_frame, captures)) -> #(defining_frame, captures)
     Error(_) -> #(own_frame, [])
   }
   let blocks =
@@ -179,9 +186,13 @@ fn relink(function: ir.Function, infos) -> ir.Function {
                 True -> ir.OpClosure(dest, code, [], "", fn_ty)
                 False -> ir.OpClosure(dest, code, captures, own_frame, fn_ty)
               }
-            // Captured-variable reads become reads of the defining frame's slot.
+            // Captured-variable reads become reads of the defining frame's
+            // slot; a literal capture (const-folded) is inlined.
             ir.OpEnvGet(dest, _, index, ty) ->
-              ir.OpEnvGet(dest, env_frame, list_at(own_slots, index), ty)
+              case capture_at(own_captures, index) {
+                Slot(slot) -> ir.OpEnvGet(dest, env_frame, slot, ty)
+                Lit(value) -> ir.OpConst(dest, value)
+              }
             _ -> op
           }
         })
@@ -190,17 +201,25 @@ fn relink(function: ir.Function, infos) -> ir.Function {
   ir.Function(name, params, ret, blocks, locals)
 }
 
-fn capture_slots(captures, slots) -> List(Int) {
+fn capture_slots(captures, slots) -> List(Capture) {
   list.map(captures, fn(capture) {
     case capture {
       ir.Var(name) ->
         case dict.get(slots, name) {
-          Ok(slot) -> slot
-          Error(_) -> 0
+          Ok(slot) -> Slot(slot)
+          Error(_) -> Slot(0)
         }
-      ir.Lit(_) -> 0
+      ir.Lit(value) -> Lit(value)
     }
   })
+}
+
+fn capture_at(captures: List(Capture), index: Int) -> Capture {
+  case captures {
+    [first, ..] if index == 0 -> first
+    [_, ..rest] -> capture_at(rest, index - 1)
+    [] -> Slot(0)
+  }
 }
 
 fn slot_map(locals) -> Dict(String, Int) {
@@ -219,14 +238,6 @@ fn slot_map(locals) -> Dict(String, Int) {
       }
     })
   map
-}
-
-fn list_at(slots: List(Int), index: Int) -> Int {
-  case slots {
-    [first, ..] if index == 0 -> first
-    [_, ..rest] -> list_at(rest, index - 1)
-    [] -> 0
-  }
 }
 
 fn code_to_name(code: String) -> String {
