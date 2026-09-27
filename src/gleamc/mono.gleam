@@ -1901,6 +1901,10 @@ fn mono_call(
               let #(_, local_ty, counter) =
                 types.instantiate_vars(scheme, state.counter)
               let state = State(..state, counter: counter)
+              // Resolve the variable first: a function value bound by a
+              // pattern carries a unification variable here, and `fun_parts`
+              // on the unresolved variable would return the whole type.
+              let local_ty = types.zonk(local_ty, state.subst)
               let #(param_tys, local_ret) = fun_parts(local_ty)
               let expected =
                 list.map(param_tys, fn(param_ty) {
@@ -2720,6 +2724,10 @@ fn mono_call_pair(
               let #(_, local_ty, counter) =
                 types.instantiate_vars(scheme, state.counter)
               let state = State(..state, counter: counter)
+              // Resolve the variable first: a function value bound by a
+              // pattern carries a unification variable here, and `fun_parts`
+              // on the unresolved variable would return the whole type.
+              let local_ty = types.zonk(local_ty, state.subst)
               let #(param_tys, local_ret) = fun_parts(local_ty)
               let expected =
                 list.map(param_tys, fn(param_ty) {
