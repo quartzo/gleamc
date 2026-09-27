@@ -1,7 +1,8 @@
-# gleamc language manual
+# Gleamc — language manual
 
-This manual documents the Gleam **subset** that `gleamc` parses, type-checks
-and compiles to native code. It describes what the compiler accepts **today**,
+**Gleamc** (the Gleam compiler) is an ahead-of-time compiler for a subset of
+Gleam that targets native code. This manual documents the Gleam **subset** that
+`gleamc` parses, type-checks and compiles to native code. It describes what the compiler accepts **today**,
 not the full Gleam language.
 
 - Target: native code (LLVM IR + a small C runtime, libuv for async), not

@@ -1,7 +1,7 @@
 # Known limitations
 
-This document tracks what `gleamc` does not do yet, and which compiler or
-runtime bugs are known. It is intentionally explicit so the gaps are visible
+This document tracks what **Gleamc** (the Gleam compiler) does not do yet, and
+which compiler or runtime bugs are known. It is intentionally explicit so the gaps are visible
 instead of implied.
 
 The project is a work in progress. Everything listed under "Verified" passes

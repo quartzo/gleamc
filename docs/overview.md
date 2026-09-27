@@ -1,6 +1,6 @@
-# gleamc — overview
+# Gleamc — overview
 
-`gleamc` is an independent compiler for a subset of the
+**Gleamc** (the Gleam compiler) is an independent compiler for a subset of the
 [Gleam](https://gleam.run) language that targets **native code** instead of the
 BEAM or JavaScript. It reads `.gleam` source, type-checks it, lowers it to a
 small SSA-style IR, inserts explicit reference-count operations, and emits

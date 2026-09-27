@@ -1,7 +1,7 @@
-# Roadmap: idiomatic Gleam and concurrency
+# Gleamc roadmap: idiomatic Gleam and concurrency
 
-This document plans the remaining gaps between `gleamc` and **idiomatic
-Gleam**. It complements [known-limitations.md](known-limitations.md) (what is
+This document plans the remaining gaps between **Gleamc** (the Gleam compiler)
+and **idiomatic Gleam**. It complements [known-limitations.md](known-limitations.md) (what is
 missing today) and [manual/](manual/README.md) (what is implemented).
 
 ## Guiding principle
