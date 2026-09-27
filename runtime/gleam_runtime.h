@@ -324,6 +324,8 @@ typedef struct GleamcFuture {
     int64_t value_i;    /* wake value (scalars / handles / length)   */
     void* value_p;      /* wake value by reference (structs / bytes) */
     bool uv_armed;      /* handle registered on the libuv loop       */
+    /* For a task's completion future: the task ended by being killed. */
+    bool crashed;
     /* Single observer to complete when this future completes (a `try_await`
      * wait racing a task against a timeout). */
     struct GleamcFuture* notify;
@@ -414,6 +416,7 @@ int64_t gleamc_task_id(GleamcFuture* done);
 int64_t Gleamc_process_ffi_self(void);
 bool Gleamc_process_ffi_is_alive(int64_t pid);
 int64_t Gleamc_task_ffi_pid(GleamcFuture* task);
+bool Gleamc_task_ffi_crashed(GleamcFuture* task);
 int64_t Gleamc_process_ffi_pid_of_int(int64_t pid);
 
 /* Scheduled sends: `send_after` returns an opaque `Timer` handle; `cancel`

@@ -2612,6 +2612,24 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         _ -> Error(CheckError("task_ffi.pid expects a Task(a)"))
       }
     }
+    "task_ffi", "crashed" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [task] ->
+          case task_elem_type(tmono.type_of(task)) {
+            Ok(_) ->
+              Ok(builtin_call(
+                "task_ffi",
+                "crashed",
+                [tmono.type_of(task)],
+                TBool,
+                typed_args,
+              ))
+            Error(_) -> Error(CheckError("task_ffi.crashed expects a Task(a)"))
+          }
+        _ -> Error(CheckError("task_ffi.crashed expects a Task(a)"))
+      }
+    }
     "process_ffi", "new_name" -> {
       use typed_args <- result.try(infer_all(env, signatures, ctors, args))
       Ok(builtin_call(

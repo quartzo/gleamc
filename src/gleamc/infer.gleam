@@ -987,6 +987,10 @@ fn builtins() -> Dict(String, Scheme) {
     Scheme([9110], Fun([Con("Subject", [Var(9110)]), i], i)),
   )
   |> dict.insert(
+    "task_ffi.crashed",
+    Scheme([9104], Fun([Con("Task", [Var(9104)])], b)),
+  )
+  |> dict.insert(
     "task_ffi.await_timeout",
     Scheme([9111], Fun([Con("Task", [Var(9111)]), i], i)),
   )

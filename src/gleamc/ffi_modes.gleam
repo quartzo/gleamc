@@ -143,6 +143,7 @@ pub fn table() -> Dict(String, FfiSig) {
   |> dict.insert("dynamic_ffi.as_bool", FfiSig([Borrow], OwnedResult))
   |> dict.insert("task.async", FfiSig([Borrow], OwnedResult))
   |> dict.insert("task_ffi.await", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("task_ffi.crashed", FfiSig([Borrow], OwnedResult))
   |> dict.insert("int.to_string", FfiSig([Borrow], OwnedResult))
   |> dict.insert("float.to_string", FfiSig([Borrow], OwnedResult))
   |> dict.insert("bool.to_string", FfiSig([Borrow], OwnedResult))

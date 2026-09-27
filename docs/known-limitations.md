@@ -148,7 +148,9 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   accessors (no `list`/tuple reification or decoders).
   `select_other`/`select_record` are not implemented — they match any message
   in the process mailbox, but the runtime gives each `Subject` its own mailbox
-  rather than one per process — and `AwaitError` only has `Timeout`. A
+  rather than one per process. `AwaitError` has `Timeout` and
+  `Exit(Dynamic)` (a task killed before producing a value; the reason is the
+  `Killed` exit reason, wrapped as a `Dynamic`). A
   `Subject(a)` handles are refcounted and their mailbox is freed when the last
   reference dies (queued boxes are freed too, but their payload references are
   abandoned — there is no per-message drop); subjects held by a live

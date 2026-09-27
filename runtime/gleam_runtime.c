@@ -1172,6 +1172,10 @@ int64_t Gleamc_task_ffi_pid(GleamcFuture* task) {
     return gleamc_task_id(task);
 }
 
+bool Gleamc_task_ffi_crashed(GleamcFuture* task) {
+    return task != NULL && task->crashed;
+}
+
 int64_t Gleamc_process_ffi_pid_of_int(int64_t pid) {
     return pid;
 }
@@ -1909,6 +1913,7 @@ static void gleamc_task_finish(GleamcTask2* t, int64_t reason, bool copy) {
         t->copy_result(t->frame, t->result_dst);
     if (t->done != NULL) {
         t->done->done = true;
+        t->done->crashed = !copy;
         if (t->done->notify != NULL) {
             t->done->notify->value_i = 1;
             t->done->notify->done = true;
