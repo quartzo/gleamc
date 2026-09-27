@@ -12,9 +12,8 @@ import gleam/string
 import gleamc/ast.{
   type Module, Arm, CustomType, DConst, DCustomType, DExternal, DFunction,
   DImport, DTypeAlias, EBinop, EBitArray, EBlock, ECall, ECase, EClosure, ECtor,
-  EEnvGet,
-  EField, ELabelled, ELambda, EPanic, ETuple, EUnop, EUpdate, EVar, Let, Module,
-  PBitArray, PCtor, PLabelled, PTuple, Stmt, Variant,
+  EEnvGet, EField, ELabelled, ELambda, EPanic, ETuple, EUnop, EUpdate, EVar, Let,
+  Module, PBitArray, PCtor, PLabelled, PTuple, Stmt, Variant,
 }
 
 pub fn check(modules: List(#(String, Module))) -> Result(Nil, String) {

@@ -10,10 +10,10 @@ import gleamc/ast.{
   type Expr, type Module, Arm, CustomType, DConst, DCustomType, DExternal,
   DFunction, DImport, DTypeAlias, EBinop, EBitArray, EBlock, EBool, ECall, ECase,
   ECtor, EField, EFloat, EInt, ELabelled, ELambda, ENil, EPanic, EString, ETuple,
-  EUnop, External,
-  EUpdate, EVar, Function, Import, Let, Module, PAs, PBitArray, PBool, PCtor,
-  PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard, Stmt, TApp,
-  TBool, TFloat, TFun, TInt, TNamed, TNil, TString, TTuple, TVar, Variant,
+  EUnop, EUpdate, EVar, External, Function, Import, Let, Module, PAs, PBitArray,
+  PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard,
+  Stmt, TApp, TBool, TFloat, TFun, TInt, TNamed, TNil, TString, TTuple, TVar,
+  Variant,
 }
 import gleamc/lexer
 import gleamc/token.{
@@ -204,8 +204,7 @@ fn attribute(tokens) {
       use #(args, rest3) <- and_then(attribute_args(skip_newlines(rest2), []))
       use rest4 <- and_then(expect_symbol(skip_newlines(rest3), ")"))
       case args {
-        [target, ..parts] ->
-          Ok(#(target, string.join(parts, "."), rest4))
+        [target, ..parts] -> Ok(#(target, string.join(parts, "."), rest4))
         [] -> fail(rest1, "@external expects a target and a symbol")
       }
     }
@@ -234,8 +233,7 @@ fn attribute_args(tokens, acc) {
 fn attribute_args_more(tokens, acc) {
   let tokens = skip_newlines(tokens)
   case peek(tokens) {
-    Symbol(",") ->
-      attribute_args(skip_newlines(drop_token(tokens)), acc)
+    Symbol(",") -> attribute_args(skip_newlines(drop_token(tokens)), acc)
     _ -> Ok(#(list.reverse(acc), tokens))
   }
 }

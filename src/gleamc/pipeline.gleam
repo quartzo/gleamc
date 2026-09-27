@@ -10,12 +10,12 @@ import gleam/list
 import gleam/result
 import gleam/string
 import gleamc/aliases
-import gleamc/async
-import gleamc/ffi
 import gleamc/ast.{type CustomType, type Module}
+import gleamc/async
 import gleamc/checker
 import gleamc/consts
 import gleamc/dce
+import gleamc/ffi
 import gleamc/frame
 import gleamc/ir
 import gleamc/llvm

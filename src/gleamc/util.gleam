@@ -14,7 +14,8 @@ fn dedupe_loop(items: List(a), seen: Dict(a, Bool), acc: List(a)) -> List(a) {
     [item, ..rest] ->
       case dict.get(seen, item) {
         Ok(_) -> dedupe_loop(rest, seen, acc)
-        Error(_) -> dedupe_loop(rest, dict.insert(seen, item, True), [item, ..acc])
+        Error(_) ->
+          dedupe_loop(rest, dict.insert(seen, item, True), [item, ..acc])
       }
   }
 }

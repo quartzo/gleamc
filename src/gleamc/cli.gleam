@@ -37,13 +37,7 @@ type Command {
 }
 
 fn default_options() -> Options {
-  Options(
-    cc: None,
-    mode: toolchain.Debug,
-    run: False,
-    quiet: False,
-    ir: False,
-  )
+  Options(cc: None, mode: toolchain.Debug, run: False, quiet: False, ir: False)
 }
 
 pub fn main() -> Nil {
@@ -106,9 +100,7 @@ fn resolve_cc(options: Options) -> String {
 fn usage() -> Nil {
   io.println(version)
   io.println("")
-  io.println(
-    "usage: gleamc <file.gleam> [--cc=clang|gcc] [--release] [--run]",
-  )
+  io.println("usage: gleamc <file.gleam> [--cc=clang|gcc] [--release] [--run]")
   io.println("       gleamc <file.gleam>            # emit LLVM IR")
   io.println("       gleamc <file.gleam> --ir       # dump ownership-phase IR")
   io.println("       gleamc smoke        # end-to-end pipeline smoke test")
@@ -141,10 +133,11 @@ fn compile_modules(modules, base: String, options: Options) -> Nil {
 fn compile_ir_dump(modules, base: String) -> Nil {
   case ownership_ir(modules) {
     Error(err) -> io.println(base <> ".gleam: " <> err)
-    Ok(output) -> case ffi.write_file(base <> ".ir", output) {
-      Error(err) -> io.println("error writing " <> base <> ".ir: " <> err)
-      Ok(_) -> Nil
-    }
+    Ok(output) ->
+      case ffi.write_file(base <> ".ir", output) {
+        Error(err) -> io.println("error writing " <> base <> ".ir: " <> err)
+        Ok(_) -> Nil
+      }
   }
 }
 

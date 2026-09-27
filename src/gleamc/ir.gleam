@@ -596,8 +596,7 @@ fn op_text(op: Op) -> String {
         True -> "true"
         False -> "false"
       }
-    OpFrameNew(dest, frame_ty) ->
-      "    " <> dest <> " = framenew " <> frame_ty
+    OpFrameNew(dest, frame_ty) -> "    " <> dest <> " = framenew " <> frame_ty
     OpFrameGet(dest, frame, index, ty) ->
       "    "
       <> dest

@@ -174,7 +174,7 @@ fn split_critical_edges(blocks: List(ir.Block)) -> List(ir.Block) {
           split_edge(block.label, "f", otherwise, preds)
         [
           ir.Block(block.label, block.ops, ir.Branch(cond, then, otherwise)),
-          ..list.append(then_blocks, else_blocks),
+          ..list.append(then_blocks, else_blocks)
         ]
       }
       _ -> [block]
@@ -199,7 +199,8 @@ fn split_edge(from: String, tag: String, target: String, preds) {
 fn add_extract_retains(ops, handles, moved) {
   list.flat_map(ops, fn(op) {
     case op {
-      ir.OpField(dest, _, _, _, ty) -> extract_pair(op, dest, ty, handles, moved)
+      ir.OpField(dest, _, _, _, ty) ->
+        extract_pair(op, dest, ty, handles, moved)
       ir.OpTupleGet(dest, _, _, ty) ->
         extract_pair(op, dest, ty, handles, moved)
       ir.OpEnvGet(dest, _, _, ty) -> extract_pair(op, dest, ty, handles, moved)

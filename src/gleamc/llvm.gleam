@@ -1781,7 +1781,11 @@ fn emit_await_box(
   }
   let b = emit_line(b, "  call void @gleamc_box_free_moved(i8* " <> box <> ")")
   case release {
-    True -> emit_line(b, "  call void @Gleamc_rc_release(i8* " <> fut_v <> ", i8* null)")
+    True ->
+      emit_line(
+        b,
+        "  call void @Gleamc_rc_release(i8* " <> fut_v <> ", i8* null)",
+      )
     False -> b
   }
 }
@@ -4195,9 +4199,15 @@ fn emit_op_builtin(
         )
       let #(slot, b) = fresh(b)
       let b =
-        emit_line(b, "  " <> slot <> " = bitcast i8* " <> box <> " to " <> ty <> "*")
+        emit_line(
+          b,
+          "  " <> slot <> " = bitcast i8* " <> box <> " to " <> ty <> "*",
+        )
       let b =
-        emit_line(b, "  store " <> ty <> " " <> value <> ", " <> ty <> "* " <> slot)
+        emit_line(
+          b,
+          "  store " <> ty <> " " <> value <> ", " <> ty <> "* " <> slot,
+        )
       let drop = case ownership.needs_drop(oty, ctx.ctors) {
         True -> "void (i8*)* @Gleamc_BoxDrop_" <> mangle_glue(oty) <> "_drop"
         False -> "void (i8*)* null"
@@ -4231,13 +4241,22 @@ fn emit_op_builtin(
       let ret_s = llvm_ty(ret_ty, ctx.recursive)
       let #(box, b) = fresh(b)
       let b =
-        emit_line(b, "  " <> box <> " = call i8* @Gleamc_dynamic_bits(i8* " <> d <> ")")
+        emit_line(
+          b,
+          "  " <> box <> " = call i8* @Gleamc_dynamic_bits(i8* " <> d <> ")",
+        )
       let #(slot, b) = fresh(b)
       let b =
-        emit_line(b, "  " <> slot <> " = bitcast i8* " <> box <> " to " <> ret_s <> "*")
+        emit_line(
+          b,
+          "  " <> slot <> " = bitcast i8* " <> box <> " to " <> ret_s <> "*",
+        )
       let #(r, b) = fresh(b)
       let b =
-        emit_line(b, "  " <> r <> " = load " <> ret_s <> ", " <> ret_s <> "* " <> slot)
+        emit_line(
+          b,
+          "  " <> r <> " = load " <> ret_s <> ", " <> ret_s <> "* " <> slot,
+        )
       let b = store_local(ctx, dest, ret_s, r, b)
       #(b, Nil)
     }
@@ -5396,10 +5415,12 @@ fn emit_buffer_slot_glue(
 /// emitted for each (handed to `Gleamc_dynamic_new`).
 fn collect_box_drop_types(custom_types, functions) -> List(Type) {
   let by_name =
-    dict.from_list(list.map(custom_types, fn(custom) {
-      let ast.CustomType(_, name, _, _, _) = custom
-      #(name, custom)
-    }))
+    dict.from_list(
+      list.map(custom_types, fn(custom) {
+        let ast.CustomType(_, name, _, _, _) = custom
+        #(name, custom)
+      }),
+    )
   let make_types =
     [#("Down", "ProcessDown"), #("ExitMessage", "ExitMessage")]
     |> list.filter_map(fn(pair) {
@@ -5433,7 +5454,8 @@ fn collect_box_drop_types(custom_types, functions) -> List(Type) {
               operand_type_or_empty(by_name, msg)
             ir.OpBuiltin(_, "dynamic_ffi.from", [arg, ..], _) ->
               operand_type_or_empty(by_name, arg)
-            ir.OpTaskStart(_, fun, _, _) | ir.OpTaskStartClosure(_, fun, _, _) ->
+            ir.OpTaskStart(_, fun, _, _)
+            | ir.OpTaskStartClosure(_, fun, _, _) ->
               case dict.get(fn_by_name, fun) {
                 Ok(ir.Function(_, _, ret, _, _)) -> [ret]
                 Error(_) -> []
@@ -5444,7 +5466,9 @@ fn collect_box_drop_types(custom_types, functions) -> List(Type) {
       })
     })
   let all = list.append(make_types, all)
-  list.fold(all, dict.new(), fn(acc, ty) { dict.insert(acc, mangle_glue(ty), ty) })
+  list.fold(all, dict.new(), fn(acc, ty) {
+    dict.insert(acc, mangle_glue(ty), ty)
+  })
   |> dict.to_list
   |> list.map(fn(pair) {
     let #(_, ty) = pair

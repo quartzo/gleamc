@@ -218,7 +218,9 @@ pub fn generalize_rigs(ty: Ty) -> Scheme {
 /// Quantifies over the free variables of `ty` that are not free in `env`.
 pub fn generalize(env_free: List(Int), ty: Ty) -> Scheme {
   let vars =
-    list.filter(util.dedupe(free_vars(ty)), fn(id) { !list.contains(env_free, id) })
+    list.filter(util.dedupe(free_vars(ty)), fn(id) {
+      !list.contains(env_free, id)
+    })
   Scheme(vars, ty)
 }
 

@@ -23,10 +23,7 @@ import gleamc/ir
 /// block, the retains to insert (keyed by op index), the extraction dests that
 /// move out of a consumed container, and the locals to drop.
 pub type Plan {
-  Plan(
-    handles: Dict(String, Type),
-    blocks: Dict(String, BlockPlan),
-  )
+  Plan(handles: Dict(String, Type), blocks: Dict(String, BlockPlan))
 }
 
 pub type BlockPlan {
@@ -350,12 +347,10 @@ fn needs_drop_seen(ty, fields_of, recursive, seen) -> Bool {
                         Error(_) -> False
                         Ok(fields) ->
                           list.any(fields, fn(inner) {
-                            needs_drop_seen(
-                              inner,
-                              fields_of,
-                              recursive,
-                              [name, ..seen],
-                            )
+                            needs_drop_seen(inner, fields_of, recursive, [
+                              name,
+                              ..seen
+                            ])
                           })
                       }
                   }
@@ -558,7 +553,8 @@ fn pure_extraction_subjects(
     })
   list.fold(dict.keys(handles), dict.new(), fn(acc, name) {
     case
-      dict.has_key(param_set, name) && !has_key(owned_params, name)
+      dict.has_key(param_set, name)
+      && !has_key(owned_params, name)
       || dict.has_key(impure, name)
       || dict.has_key(extraction_dests, name)
     {
@@ -623,12 +619,14 @@ fn full_destructure_moves(
             case dict.get(handles, subject) {
               Error(_) -> acc
               Ok(subject_ty) ->
-                case owned_field_indices(
-                  subject_ty,
-                  fields_of,
-                  recursive,
-                  variant_count,
-                ) {
+                case
+                  owned_field_indices(
+                    subject_ty,
+                    fields_of,
+                    recursive,
+                    variant_count,
+                  )
+                {
                   Error(_) -> acc
                   Ok(owned) ->
                     case indices_covered(owned, indices) {
@@ -664,7 +662,10 @@ fn add_owning_extract(owning, repeated, subject, dest, index, handles) {
         True -> dict.insert(repeated, subject, True)
         False -> repeated
       }
-      #(dict.insert(owning, subject, dict.insert(existing, index, True)), repeated)
+      #(
+        dict.insert(owning, subject, dict.insert(existing, index, True)),
+        repeated,
+      )
     }
     Error(_) -> #(owning, repeated)
   }
@@ -784,7 +785,9 @@ fn compute_liveness(
   live_loop(queue, succ_map, preds_map, use_def, dict.new())
 }
 
-fn build_preds(succ_map: Dict(String, List(String))) -> Dict(String, List(String)) {
+fn build_preds(
+  succ_map: Dict(String, List(String)),
+) -> Dict(String, List(String)) {
   dict.fold(succ_map, dict.new(), fn(acc, label, succs) {
     list.fold(succs, acc, fn(acc, succ) {
       let existing = case dict.get(acc, succ) {
@@ -830,7 +833,13 @@ fn live_loop(queue, succ_map, preds_map, use_def, live_in) {
             Ok(found) -> found
             Error(_) -> []
           }
-          live_loop(list.append(preds, rest), succ_map, preds_map, use_def, live_in)
+          live_loop(
+            list.append(preds, rest),
+            succ_map,
+            preds_map,
+            use_def,
+            live_in,
+          )
         }
       }
     }
@@ -1150,8 +1159,7 @@ fn transferred_set(term: ir.Terminator, handles, modes, ffi) {
       ))
     // The target state receives the closure's environment (the frame), not the
     // function value itself, so the function value is released by its owner.
-    ir.TailcallIndirect(_, args) ->
-      sets_from(handle_names(args, handles))
+    ir.TailcallIndirect(_, args) -> sets_from(handle_names(args, handles))
     // The delegated callee receives the owned arguments (the backend retains
     // them); the flow must not drop them here.
     ir.TailMachine(fun, args) ->

@@ -13,13 +13,13 @@ import gleam/string
 import gleamc/ast.{
   type Expr, type Module, type Pattern, type Type, Arm, CustomType, DConst,
   DCustomType, DExternal, DFunction, DImport, DTypeAlias, EBinop, EBitArray,
-  EBlock, EBool, External,
-  ECall, ECase, EClosure, ECtor, EEnvGet, EField, EFloat, EInt, ELabelled,
-  ELambda, ENil, EPanic, EString, ETuple, EUnop, EUpdate, EVar, Function, Let,
-  Module, PAs, PBitArray, PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString,
-  PTuple, PVar, PWildcard, Stmt, TApp, TBool, TFloat, TFun, TInt, TNamed, TNil,
-  TString, TTuple, TVar, Variant, buffer_elem_name, name_elem_name,
-  selector_elem_name, subject_elem_name, task_elem_name, type_of_mangled,
+  EBlock, EBool, ECall, ECase, EClosure, ECtor, EEnvGet, EField, EFloat, EInt,
+  ELabelled, ELambda, ENil, EPanic, EString, ETuple, EUnop, EUpdate, EVar,
+  External, Function, Let, Module, PAs, PBitArray, PBool, PCtor, PFloat, PInt,
+  PLabelled, PNil, PString, PTuple, PVar, PWildcard, Stmt, TApp, TBool, TFloat,
+  TFun, TInt, TNamed, TNil, TString, TTuple, TVar, Variant, buffer_elem_name,
+  name_elem_name, selector_elem_name, subject_elem_name, task_elem_name,
+  type_of_mangled,
 }
 import gleamc/tmono
 
@@ -135,11 +135,13 @@ fn check_exhaustive_expr(expr, ctors) -> Result(Nil, CheckError) {
       check_exhaustive_expr(right, ctors)
     }
     tmono.TUnop(_, operand, _) -> check_exhaustive_expr(operand, ctors)
-    tmono.TBlock(statements, _) -> check_exhaustive_statements(statements, ctors)
+    tmono.TBlock(statements, _) ->
+      check_exhaustive_statements(statements, ctors)
     tmono.TTuple(elements, _) -> check_exhaustive_exprs(elements, ctors)
     tmono.TLabelled(_, value, _) -> check_exhaustive_expr(value, ctors)
     tmono.TLambda(_, body, _) -> check_exhaustive_expr(body, ctors)
-    tmono.TClosure(_, captures, _, _, _) -> check_exhaustive_exprs(captures, ctors)
+    tmono.TClosure(_, captures, _, _, _) ->
+      check_exhaustive_exprs(captures, ctors)
     tmono.TUpdate(_, base, fields, _) -> {
       use _ <- result.try(check_exhaustive_expr(base, ctors))
       check_exhaustive_fields(fields, ctors)
@@ -262,7 +264,11 @@ fn add_variants(variants, ctorname, acc) {
   }
 }
 
-fn check_function(function, signatures, ctors) -> Result(tmono.TFunction, CheckError) {
+fn check_function(
+  function,
+  signatures,
+  ctors,
+) -> Result(tmono.TFunction, CheckError) {
   let Function(is_pub, name, params, ret, body, line) = function
   let env =
     list.map(params, fn(param) {
@@ -480,7 +486,13 @@ fn infer_expect(env, signatures, ctors, expected, expr) {
       case subject_elem_type(expected) {
         Ok(_) -> {
           use typed_args <- result.try(infer_all(env, signatures, ctors, args))
-          Ok(builtin_call("process_ffi", "new_subject", [], expected, typed_args))
+          Ok(builtin_call(
+            "process_ffi",
+            "new_subject",
+            [],
+            expected,
+            typed_args,
+          ))
         }
         Error(_) -> elaborate_t(env, signatures, ctors, expr)
       }
@@ -684,7 +696,11 @@ fn infer_block(env, signatures, ctors, statements) {
     }
     [Let(pattern, value), ..rest] -> {
       use value_t <- result.try(elaborate_t(env, signatures, ctors, value))
-      use bindings <- result.try(bind_pattern(pattern, tmono.type_of(value_t), ctors))
+      use bindings <- result.try(bind_pattern(
+        pattern,
+        tmono.type_of(value_t),
+        ctors,
+      ))
       infer_block_prepend(
         tmono.TLet(pattern, value_t),
         list.append(bindings, env),
@@ -695,13 +711,7 @@ fn infer_block(env, signatures, ctors, statements) {
     }
     [Stmt(expr), ..rest] -> {
       use expr_t <- result.try(elaborate_t(env, signatures, ctors, expr))
-      infer_block_prepend(
-        tmono.TStmt(expr_t),
-        env,
-        signatures,
-        ctors,
-        rest,
-      )
+      infer_block_prepend(tmono.TStmt(expr_t), env, signatures, ctors, rest)
     }
   }
 }
@@ -1288,7 +1298,13 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         [buf] ->
           case buffer_elem_type(tmono.type_of(buf)) {
             Ok(_) ->
-              Ok(builtin_call("buffer", "is_null", [tmono.type_of(buf)], TBool, typed_args))
+              Ok(builtin_call(
+                "buffer",
+                "is_null",
+                [tmono.type_of(buf)],
+                TBool,
+                typed_args,
+              ))
             Error(_) -> Error(CheckError("buffer.is_null expects a Buffer"))
           }
         _ -> Error(CheckError("buffer.is_null expects a Buffer"))
@@ -1327,7 +1343,15 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
     "time", "timer" ->
       check_builtin(env, signatures, ctors, args, [TInt], TNil, "time.timer")
     "time", "timer_count" ->
-      check_builtin(env, signatures, ctors, args, [TInt], TInt, "time.timer_count")
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TInt],
+        TInt,
+        "time.timer_count",
+      )
     // Async I/O surface (Vesper `std::uv`): the host returns a `Future<T>`
     // which the caller sees unwrapped (implicit await).
     "uv", "fs_open" ->
@@ -1341,15 +1365,7 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         "uv.fs_open",
       )
     "uv", "fs_fstat" ->
-      check_builtin(
-        env,
-        signatures,
-        ctors,
-        args,
-        [TInt],
-        TInt,
-        "uv.fs_fstat",
-      )
+      check_builtin(env, signatures, ctors, args, [TInt], TInt, "uv.fs_fstat")
     "uv", "fs_read" ->
       check_builtin(
         env,
@@ -1361,15 +1377,7 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         "uv.fs_read",
       )
     "uv", "fs_close" ->
-      check_builtin(
-        env,
-        signatures,
-        ctors,
-        args,
-        [TInt],
-        TInt,
-        "uv.fs_close",
-      )
+      check_builtin(env, signatures, ctors, args, [TInt], TInt, "uv.fs_close")
     "uv", "fs_write" ->
       check_builtin(
         env,
@@ -2152,7 +2160,8 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
                     "process_ffi.send: message type does not match the Subject",
                   ))
               }
-            Error(_) -> Error(CheckError("process_ffi.send expects (Subject(a), a)"))
+            Error(_) ->
+              Error(CheckError("process_ffi.send expects (Subject(a), a)"))
           }
         _ -> Error(CheckError("process_ffi.send expects (Subject(a), a)"))
       }
@@ -2245,7 +2254,10 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
                     TInt,
                     typed_args,
                   ))
-                _ -> Error(CheckError("process_ffi.wait_any expects an Int timeout"))
+                _ ->
+                  Error(CheckError(
+                    "process_ffi.wait_any expects an Int timeout",
+                  ))
               }
             Error(_) ->
               Error(CheckError("process_ffi.wait_any expects a Subject(a)"))
@@ -2276,8 +2288,7 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
             Error(_) ->
               Error(CheckError("task_ffi.await_timeout expects a Task(a)"))
           }
-        _ ->
-          Error(CheckError("task_ffi.await_timeout expects (Task(a), Int)"))
+        _ -> Error(CheckError("task_ffi.await_timeout expects (Task(a), Int)"))
       }
     }
     "task_ffi", "await" -> {
@@ -2324,7 +2335,9 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         [subject, delay, message] ->
           case subject_elem_type(tmono.type_of(subject)) {
             Ok(elem) ->
-              case tmono.type_of(delay) == TInt && elem == tmono.type_of(message) {
+              case
+                tmono.type_of(delay) == TInt && elem == tmono.type_of(message)
+              {
                 True ->
                   Ok(builtin_call(
                     "process_ffi",
@@ -2360,33 +2373,65 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         "process_ffi.cancel_timer",
       )
     "process_ffi", "selector_new" ->
-      check_builtin(env, signatures, ctors, args, [], TNamed("SelectorHandle"), "process_ffi.selector_new")
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [],
+        TNamed("SelectorHandle"),
+        "process_ffi.selector_new",
+      )
     "process_ffi", "selector_add" -> {
       use typed_args <- result.try(infer_all(env, signatures, ctors, args))
       case typed_args {
         [selector, subject] ->
-          case tmono.type_of(selector), subject_elem_type(tmono.type_of(subject)) {
+          case
+            tmono.type_of(selector),
+            subject_elem_type(tmono.type_of(subject))
+          {
             TNamed("SelectorHandle"), Ok(_) ->
               Ok(builtin_call(
-                "process_ffi", "selector_add", [TNamed("SelectorHandle"), tmono.type_of(subject)], TNamed("SelectorHandle"), typed_args,
+                "process_ffi",
+                "selector_add",
+                [TNamed("SelectorHandle"), tmono.type_of(subject)],
+                TNamed("SelectorHandle"),
+                typed_args,
               ))
-            _, _ -> Error(CheckError("process_ffi.selector_add expects (Int, Subject(a))"))
+            _, _ ->
+              Error(CheckError(
+                "process_ffi.selector_add expects (Int, Subject(a))",
+              ))
           }
-        _ -> Error(CheckError("process_ffi.selector_add expects (Int, Subject(a))"))
+        _ ->
+          Error(CheckError("process_ffi.selector_add expects (Int, Subject(a))"))
       }
     }
     "process_ffi", "selector_remove" -> {
       use typed_args <- result.try(infer_all(env, signatures, ctors, args))
       case typed_args {
         [selector, subject] ->
-          case tmono.type_of(selector), subject_elem_type(tmono.type_of(subject)) {
+          case
+            tmono.type_of(selector),
+            subject_elem_type(tmono.type_of(subject))
+          {
             TNamed("SelectorHandle"), Ok(_) ->
               Ok(builtin_call(
-                "process_ffi", "selector_remove", [TNamed("SelectorHandle"), tmono.type_of(subject)], TNamed("SelectorHandle"), typed_args,
+                "process_ffi",
+                "selector_remove",
+                [TNamed("SelectorHandle"), tmono.type_of(subject)],
+                TNamed("SelectorHandle"),
+                typed_args,
               ))
-            _, _ -> Error(CheckError("process_ffi.selector_remove expects (Int, Subject(a))"))
+            _, _ ->
+              Error(CheckError(
+                "process_ffi.selector_remove expects (Int, Subject(a))",
+              ))
           }
-        _ -> Error(CheckError("process_ffi.selector_remove expects (Int, Subject(a))"))
+        _ ->
+          Error(CheckError(
+            "process_ffi.selector_remove expects (Int, Subject(a))",
+          ))
       }
     }
     "process_ffi", "selector_wait" -> {
@@ -2395,8 +2440,15 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         [selector, timeout] ->
           case tmono.type_of(selector), tmono.type_of(timeout) {
             TNamed("SelectorHandle"), TInt ->
-              Ok(builtin_call("process_ffi", "selector_wait", [TNamed("SelectorHandle"), TInt], TInt, typed_args))
-            _, _ -> Error(CheckError("process_ffi.selector_wait expects (Int, Int)"))
+              Ok(builtin_call(
+                "process_ffi",
+                "selector_wait",
+                [TNamed("SelectorHandle"), TInt],
+                TInt,
+                typed_args,
+              ))
+            _, _ ->
+              Error(CheckError("process_ffi.selector_wait expects (Int, Int)"))
           }
         _ -> Error(CheckError("process_ffi.selector_wait expects (Int, Int)"))
       }
@@ -2410,12 +2462,19 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
               case elem == tmono.type_of(message) {
                 True ->
                   Ok(builtin_call(
-                    "process_ffi", "unreceive", [tmono.type_of(subject), elem], TNil, typed_args,
+                    "process_ffi",
+                    "unreceive",
+                    [tmono.type_of(subject), elem],
+                    TNil,
+                    typed_args,
                   ))
                 False ->
-                  Error(CheckError("process_ffi.unreceive: message type does not match the Subject"))
+                  Error(CheckError(
+                    "process_ffi.unreceive: message type does not match the Subject",
+                  ))
               }
-            Error(_) -> Error(CheckError("process_ffi.unreceive expects (Subject(a), a)"))
+            Error(_) ->
+              Error(CheckError("process_ffi.unreceive expects (Subject(a), a)"))
           }
         _ -> Error(CheckError("process_ffi.unreceive expects (Subject(a), a)"))
       }
@@ -2426,8 +2485,15 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         [subject] ->
           case subject_elem_type(tmono.type_of(subject)) {
             Ok(_) ->
-              Ok(builtin_call("process_ffi", "has_message", [tmono.type_of(subject)], TBool, typed_args))
-            Error(_) -> Error(CheckError("process_ffi.has_message expects a Subject(a)"))
+              Ok(builtin_call(
+                "process_ffi",
+                "has_message",
+                [tmono.type_of(subject)],
+                TBool,
+                typed_args,
+              ))
+            Error(_) ->
+              Error(CheckError("process_ffi.has_message expects a Subject(a)"))
           }
         _ -> Error(CheckError("process_ffi.has_message expects a Subject(a)"))
       }
@@ -2438,8 +2504,15 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         [subject] ->
           case subject_elem_type(tmono.type_of(subject)) {
             Ok(_) ->
-              Ok(builtin_call("process_ffi", "mailbox_len", [tmono.type_of(subject)], TInt, typed_args))
-            Error(_) -> Error(CheckError("process_ffi.mailbox_len expects a Subject(a)"))
+              Ok(builtin_call(
+                "process_ffi",
+                "mailbox_len",
+                [tmono.type_of(subject)],
+                TInt,
+                typed_args,
+              ))
+            Error(_) ->
+              Error(CheckError("process_ffi.mailbox_len expects a Subject(a)"))
           }
         _ -> Error(CheckError("process_ffi.mailbox_len expects a Subject(a)"))
       }
@@ -2450,10 +2523,20 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         [subject] ->
           case subject_elem_type(tmono.type_of(subject)) {
             Ok(_) ->
-              Ok(builtin_call("process_ffi", "subject_handle", [tmono.type_of(subject)], TInt, typed_args))
-            Error(_) -> Error(CheckError("process_ffi.subject_handle expects a Subject(a)"))
+              Ok(builtin_call(
+                "process_ffi",
+                "subject_handle",
+                [tmono.type_of(subject)],
+                TInt,
+                typed_args,
+              ))
+            Error(_) ->
+              Error(CheckError(
+                "process_ffi.subject_handle expects a Subject(a)",
+              ))
           }
-        _ -> Error(CheckError("process_ffi.subject_handle expects a Subject(a)"))
+        _ ->
+          Error(CheckError("process_ffi.subject_handle expects a Subject(a)"))
       }
     }
     "process_ffi", "subject_owner" -> {
@@ -2462,8 +2545,15 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         [subject] ->
           case subject_elem_type(tmono.type_of(subject)) {
             Ok(_) ->
-              Ok(builtin_call("process_ffi", "subject_owner", [tmono.type_of(subject)], TInt, typed_args))
-            Error(_) -> Error(CheckError("process_ffi.subject_owner expects a Subject(a)"))
+              Ok(builtin_call(
+                "process_ffi",
+                "subject_owner",
+                [tmono.type_of(subject)],
+                TInt,
+                typed_args,
+              ))
+            Error(_) ->
+              Error(CheckError("process_ffi.subject_owner expects a Subject(a)"))
           }
         _ -> Error(CheckError("process_ffi.subject_owner expects a Subject(a)"))
       }
@@ -2474,8 +2564,15 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         [subject] ->
           case subject_elem_type(tmono.type_of(subject)) {
             Ok(_) ->
-              Ok(builtin_call("process_ffi", "subject_name", [tmono.type_of(subject)], TInt, typed_args))
-            Error(_) -> Error(CheckError("process_ffi.subject_name expects a Subject(a)"))
+              Ok(builtin_call(
+                "process_ffi",
+                "subject_name",
+                [tmono.type_of(subject)],
+                TInt,
+                typed_args,
+              ))
+            Error(_) ->
+              Error(CheckError("process_ffi.subject_name expects a Subject(a)"))
           }
         _ -> Error(CheckError("process_ffi.subject_name expects a Subject(a)"))
       }
@@ -2703,7 +2800,8 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
                 TBool,
                 typed_args,
               ))
-            _, _ -> Error(CheckError("process_ffi.register expects (Pid, Name(a))"))
+            _, _ ->
+              Error(CheckError("process_ffi.register expects (Pid, Name(a))"))
           }
         _ -> Error(CheckError("process_ffi.register expects (Pid, Name(a))"))
       }

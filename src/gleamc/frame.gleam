@@ -229,12 +229,11 @@ fn slot_map(locals) -> Dict(String, Int) {
       let ir.Local(name, _, _) = local
       case dict.has_key(seen, name) {
         True -> #(seen, next, map)
-        False ->
-          #(
-            dict.insert(seen, name, True),
-            next + 1,
-            dict.insert(map, name, next),
-          )
+        False -> #(
+          dict.insert(seen, name, True),
+          next + 1,
+          dict.insert(map, name, next),
+        )
       }
     })
   map
@@ -256,12 +255,14 @@ fn code_to_name(code: String) -> String {
 fn demote_module(module: ir.Module) -> ir.Module {
   let ir.Module(functions) = module
   let machines = machine_functions(module)
-  ir.Module(list.map(functions, fn(function) {
-    case list.contains(machines, function.name) {
-      True -> demote_function(function)
-      False -> function
-    }
-  }))
+  ir.Module(
+    list.map(functions, fn(function) {
+      case list.contains(machines, function.name) {
+        True -> demote_function(function)
+        False -> function
+      }
+    }),
+  )
 }
 
 fn demote_function(function: ir.Function) -> ir.Function {
@@ -286,23 +287,23 @@ fn demote_function(function: ir.Function) -> ir.Function {
   let param_stores =
     list.filter_map(params, fn(param) {
       case dict.get(field_slots, param) {
-        Ok(slot) ->
-          Ok(ir.OpFrameSet(ir.Var(frame_local), slot, ir.Var(param)))
+        Ok(slot) -> Ok(ir.OpFrameSet(ir.Var(frame_local), slot, ir.Var(param)))
         Error(_) -> Error(Nil)
       }
     })
   let #(blocks, _) =
     list.fold(blocks, #([], 0), fn(state, block) {
       let #(acc, counter) = state
-      let #(block, counter) =
-        demote_block(block, field_slots, by_name, counter)
+      let #(block, counter) = demote_block(block, field_slots, by_name, counter)
       #(list.append(acc, [block]), counter)
     })
   let prologue = [ir.OpFrameNew(frame_local, frame_ty), ..param_stores]
   let blocks = case blocks {
     [] -> []
-    [ir.Block(label, ops, term), ..rest] ->
-      [ir.Block(label, list.append(prologue, ops), term), ..rest]
+    [ir.Block(label, ops, term), ..rest] -> [
+      ir.Block(label, list.append(prologue, ops), term),
+      ..rest
+    ]
   }
   // The `OpFrameGet` destinations are new locals.
   let read_locals =
@@ -373,8 +374,11 @@ fn block_reads(reads, field_slots, by_name, counter) {
   list.fold(reads, #([], dict.new(), counter), fn(state, operand) {
     let #(gets, repl, counter) = state
     case read_field(operand, field_slots, by_name, counter) {
-      Ok(#(name, temp, get, next)) ->
-        #(list.append(gets, [get]), dict.insert(repl, name, temp), next)
+      Ok(#(name, temp, get, next)) -> #(
+        list.append(gets, [get]),
+        dict.insert(repl, name, temp),
+        next,
+      )
       Error(_) -> state
     }
   })
@@ -505,10 +509,11 @@ fn live_set() -> Dict(String, Bool) {
 }
 
 fn live_out_map(blocks: List(ir.Block)) -> Dict(String, Dict(String, Bool)) {
-  let initial = list.fold(blocks, dict.new(), fn(acc, block) {
-    let ir.Block(label, _, _) = block
-    dict.insert(acc, label, live_set())
-  })
+  let initial =
+    list.fold(blocks, dict.new(), fn(acc, block) {
+      let ir.Block(label, _, _) = block
+      dict.insert(acc, label, live_set())
+    })
   fixpoint(blocks, initial)
 }
 
@@ -532,10 +537,7 @@ fn fixpoint(
         Ok(found) -> found
         Error(_) -> dict.new()
       }
-      #(
-        dict.insert(result, label, out),
-        changed || !dict_equal(previous, out),
-      )
+      #(dict.insert(result, label, out), changed || !dict_equal(previous, out))
     })
   case changed {
     True -> fixpoint(blocks, next)
@@ -551,7 +553,10 @@ fn successors(term: ir.Terminator) -> List(String) {
   }
 }
 
-fn add_read(live: Dict(String, Bool), operand: ir.Operand) -> Dict(String, Bool) {
+fn add_read(
+  live: Dict(String, Bool),
+  operand: ir.Operand,
+) -> Dict(String, Bool) {
   case operand {
     ir.Var(name) -> dict.insert(live, name, True)
     ir.Lit(_) -> live

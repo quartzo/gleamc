@@ -12,20 +12,20 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import gleamc/util
 import gleamc/ast.{
   type CustomType, type Expr, type External, type Function, type Module,
   type Pattern, type Type, type Variant, Arm, CustomType, DCustomType, DExternal,
   DFunction, EBinop, EBitArray, EBlock, EBool, ECall, ECase, EClosure, ECtor,
   EEnvGet, EField, EFloat, EInt, ELabelled, ELambda, ENil, EPanic, EString,
   ETuple, EUnop, EUpdate, EVar, External, Function, Let, Module, PAs, PBitArray,
-  PBool, PCtor, PFloat,
-  PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard, Stmt, Variant,
+  PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString, PTuple, PVar, PWildcard,
+  Stmt, Variant,
 }
 import gleamc/texpr
 import gleamc/types.{
   type Scheme, type Subst, type Ty, Con, Fun, Rig, Scheme, Tup, Var,
 }
+import gleamc/util
 
 pub type InferError {
   InferError(message: String)
@@ -784,20 +784,11 @@ fn builtins() -> Dict(String, Scheme) {
   |> dict.insert("io.print", Scheme(none, Fun([s], n)))
   |> dict.insert("time.timer", Scheme(none, Fun([i], n)))
   |> dict.insert("time.timer_count", Scheme(none, Fun([i], i)))
-  |> dict.insert(
-    "uv.fs_open",
-    Scheme(none, Fun([s, i, i], i)),
-  )
+  |> dict.insert("uv.fs_open", Scheme(none, Fun([s, i, i], i)))
   |> dict.insert("uv.fs_fstat", Scheme(none, Fun([i], i)))
-  |> dict.insert(
-    "uv.fs_read",
-    Scheme(none, Fun([i, i], Con("BitArray", []))),
-  )
+  |> dict.insert("uv.fs_read", Scheme(none, Fun([i, i], Con("BitArray", []))))
   |> dict.insert("uv.fs_close", Scheme(none, Fun([i], i)))
-  |> dict.insert(
-    "uv.fs_write",
-    Scheme(none, Fun([i, Con("BitArray", [])], i)),
-  )
+  |> dict.insert("uv.fs_write", Scheme(none, Fun([i, Con("BitArray", [])], i)))
   |> dict.insert("uv.fs_unlink", Scheme(none, Fun([s], i)))
   |> dict.insert("uv.fs_mkdir", Scheme(none, Fun([s, i], i)))
   |> dict.insert("uv.fs_rmdir", Scheme(none, Fun([s], i)))
@@ -805,18 +796,9 @@ fn builtins() -> Dict(String, Scheme) {
   |> dict.insert("uv.fs_symlink", Scheme(none, Fun([s, s], i)))
   |> dict.insert("uv.fs_link", Scheme(none, Fun([s, s], i)))
   |> dict.insert("uv.fs_chmod", Scheme(none, Fun([s, i], i)))
-  |> dict.insert(
-    "uv.fs_stat",
-    Scheme(none, Fun([s, i], Con("BitArray", []))),
-  )
-  |> dict.insert(
-    "uv.fs_realpath",
-    Scheme(none, Fun([s], Con("BitArray", []))),
-  )
-  |> dict.insert(
-    "uv.fs_readdir",
-    Scheme(none, Fun([s], Con("BitArray", []))),
-  )
+  |> dict.insert("uv.fs_stat", Scheme(none, Fun([s, i], Con("BitArray", []))))
+  |> dict.insert("uv.fs_realpath", Scheme(none, Fun([s], Con("BitArray", []))))
+  |> dict.insert("uv.fs_readdir", Scheme(none, Fun([s], Con("BitArray", []))))
   |> dict.insert("uv.fs_cwd", Scheme(none, Fun([], Con("BitArray", []))))
   |> dict.insert("int.to_string", Scheme(none, Fun([i], s)))
   |> dict.insert("float.to_string", Scheme(none, Fun([f], s)))
@@ -857,9 +839,12 @@ fn builtins() -> Dict(String, Scheme) {
     "buffer.set",
     Scheme(
       [9008],
-      Fun([Con("Buffer", [Var(9008)]), i, Var(9008)], Con("Buffer", [
-        Var(9008),
-      ])),
+      Fun(
+        [Con("Buffer", [Var(9008)]), i, Var(9008)],
+        Con("Buffer", [
+          Var(9008),
+        ]),
+      ),
     ),
   )
   |> dict.insert(
@@ -932,18 +917,9 @@ fn builtins() -> Dict(String, Scheme) {
     Scheme(none, Fun([Con("BitArray", [])], b)),
   )
   |> dict.insert("host.run", Scheme(none, Fun([s], Con("BitArray", []))))
-  |> dict.insert(
-    "host.char_code_at",
-    Scheme(none, Fun([s, i], i)),
-  )
-  |> dict.insert(
-    "host.char_byte_len",
-    Scheme(none, Fun([s, i], i)),
-  )
-  |> dict.insert(
-    "host.byte_slice",
-    Scheme(none, Fun([s, i, i], s)),
-  )
+  |> dict.insert("host.char_code_at", Scheme(none, Fun([s, i], i)))
+  |> dict.insert("host.char_byte_len", Scheme(none, Fun([s, i], i)))
+  |> dict.insert("host.byte_slice", Scheme(none, Fun([s, i, i], s)))
   |> dict.insert("host.argv", Scheme(none, Fun([], Con("BitArray", []))))
   |> dict.insert("host.get_env", Scheme(none, Fun([s], s)))
   |> dict.insert("host.which", Scheme(none, Fun([s], s)))
@@ -962,10 +938,7 @@ fn builtins() -> Dict(String, Scheme) {
   )
   |> dict.insert(
     "process_ffi.send",
-    Scheme(
-      [9101],
-      Fun([Con("Subject", [Var(9101)]), Var(9101)], n),
-    ),
+    Scheme([9101], Fun([Con("Subject", [Var(9101)]), Var(9101)], n)),
   )
   |> dict.insert(
     "process_ffi.receive",
@@ -995,14 +968,8 @@ fn builtins() -> Dict(String, Scheme) {
     "task_ffi.await_timeout",
     Scheme([9111], Fun([Con("Task", [Var(9111)]), i], i)),
   )
-  |> dict.insert(
-    "process_ffi.self",
-    Scheme(none, Fun([], Con("Pid", []))),
-  )
-  |> dict.insert(
-    "process_ffi.is_alive",
-    Scheme(none, Fun([Con("Pid", [])], b)),
-  )
+  |> dict.insert("process_ffi.self", Scheme(none, Fun([], Con("Pid", []))))
+  |> dict.insert("process_ffi.is_alive", Scheme(none, Fun([Con("Pid", [])], b)))
   |> dict.insert(
     "task_ffi.pid",
     Scheme([9120], Fun([Con("Task", [Var(9120)])], Con("Pid", []))),
@@ -1028,10 +995,7 @@ fn builtins() -> Dict(String, Scheme) {
   )
   |> dict.insert(
     "process_ffi.register",
-    Scheme(
-      [9161],
-      Fun([Con("Pid", []), Con("Name", [Var(9161)])], b),
-    ),
+    Scheme([9161], Fun([Con("Pid", []), Con("Name", [Var(9161)])], b)),
   )
   |> dict.insert(
     "process_ffi.unregister",
@@ -1043,19 +1007,13 @@ fn builtins() -> Dict(String, Scheme) {
   )
   |> dict.insert(
     "process_ffi.named_subject",
-    Scheme(
-      [9164],
-      Fun([Con("Name", [Var(9164)])], Con("Subject", [Var(9164)])),
-    ),
+    Scheme([9164], Fun([Con("Name", [Var(9164)])], Con("Subject", [Var(9164)]))),
   )
   |> dict.insert(
     "process_ffi.pid_of_int",
     Scheme(none, Fun([i], Con("Pid", []))),
   )
-  |> dict.insert(
-    "process_ffi.kill",
-    Scheme(none, Fun([Con("Pid", [])], n)),
-  )
+  |> dict.insert("process_ffi.kill", Scheme(none, Fun([Con("Pid", [])], n)))
   |> dict.insert(
     "process_ffi.monitor",
     Scheme(none, Fun([Con("Pid", [])], Con("Monitor", []))),
@@ -1077,14 +1035,8 @@ fn builtins() -> Dict(String, Scheme) {
     Scheme(none, Fun([], Con("Subject", [Con("process_ExitMessage", [])]))),
   )
   |> dict.insert("process_ffi.trap_exits", Scheme(none, Fun([b], n)))
-  |> dict.insert(
-    "process_ffi.link",
-    Scheme(none, Fun([Con("Pid", [])], b)),
-  )
-  |> dict.insert(
-    "process_ffi.unlink",
-    Scheme(none, Fun([Con("Pid", [])], n)),
-  )
+  |> dict.insert("process_ffi.link", Scheme(none, Fun([Con("Pid", [])], b)))
+  |> dict.insert("process_ffi.unlink", Scheme(none, Fun([Con("Pid", [])], n)))
   |> dict.insert("process_ffi.selector_new", Scheme(none, Fun([], sh)))
   |> dict.insert(
     "process_ffi.selector_add",
@@ -1129,15 +1081,15 @@ fn builtins() -> Dict(String, Scheme) {
   )
   |> dict.insert("process_ffi.flush_messages", Scheme(none, Fun([], n)))
   |> dict.insert("process_ffi.selector_merge", Scheme(none, Fun([sh, sh], sh)))
-  |> dict.insert("process_ffi.selector_watch_owned", Scheme(none, Fun([sh], sh)))
+  |> dict.insert(
+    "process_ffi.selector_watch_owned",
+    Scheme(none, Fun([sh], sh)),
+  )
   |> dict.insert(
     "process_ffi.selector_other_raw",
     Scheme(none, Fun([sh], Con("Dynamic", []))),
   )
-  |> dict.insert(
-    "process_ffi.traps",
-    Scheme(none, Fun([Con("Pid", [])], b)),
-  )
+  |> dict.insert("process_ffi.traps", Scheme(none, Fun([Con("Pid", [])], b)))
   |> dict.insert(
     "process_ffi.send_exit",
     Scheme(none, Fun([Con("Pid", [])], n)),
@@ -1461,9 +1413,12 @@ fn infer_arg_expect(env, st, expected, arg) {
         False -> infer_t(env, st, arg)
       }
     ELabelled(label, value), _ -> {
-      use #(value_t, st) <- result_try(
-        infer_arg_expect(env, st, expected, value),
-      )
+      use #(value_t, st) <- result_try(infer_arg_expect(
+        env,
+        st,
+        expected,
+        value,
+      ))
       Ok(#(texpr.TLabelled(label, value_t, texpr.type_of(value_t)), st))
     }
     _, _ -> infer_t(env, st, arg)
@@ -1479,10 +1434,7 @@ fn infer_lambda_expect(env, st, names, body, param_tys, ret) {
   let body_env = Env(..env, locals: merge_dicts(env.locals, lambda_locals))
   use #(body_t, st) <- result_try(infer_t(body_env, st, body))
   let _ = ret
-  Ok(#(
-    texpr.TLambda(names, body_t, Fun(param_tys, texpr.type_of(body_t))),
-    st,
-  ))
+  Ok(#(texpr.TLambda(names, body_t, Fun(param_tys, texpr.type_of(body_t))), st))
 }
 
 fn infer_unop(env: Env, st: St, op, operand) {
@@ -1597,9 +1549,14 @@ fn bind_let(locals, pattern, bound, scheme) {
 
 fn infer_case(env: Env, st: St, subject, arms) {
   use #(subject_t, st) <- result_try(infer_t(env, st, subject))
-  use #(arms_t, result_ty, st) <- result_try(
-    infer_arms(env, st, texpr.type_of(subject_t), arms, [], None),
-  )
+  use #(arms_t, result_ty, st) <- result_try(infer_arms(
+    env,
+    st,
+    texpr.type_of(subject_t),
+    arms,
+    [],
+    None,
+  ))
   Ok(#(texpr.TCase(subject_t, arms_t, result_ty), st))
 }
 
@@ -1705,10 +1662,12 @@ fn infer_update(env: Env, st: St, name, base, fields) {
       let typed_fields =
         list.filter_map(fields, fn(field) {
           let #(label, _) = field
-          case list.find(indexed, fn(pair) {
-            let #(field_name, _) = pair
-            field_name == label
-          }) {
+          case
+            list.find(indexed, fn(pair) {
+              let #(field_name, _) = pair
+              field_name == label
+            })
+          {
             Ok(pair) -> {
               let #(_, index) = pair
               case list.drop(typed_args, index) {
@@ -1740,23 +1699,20 @@ fn infer_update_args(
     [], _ -> Ok(#(list.reverse(acc), st))
     [field_name, ..rest_names], [param_ty, ..rest_params] -> {
       let param_ty = types.zonk(param_ty, st.subst)
-      use #(arg_t, st) <- result_try(case find_update_field(fields, field_name) {
-        Ok(value) -> {
-          use #(value_t, st) <- result_try(infer_t(env, st, value))
-          use st <- result_try(unify_st(param_ty, texpr.type_of(value_t), st))
-          Ok(#(value_t, st))
-        }
-        Error(_) -> Ok(#(texpr.TField(base_t, field_name, param_ty), st))
-      })
-      infer_update_args(
-        env,
-        st,
-        base_t,
-        rest_names,
-        rest_params,
-        fields,
-        [arg_t, ..acc],
+      use #(arg_t, st) <- result_try(
+        case find_update_field(fields, field_name) {
+          Ok(value) -> {
+            use #(value_t, st) <- result_try(infer_t(env, st, value))
+            use st <- result_try(unify_st(param_ty, texpr.type_of(value_t), st))
+            Ok(#(value_t, st))
+          }
+          Error(_) -> Ok(#(texpr.TField(base_t, field_name, param_ty), st))
+        },
       )
+      infer_update_args(env, st, base_t, rest_names, rest_params, fields, [
+        arg_t,
+        ..acc
+      ])
     }
     _, _ -> Error(InferError("record update has the wrong number of fields"))
   }

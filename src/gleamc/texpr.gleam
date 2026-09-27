@@ -94,8 +94,7 @@ pub fn to_expr(expr: TExpr) -> ast.Expr {
     TField(obj, name, _) -> ast.EField(to_expr(obj), name)
     TCtor(name, args, _) -> ast.ECtor(name, list.map(args, to_expr))
     TCall(fun, args, _) -> ast.ECall(to_expr(fun), list.map(args, to_expr))
-    TBinop(op, left, right, _) ->
-      ast.EBinop(op, to_expr(left), to_expr(right))
+    TBinop(op, left, right, _) -> ast.EBinop(op, to_expr(left), to_expr(right))
     TUnop(op, operand, _) -> ast.EUnop(op, to_expr(operand))
     TBlock(statements, _) -> ast.EBlock(list.map(statements, to_stmt))
     TCase(subject, arms, _) ->
@@ -114,10 +113,14 @@ pub fn to_expr(expr: TExpr) -> ast.Expr {
       ast.EEnvGet(env_ty, index, types_to_surface(ty))
     TPanic(message, ty) -> ast.EPanic(message, types_to_surface(ty))
     TUpdate(name, base, fields, _) ->
-      ast.EUpdate(name, to_expr(base), list.map(fields, fn(field) {
-        let #(label, value) = field
-        #(label, to_expr(value))
-      }))
+      ast.EUpdate(
+        name,
+        to_expr(base),
+        list.map(fields, fn(field) {
+          let #(label, value) = field
+          #(label, to_expr(value))
+        }),
+      )
     TBitArray(elements, _) -> ast.EBitArray(list.map(elements, to_expr))
   }
 }

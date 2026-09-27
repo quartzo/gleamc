@@ -20,9 +20,9 @@ import gleamc/ir
 pub fn normalize(module: ir.Module) -> ir.Module {
   let ir.Module(functions) = module
   let asyncs = async_functions(functions)
-  ir.Module(list.map(functions, fn(function) {
-    normalize_function(function, asyncs)
-  }))
+  ir.Module(
+    list.map(functions, fn(function) { normalize_function(function, asyncs) }),
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -138,7 +138,8 @@ fn normalize_ops(ops, term, ret, asyncs, locals, counter, label) {
                 normalize_ops(rest, term, ret, asyncs, locals, counter, resume)
               #([this, ..more], locals, counter)
             }
-            False -> prepend_op(op, rest, term, ret, asyncs, locals, counter, label)
+            False ->
+              prepend_op(op, rest, term, ret, asyncs, locals, counter, label)
           }
         _ -> prepend_op(op, rest, term, ret, asyncs, locals, counter, label)
       }
@@ -149,8 +150,11 @@ fn prepend_op(op, rest, term, ret, asyncs, locals, counter, label) {
   let #(blocks, locals, counter) =
     normalize_ops(rest, term, ret, asyncs, locals, counter, label)
   case blocks {
-    [ir.Block(first, first_ops, first_term), ..more] ->
-      #([ir.Block(first, [op, ..first_ops], first_term), ..more], locals, counter)
+    [ir.Block(first, first_ops, first_term), ..more] -> #(
+      [ir.Block(first, [op, ..first_ops], first_term), ..more],
+      locals,
+      counter,
+    )
     [] -> #([ir.Block(label, [op], term)], locals, counter)
   }
 }
@@ -163,8 +167,11 @@ fn finish_block(term, _ret, asyncs, locals, counter, label) {
       case dict.has_key(asyncs, fun) {
         // A tail call delegates the current machine to the callee: no new task,
         // constant task/stack count. See the `OpMachineTail` lowering.
-        True ->
-          #([ir.Block(label, [], ir.TailMachine(fun, args))], locals, counter)
+        True -> #(
+          [ir.Block(label, [], ir.TailMachine(fun, args))],
+          locals,
+          counter,
+        )
         False -> #([ir.Block(label, [], term)], locals, counter)
       }
     _ -> #([ir.Block(label, [], term)], locals, counter)

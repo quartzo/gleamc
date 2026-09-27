@@ -16,9 +16,10 @@ pub fn parse_external_test() {
       "Gleamc_hash_string",
       _,
     )),
-  ])) = parser.parse(
-    "@external(native, \"Gleamc_hash_string\")\npub fn hash(s: String) -> Int",
-  )
+  ])) =
+    parser.parse(
+      "@external(native, \"Gleamc_hash_string\")\npub fn hash(s: String) -> Int",
+    )
 }
 
 pub fn parse_type_variable_test() {

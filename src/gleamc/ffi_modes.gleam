@@ -99,7 +99,10 @@ pub fn table() -> Dict(String, FfiSig) {
   |> dict.insert("process_ffi.named_subject", FfiSig([Borrow], OwnedResult))
   |> dict.insert("process_ffi.pid_of_int", FfiSig([Borrow], OwnedResult))
   |> dict.insert("process_ffi.demonitor", FfiSig([Borrow], OwnedResult))
-  |> dict.insert("process_ffi.monitor_eq", FfiSig([Borrow, Borrow], OwnedResult))
+  |> dict.insert(
+    "process_ffi.monitor_eq",
+    FfiSig([Borrow, Borrow], OwnedResult),
+  )
   |> dict.insert("process_ffi.self_down_inbox", FfiSig([], OwnedResult))
   |> dict.insert("process_ffi.self_exit_inbox", FfiSig([], OwnedResult))
   |> dict.insert("process_ffi.trap_exits", FfiSig([Borrow], OwnedResult))
@@ -248,5 +251,8 @@ pub fn table() -> Dict(String, FfiSig) {
   |> dict.insert("host.int64_at", FfiSig([Borrow, Borrow], OwnedResult))
   |> dict.insert("host.char_code_at", FfiSig([Borrow, Borrow], OwnedResult))
   |> dict.insert("host.char_byte_len", FfiSig([Borrow, Borrow], OwnedResult))
-  |> dict.insert("host.byte_slice", FfiSig([Borrow, Borrow, Borrow], OwnedResult))
+  |> dict.insert(
+    "host.byte_slice",
+    FfiSig([Borrow, Borrow, Borrow], OwnedResult),
+  )
 }

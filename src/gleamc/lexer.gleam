@@ -97,7 +97,14 @@ fn newline(src, off, line, col, depth, acc) -> Result(List(Token), LexError) {
   }
 }
 
-fn skip_comment(src, off, line, col, depth, acc) -> Result(List(Token), LexError) {
+fn skip_comment(
+  src,
+  off,
+  line,
+  col,
+  depth,
+  acc,
+) -> Result(List(Token), LexError) {
   case is_eof(src, off) {
     True -> Ok(acc)
     False -> {
@@ -138,7 +145,15 @@ fn string_lit(
   }
 }
 
-fn escape(src, off, line, col, depth, acc, buf) -> Result(List(Token), LexError) {
+fn escape(
+  src,
+  off,
+  line,
+  col,
+  depth,
+  acc,
+  buf,
+) -> Result(List(Token), LexError) {
   case is_eof(src, off) {
     True -> Error(LexError("incomplete escape", line, col))
     False -> {
@@ -249,7 +264,14 @@ fn symbol(src, off, line, col, depth, acc) -> Result(List(Token), LexError) {
   }
 }
 
-fn symbol_two(src, off, line, col, depth, acc) -> Result(List(Token), LexError) {
+fn symbol_two(
+  src,
+  off,
+  line,
+  col,
+  depth,
+  acc,
+) -> Result(List(Token), LexError) {
   let two = host.byte_slice(src, off, 2)
   case two {
     "->"

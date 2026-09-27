@@ -52,14 +52,16 @@ fn promote_function(
   let preds = predecessors(blocks)
   let params_set = list_to_dict(params)
   let result_dests = machine_result_dests(blocks)
-  let forbidden =
-    list_to_dict([frame.frame_local, "__env"])
+  let forbidden = list_to_dict([frame.frame_local, "__env"])
   // `case` result temporaries: every definition is an `OpCopy`, every def block
   // jumps to the same join, that join's only predecessors are the def blocks,
   // and the join dominates every use.
   let raw_phi_plans =
     dict.fold(defs, dict.new(), fn(acc, local_name, local_defs) {
-      case dict.has_key(forbidden, local_name) || dict.has_key(result_dests, local_name) {
+      case
+        dict.has_key(forbidden, local_name)
+        || dict.has_key(result_dests, local_name)
+      {
         True -> acc
         False ->
           case phi_candidate(local_defs, terms, preds) {
@@ -82,16 +84,18 @@ fn promote_function(
       case dict.has_key(raw_phi_plans, local_name) {
         True -> acc
         False ->
-          case classify(
-            local_name,
-            defs,
-            uses,
-            dom,
-            params_set,
-            result_dests,
-            forbidden,
-            recursive,
-          ) {
+          case
+            classify(
+              local_name,
+              defs,
+              uses,
+              dom,
+              params_set,
+              result_dests,
+              forbidden,
+              recursive,
+            )
+          {
             ir.Reg -> dict.insert(acc, local_name, True)
             ir.Slot -> acc
           }
@@ -318,10 +322,13 @@ fn joins_of(copies, terms) {
         [first, ..rest] ->
           case list.all(rest, fn(join) { join == first }) {
             True ->
-              Ok(#(first, list.map(copies, fn(entry) {
-                let #(block, _) = entry
-                block
-              })))
+              Ok(#(
+                first,
+                list.map(copies, fn(entry) {
+                  let #(block, _) = entry
+                  block
+                }),
+              ))
             False -> Error(Nil)
           }
       }
@@ -401,10 +408,12 @@ fn prune_unreachable(blocks: List(ir.Block)) -> List(ir.Block) {
     [] -> []
     [ir.Block(entry, _, _), ..] -> {
       let by_label =
-        dict.from_list(list.map(blocks, fn(block) {
-          let ir.Block(label, _, _) = block
-          #(label, block)
-        }))
+        dict.from_list(
+          list.map(blocks, fn(block) {
+            let ir.Block(label, _, _) = block
+            #(label, block)
+          }),
+        )
       let reachable = reachable_set([entry], dict.new(), by_label)
       list.filter(blocks, fn(block) {
         let ir.Block(label, _, _) = block
@@ -428,7 +437,11 @@ fn reachable_set(worklist, seen, by_label) {
             }
             Error(_) -> []
           }
-          reachable_set(list.append(rest, succs), dict.insert(seen, label, True), by_label)
+          reachable_set(
+            list.append(rest, succs),
+            dict.insert(seen, label, True),
+            by_label,
+          )
         }
       }
   }
@@ -503,10 +516,7 @@ fn fixpoint_dom(preds, entry, dom) {
             Ok(found) -> found
             Error(_) -> dict.new()
           }
-          #(
-            dict.insert(acc_map, label, new),
-            changed || !dict_equal(old, new),
-          )
+          #(dict.insert(acc_map, label, new), changed || !dict_equal(old, new))
         }
       }
     })

@@ -43,7 +43,7 @@ pub fn write_file(path: String, contents: String) -> Result(Nil, String) {
 }
 
 /// Bytes buffered before each flush when streaming chunks (see `write_chunks`).
-const flush_bytes = 4194304
+const flush_bytes = 4_194_304
 
 /// Writes a sequence of chunks to a file without ever materialising the whole
 /// document: chunks are buffered and flushed every `flush_bytes`, so peak

@@ -293,7 +293,10 @@ fn lower_tail_indirect(b: Builder, fun, args) {
   Ok(end_block(b2, ir.TailcallIndirect(fval, operands)))
 }
 
-fn lower_tail_ret(b: Builder, expr: tmono.TExpr) -> Result(Builder, LowerError) {
+fn lower_tail_ret(
+  b: Builder,
+  expr: tmono.TExpr,
+) -> Result(Builder, LowerError) {
   use #(value, b1) <- result.try(lower_expr(b, expr))
   Ok(end_block(b1, ir.Ret(value)))
 }
@@ -840,7 +843,8 @@ fn lower_call(
         "task_ffi.await" -> lower_await(b, args, ret_ty)
         // `process_ffi.receive` is a boxed suspension: the future carries a box
         // whose payload is moved out on resume.
-        "process_ffi.receive" -> lower_suspend_mode(b, args, builtin, ret_ty, ir.Boxed)
+        "process_ffi.receive" ->
+          lower_suspend_mode(b, args, builtin, ret_ty, ir.Boxed)
         _ ->
           case is_suspending(builtin) {
             // Async host call: starts an internal `Future` and suspends; the
@@ -1013,10 +1017,11 @@ fn ctor_field_types(b: Builder, name) -> List(Type) {
   }
 }
 
-fn lower_args_expect(b, expected, exprs) -> Result(
-  #(List(ir.Operand), Builder),
-  LowerError,
-) {
+fn lower_args_expect(
+  b,
+  expected,
+  exprs,
+) -> Result(#(List(ir.Operand), Builder), LowerError) {
   case expected, exprs {
     [], [] -> Ok(#([], b))
     [ty, ..tys], [expr, ..rest] -> {
@@ -1052,16 +1057,15 @@ fn is_subject_like(ty: Type) -> Bool {
   }
 }
 
-
 /// Like `lower_expr`, but a result-polymorphic builtin (`buffer.new`) adopts
 /// its element type from the expected type (a constructor field).
-fn lower_expect(b, expected, expr) -> Result(#(ir.Operand, Builder), LowerError) {
+fn lower_expect(
+  b,
+  expected,
+  expr,
+) -> Result(#(ir.Operand, Builder), LowerError) {
   case expr {
-    tmono.TCall(
-      tmono.TField(tmono.TVar("buffer", _), "new", _),
-      args,
-      _,
-    ) ->
+    tmono.TCall(tmono.TField(tmono.TVar("buffer", _), "new", _), args, _) ->
       case is_buffer_like(expected) {
         True -> {
           use #(operands, b1) <- result.try(lower_args(b, args))
@@ -1086,7 +1090,10 @@ fn lower_expect(b, expected, expr) -> Result(#(ir.Operand, Builder), LowerError)
           let #(dest, b2) = fresh_local(b1, "subject", expected)
           Ok(#(
             ir.Var(dest),
-            emit(b2, ir.OpBuiltin(dest, "process_ffi.new_subject", operands, expected)),
+            emit(
+              b2,
+              ir.OpBuiltin(dest, "process_ffi.new_subject", operands, expected),
+            ),
           ))
         }
         False -> lower_expr(b, expr)

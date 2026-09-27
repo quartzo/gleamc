@@ -24,7 +24,11 @@ pub fn ret_needs_sret(ty: Type, recursive: Dict(String, Bool)) -> Bool {
     TString -> False
     TNamed("Nil") -> False
     TNamed("BitArray") -> False
-    TNamed("void*") | TNamed("Future") | TNamed("Handle") | TNamed("Dynamic") | TNamed("SelectorHandle") -> False
+    TNamed("void*")
+    | TNamed("Future")
+    | TNamed("Handle")
+    | TNamed("Dynamic")
+    | TNamed("SelectorHandle") -> False
     ast.TFun(_, _) -> False
     ast.TApp("Task", _) -> False
     TNamed(name) ->
