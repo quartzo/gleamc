@@ -63,3 +63,18 @@ pub fn dependency_order_test() {
   let names = definition_names(mono_module)
   assert names == ["MaybeInt", "Wrapper", "main"]
 }
+
+/// Regression: a function with unannotated parameters and a declared return
+/// type variable used to fail with an unbound `b`. The resolved signature
+/// named the same type variable twice (the declared `b` and the inferred
+/// `__gen_N` it unified with), so the scheme quantified it once while
+/// `function_type_vars` counted two names and the specialiser zipped them
+/// out of step.
+pub fn declared_return_var_test() {
+  let mono_module =
+    monomorphize(
+      "type Wrap(a) {\n  Wrap(value: a)\n}\n\nfn apply(f, x) -> Wrap(b) {\n  f(x)\n}\n\npub fn main() {\n  let _ = apply(fn(v) { Wrap(v) }, 1)\n}\n",
+    )
+  let names = definition_names(mono_module)
+  assert list.contains(names, "apply_Int_Int")
+}

@@ -497,13 +497,6 @@ fn expr_var_names_all(exprs: List(Expr), acc: List(String)) -> List(String) {
   list.fold(exprs, acc, fn(acc, expr) { expr_var_names(expr, acc) })
 }
 
-fn is_infer_var(surface: Type) -> Bool {
-  case surface {
-    ast.TVar(name) -> string.starts_with(name, "__infer_")
-    _ -> False
-  }
-}
-
 fn resolve_function(function: Function, var_ids, subst) -> Function {
   let Function(is_pub, name, params, ret, body, line) = function
   let id_map = case dict.get(var_ids, name) {
@@ -528,18 +521,41 @@ fn resolve_function(function: Function, var_ids, subst) -> Function {
 /// Replaces an inferred marker with its concrete type when it is no longer
 /// generic; generic ones stay as variables so the monomorphiser can
 /// specialise them per call site.
+///
+/// Declared type variables are canonicalised to the same `__gen_<id>` naming
+/// too. A variable can otherwise appear under two names in the same signature
+/// (a declared `b` in the return type and its inferred form `__gen_2` inside a
+/// parameter), so `function_type_vars` would count two names for one id while
+/// the scheme quantifies it once — the monomorphiser zips the two and leaves a
+/// variable unbound.
 fn resolve_infer_surface(surface, id_map, subst) {
-  case is_infer_var(surface) {
-    False -> surface
-    True ->
-      case surface {
-        ast.TVar(var_name) ->
-          case dict.get(id_map, var_name) {
-            Error(_) -> surface
-            Ok(id) -> surface_of_general(types.zonk(Var(id), subst))
+  case surface {
+    ast.TVar(var_name) ->
+      case dict.get(id_map, var_name) {
+        Error(_) -> surface
+        Ok(id) ->
+          case string.starts_with(var_name, "__infer_") {
+            True -> surface_of_general(types.zonk(Var(id), subst))
+            False -> surface_of_general(types.zonk(types.Rig(id), subst))
           }
-        _ -> surface
       }
+    ast.TApp(name, args) ->
+      ast.TApp(
+        name,
+        list.map(args, fn(arg) { resolve_infer_surface(arg, id_map, subst) }),
+      )
+    ast.TTuple(items) ->
+      ast.TTuple(
+        list.map(items, fn(item) { resolve_infer_surface(item, id_map, subst) }),
+      )
+    ast.TFun(params, ret) ->
+      ast.TFun(
+        list.map(params, fn(param) {
+          resolve_infer_surface(param, id_map, subst)
+        }),
+        resolve_infer_surface(ret, id_map, subst),
+      )
+    _ -> surface
   }
 }
 
