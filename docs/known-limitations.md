@@ -154,19 +154,17 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   `Exit(Dynamic)` (a task killed before producing a value; the reason is the
   `Killed` exit reason, wrapped as a `Dynamic`). A
   `Subject(a)` handles are refcounted and their mailbox is freed when the last
-  reference dies (queued boxes are freed too, but their payload references are
-  abandoned — there is no per-message drop); subjects held by a live
-  `Selector` and task inboxes stay alive.   `Selector` handles, `Dynamic` values and
-  `Task(a)` handles are refcounted (a `Dynamic` frees its box and runs a
-  per-type drop glue at refcount 0; a `Task(a)`'s completion future is held by
-  both the task and the caller, so a killed/timed-out handle no longer leaks
-  and no longer dangles). When `main` returns, `gleamc_shutdown` terminates
-  every still-pending task and frees its frame, completion future, queued
-  messages and monitor/link/inbox bookkeeping, so a short-lived program does
-  not leak what it left running (ASan-clean on the concurrency examples).
-  Still missing: a per-message payload drop (a freed box drops its cell but
-  not the payload's inner references) and closing libuv timers still pending
-  at exit. Draining a mailbox does not join the spawned senders.
+  reference dies; subjects held by a live `Selector` and task inboxes stay
+  alive. `Selector` handles, `Dynamic` values and `Task(a)` handles are
+  refcounted (a `Dynamic` frees its box and runs a per-type drop glue at
+  refcount 0; a `Task(a)`'s completion future is held by both the task and the
+  caller, so a killed/timed-out handle no longer leaks and no longer dangles).
+  A message box carries a per-type drop glue, so a queued message freed without
+  being received drops its payload. When `main` returns, `gleamc_shutdown`
+  terminates every still-pending task (freeing its frame, completion future,
+  queued messages and monitor/link/inbox bookkeeping) and closes every pending
+  libuv timer, so a short-lived program does not leak what it left running.
+  Draining a mailbox does not join the spawned senders.
 
 ## Standard library coverage
 

@@ -387,7 +387,9 @@ GleamcFuture* gleamc_task_spawn(bool (*step)(void*), void* frame,
 /* A box is a refcounted heap cell whose payload is an arbitrary Gleam value
  * (moved in when sent, moved out when received). */
 void* gleamc_box_alloc(int64_t size);
+void* gleamc_box_alloc_meta(int64_t size, void (*drop)(void*));
 void gleamc_box_free(void* box);
+void gleamc_box_free_moved(void* box);
 
 /* ------------------------------------------------------------------ */
 /* Processes and mailboxes (cooperative `gleam/erlang/process` shape). */

@@ -1271,16 +1271,42 @@ GleamcFuture* gleamc_task_spawn(bool (*step)(void*), void* frame,
     );
 }
 
-/* A box is a refcounted heap cell holding an arbitrary Gleam value. The sender
- * moves the value in; the receiver moves it out and frees the cell (no payload
- * drop: ownership was transferred). */
-void* gleamc_box_alloc(int64_t size) {
-    return gleamc_alloc_site(size > 0 ? (size_t)size : 1, "box");
+/* A box is a small refcounted cell holding an arbitrary Gleam value, plus an
+ * optional `drop` glue for the boxed type. The sender moves the value in; the
+ * receiver moves it out and frees the cell *without* dropping (`..._moved`); a
+ * box freed while still holding its value (an abandoned queued message) runs
+ * the drop glue first. */
+typedef struct {
+    size_t refcount;
+    int32_t class;
+    void (*drop)(void*);
+} GleamcBoxCell;
+
+void* gleamc_box_alloc_meta(int64_t size, void (*drop)(void*)) {
+    size_t n = size > 0 ? (size_t)size : 1;
+    GleamcBoxCell* c = (GleamcBoxCell*)malloc(sizeof(GleamcBoxCell) + n);
+    if (c == NULL) return NULL;
+    c->refcount = 1;
+    c->class = 9;
+    c->drop = drop;
+    _gleamc_live++;
+    return (uint8_t*)c + sizeof(GleamcBoxCell);
 }
 
-void gleamc_box_free(void* box) {
-    gleamc_release(box);
+void* gleamc_box_alloc(int64_t size) { return gleamc_box_alloc_meta(size, NULL); }
+
+static void gleamc_box_free_(void* box, bool run_drop) {
+    if (box == NULL) return;
+    GleamcBoxCell* c = (GleamcBoxCell*)((uint8_t*)box - sizeof(GleamcBoxCell));
+    if (run_drop && c->drop != NULL) c->drop(box);
+    if (--c->refcount == 0) {
+        _gleamc_live--;
+        free(c);
+    }
 }
+
+void gleamc_box_free(void* box) { gleamc_box_free_(box, true); }
+void gleamc_box_free_moved(void* box) { gleamc_box_free_(box, false); }
 
 static void gleamc_future_wait(GleamcFuture* f);
 
@@ -1512,6 +1538,37 @@ GleamcFuture* Gleamc_process_ffi_receive(int64_t handle) {
 /* Timed waits: a wait future completed by a message/task or a timer.   */
 /* ------------------------------------------------------------------ */
 
+/* Pending libuv timers, so `gleamc_shutdown` can close (and free) them. */
+#define GLEAMC_TIMERS_MAX 2048
+static uv_timer_t* gleamc_timer_handles[GLEAMC_TIMERS_MAX];
+static void* gleamc_timer_datas[GLEAMC_TIMERS_MAX];
+static void (*gleamc_timer_frees[GLEAMC_TIMERS_MAX])(void*);
+static int gleamc_timers_n = 0;
+
+static void gleamc_wait_timer_free(void*);
+static void gleamc_send_timer_free(void*);
+static void gleamc_selector_timer_free(void*);
+
+static void gleamc_timer_register(uv_timer_t* h, void* data, void (*freefn)(void*)) {
+    if (gleamc_timers_n >= GLEAMC_TIMERS_MAX) return;
+    gleamc_timer_handles[gleamc_timers_n] = h;
+    gleamc_timer_datas[gleamc_timers_n] = data;
+    gleamc_timer_frees[gleamc_timers_n] = freefn;
+    gleamc_timers_n++;
+}
+
+static void gleamc_timer_unregister(uv_timer_t* h) {
+    for (int i = 0; i < gleamc_timers_n; i++) {
+        if (gleamc_timer_handles[i] == h) {
+            gleamc_timer_handles[i] = gleamc_timer_handles[gleamc_timers_n - 1];
+            gleamc_timer_datas[i] = gleamc_timer_datas[gleamc_timers_n - 1];
+            gleamc_timer_frees[i] = gleamc_timer_frees[gleamc_timers_n - 1];
+            gleamc_timers_n--;
+            return;
+        }
+    }
+}
+
 typedef struct {
     uv_timer_t timer;
     GleamcFuture* fut;  /* owned reference while the timer lives       */
@@ -1520,6 +1577,7 @@ typedef struct {
 } GleamcWaitTimer;
 
 static void gleamc_wait_timer_close_cb(uv_handle_t* h) {
+    gleamc_timer_unregister((uv_timer_t*)h);
     free((GleamcWaitTimer*)h->data);
 }
 
@@ -1551,6 +1609,7 @@ static void gleamc_wait_timer_new(GleamcFuture* fut, GleamcMailbox* mb,
     wt->timer.data = wt;
     uv_timer_start(
         &wt->timer, gleamc_wait_timer_cb, ms < 0 ? 0 : (uint64_t)ms, 0);
+    gleamc_timer_register(&wt->timer, wt, gleamc_wait_timer_free);
     fut->uv_armed = true;
 }
 
@@ -1601,6 +1660,7 @@ typedef struct {
 } GleamcSendTimer;
 
 static void gleamc_send_timer_close_cb(uv_handle_t* h) {
+    gleamc_timer_unregister((uv_timer_t*)h);
     free((GleamcSendTimer*)h->data);
     if (gleamc_uv_pending > 0) gleamc_uv_pending--;
 }
@@ -1629,6 +1689,7 @@ int64_t Gleamc_process_ffi_send_after(int64_t subject, int64_t delay, void* box)
     st->timer.data = st;
     uv_timer_start(
         &st->timer, gleamc_send_timer_cb, delay < 0 ? 0 : (uint64_t)delay, 0);
+    gleamc_timer_register(&st->timer, st, gleamc_send_timer_free);
     gleamc_uv_pending++;
     return (int64_t)(intptr_t)st;
 }
@@ -1682,6 +1743,7 @@ typedef struct {
 } GleamcSelectorTimer;
 
 static void gleamc_selector_timer_close_cb(uv_handle_t* h) {
+    gleamc_timer_unregister((uv_timer_t*)h);
     free((GleamcSelectorTimer*)h->data);
 }
 
@@ -1695,6 +1757,47 @@ static void gleamc_selector_timer_cb(uv_timer_t* t) {
     gleamc_release(st->fut);
     st->fut = NULL;
     uv_close((uv_handle_t*)t, gleamc_selector_timer_close_cb);
+}
+
+static void gleamc_wait_timer_free(void* p) {
+    GleamcWaitTimer* wt = (GleamcWaitTimer*)p;
+    if (wt->fut != NULL) gleamc_release(wt->fut);
+    free(wt);
+}
+
+static void gleamc_send_timer_free(void* p) {
+    GleamcSendTimer* st = (GleamcSendTimer*)p;
+    if (st->box != NULL) gleamc_box_free(st->box);
+    Gleamc_subject_release(st->subject);
+    free(st);
+}
+
+static void gleamc_selector_timer_free(void* p) {
+    GleamcSelectorTimer* st = (GleamcSelectorTimer*)p;
+    if (st->fut != NULL) gleamc_release(st->fut);
+    free(st);
+}
+
+static void gleamc_shutdown_timer_close_cb(uv_handle_t* h) {
+    uv_timer_t* t = (uv_timer_t*)h;
+    for (int i = 0; i < gleamc_timers_n; i++) {
+        if (gleamc_timer_handles[i] == t) {
+            gleamc_timer_frees[i](gleamc_timer_datas[i]);
+            gleamc_timer_unregister(t);
+            return;
+        }
+    }
+}
+
+/* Close every still-pending libuv timer (the loop is single-threaded and the
+ * program is exiting, so no callback can race). */
+static void gleamc_shutdown_timers(void) {
+    for (int i = 0; i < gleamc_timers_n; i++) {
+        uv_handle_t* h = (uv_handle_t*)gleamc_timer_handles[i];
+        if (!uv_is_closing(h)) uv_close(h, gleamc_shutdown_timer_close_cb);
+    }
+    uv_run((uv_loop_t*)gleamc_uv_loop(), UV_RUN_NOWAIT);
+    gleamc_timers_n = 0;
 }
 
 static void gleamc_selector_dtor(void* p) {
@@ -1839,6 +1942,7 @@ GleamcFuture* Gleamc_process_ffi_selector_wait(int64_t handle, int64_t ms) {
             uv_timer_init((uv_loop_t*)gleamc_uv_loop(), &st->timer);
             st->timer.data = st;
             uv_timer_start(&st->timer, gleamc_selector_timer_cb, (uint64_t)ms, 0);
+            gleamc_timer_register(&st->timer, st, gleamc_selector_timer_free);
             f->uv_armed = true;
         }
     }
@@ -2291,6 +2395,7 @@ void gleamc_shutdown(void) {
         if (t->done != NULL) gleamc_release(t->done);
     }
     gleamc_tasks2_n = 0;
+    gleamc_shutdown_timers();
 }
 
 void gleamc_run_until(GleamcFuture* target) {

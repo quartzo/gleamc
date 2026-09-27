@@ -285,9 +285,9 @@ pub fn emit_chunks(
       emit_buffer_glue(lits, recursive, custom_types, fields_of, elem)
     })
   let dynamic_glue_fns =
-    list.filter_map(collect_dynamic_types(functions), fn(ty) {
+    list.filter_map(collect_box_drop_types(custom_types, functions), fn(ty) {
       case ownership.needs_drop_in(ty, fields_of, recursive) {
-        True -> Ok(emit_dynamic_glue(lits, recursive, fields_of, ty))
+        True -> Ok(emit_box_glue(lits, recursive, fields_of, ty))
         False -> Error(Nil)
       }
     })
@@ -503,7 +503,9 @@ fn header(audit: Bool) -> String {
   <> "declare %GleamcBitArray @Gleamc_uv_await_bytes(i8*)\n"
   <> "declare i8* @Gleamc_uv_await_box(i8*)\n"
   <> "declare i8* @gleamc_box_alloc(i64)\n"
+  <> "declare i8* @gleamc_box_alloc_meta(i64, void (i8*)*)\n"
   <> "declare void @gleamc_box_free(i8*)\n"
+  <> "declare void @gleamc_box_free_moved(i8*)\n"
   <> "declare void @Gleamc_subject_retain(i64)\n"
   <> "declare void @Gleamc_subject_release(i64)\n"
   <> "declare void @Gleamc_selector_retain(i64)\n"
@@ -1033,9 +1035,11 @@ fn emit_make_helper(custom, ctor, recursive) -> String {
       b,
       "  "
         <> raw
-        <> " = call i8* @gleamc_alloc(i64 "
+        <> " = call i8* @gleamc_box_alloc_meta(i64 "
         <> ty_size_expr(TNamed(type_name), recursive)
-        <> ")",
+        <> ", void (i8*)* @Gleamc_BoxDrop_"
+        <> mangle_glue(TNamed(type_name))
+        <> "_drop)",
     )
   let #(p, b) = fresh(b)
   let b =
@@ -1773,7 +1777,7 @@ fn emit_await_box(
       store_local(ctx, dest, ty_s, val, b)
     }
   }
-  let b = emit_line(b, "  call void @gleamc_box_free(i8* " <> box <> ")")
+  let b = emit_line(b, "  call void @gleamc_box_free_moved(i8* " <> box <> ")")
   case release {
     True -> emit_line(b, "  call void @Gleamc_rc_release(i8* " <> fut_v <> ", i8* null)")
     False -> b
@@ -3438,15 +3442,7 @@ fn emit_op_task_start(
         True -> #("null", b)
         False -> {
           let #(bx, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  "
-                <> bx
-                <> " = call i8* @gleamc_box_alloc(i64 "
-                <> ty_size_expr(cret, ctx.recursive)
-                <> ")",
-            )
+          let b = emit_box_alloc(ctx, bx, cret, b)
           #(bx, b)
         }
       }
@@ -3603,15 +3599,7 @@ fn emit_op_task_start_closure(
         True -> #("null", b)
         False -> {
           let #(bx, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  "
-                <> bx
-                <> " = call i8* @gleamc_box_alloc(i64 "
-                <> ty_size_expr(cret, ctx.recursive)
-                <> ")",
-            )
+          let b = emit_box_alloc(ctx, bx, cret, b)
           #(bx, b)
         }
       }
@@ -3765,15 +3753,7 @@ fn emit_op_builtin(
       let #(_, subject, b) = read_val(ctx, subject_arg, b)
       let #(ty, value, b) = read_val(ctx, msg_arg, b)
       let #(box, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  "
-            <> box
-            <> " = call i8* @gleamc_box_alloc(i64 "
-            <> ty_size_expr(operand_type(ctx.by_name, msg_arg), ctx.recursive)
-            <> ")",
-        )
+      let b = emit_box_alloc(ctx, box, operand_type(ctx.by_name, msg_arg), b)
       let #(slot, b) = fresh(b)
       let b =
         emit_line(
@@ -3810,15 +3790,7 @@ fn emit_op_builtin(
       let #(_, pid, b) = read_val(ctx, pid_arg, b)
       let #(ty, value, b) = read_val(ctx, msg_arg, b)
       let #(box, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  "
-            <> box
-            <> " = call i8* @gleamc_box_alloc(i64 "
-            <> ty_size_expr(operand_type(ctx.by_name, msg_arg), ctx.recursive)
-            <> ")",
-        )
+      let b = emit_box_alloc(ctx, box, operand_type(ctx.by_name, msg_arg), b)
       let #(slot, b) = fresh(b)
       let b =
         emit_line(
@@ -3853,15 +3825,7 @@ fn emit_op_builtin(
       let #(_, subject, b) = read_val(ctx, subject_arg, b)
       let #(ty, value, b) = read_val(ctx, msg_arg, b)
       let #(box, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  "
-            <> box
-            <> " = call i8* @gleamc_box_alloc(i64 "
-            <> ty_size_expr(operand_type(ctx.by_name, msg_arg), ctx.recursive)
-            <> ")",
-        )
+      let b = emit_box_alloc(ctx, box, operand_type(ctx.by_name, msg_arg), b)
       let #(slot, b) = fresh(b)
       let b =
         emit_line(
@@ -3898,15 +3862,7 @@ fn emit_op_builtin(
       let #(_, delay, b) = read_val(ctx, delay_arg, b)
       let #(ty, value, b) = read_val(ctx, msg_arg, b)
       let #(box, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  "
-            <> box
-            <> " = call i8* @gleamc_box_alloc(i64 "
-            <> ty_size_expr(operand_type(ctx.by_name, msg_arg), ctx.recursive)
-            <> ")",
-        )
+      let b = emit_box_alloc(ctx, box, operand_type(ctx.by_name, msg_arg), b)
       let #(slot, b) = fresh(b)
       let b =
         emit_line(
@@ -4241,7 +4197,7 @@ fn emit_op_builtin(
       let b =
         emit_line(b, "  store " <> ty <> " " <> value <> ", " <> ty <> "* " <> slot)
       let drop = case ownership.needs_drop(oty, ctx.ctors) {
-        True -> "void (i8*)* @Gleamc_Dynamic_" <> mangle_glue(oty) <> "_drop"
+        True -> "void (i8*)* @Gleamc_BoxDrop_" <> mangle_glue(oty) <> "_drop"
         False -> "void (i8*)* null"
       }
       let #(r, b) = fresh(b)
@@ -5434,7 +5390,26 @@ fn emit_buffer_slot_glue(
 
 /// The value types passed to `dynamic.from`, so a `void(i8*)` drop glue can be
 /// emitted for each (handed to `Gleamc_dynamic_new`).
-fn collect_dynamic_types(functions) -> List(Type) {
+fn collect_box_drop_types(custom_types, functions) -> List(Type) {
+  let by_name =
+    dict.from_list(list.map(custom_types, fn(custom) {
+      let ast.CustomType(_, name, _, _, _) = custom
+      #(name, custom)
+    }))
+  let make_types =
+    [#("Down", "ProcessDown"), #("ExitMessage", "ExitMessage")]
+    |> list.filter_map(fn(pair) {
+      let #(suffix, _) = pair
+      case find_type(by_name, suffix) {
+        Ok(ast.CustomType(_, name, _, _, _)) -> Ok(TNamed(name))
+        Error(_) -> Error(Nil)
+      }
+    })
+  let fn_by_name =
+    list.fold(functions, dict.new(), fn(acc, f) {
+      let ir.Function(name, _, _, _, _) = f
+      dict.insert(acc, name, f)
+    })
   let all =
     list.flat_map(functions, fn(function) {
       let ir.Function(_, _, _, blocks, locals) = function
@@ -5447,20 +5422,24 @@ fn collect_dynamic_types(functions) -> List(Type) {
         let ir.Block(_, ops, _) = block
         list.flat_map(ops, fn(op) {
           case op {
+            ir.OpBuiltin(_, "process_ffi.send", [_, msg, ..], _)
+            | ir.OpBuiltin(_, "process_ffi.unreceive", [_, msg, ..], _)
+            | ir.OpBuiltin(_, "process_ffi.send_after", [_, _, msg, ..], _)
+            | ir.OpBuiltin(_, "process_ffi.send_exit_message", [_, msg, ..], _) ->
+              operand_type_or_empty(by_name, msg)
             ir.OpBuiltin(_, "dynamic_ffi.from", [arg, ..], _) ->
-              case arg {
-                ir.Var(name) ->
-                  case dict.get(by_name, name) {
-                    Ok(ty) -> [ty]
-                    Error(_) -> []
-                  }
-                _ -> []
+              operand_type_or_empty(by_name, arg)
+            ir.OpTaskStart(_, fun, _, _) | ir.OpTaskStartClosure(_, fun, _, _) ->
+              case dict.get(fn_by_name, fun) {
+                Ok(ir.Function(_, _, ret, _, _)) -> [ret]
+                Error(_) -> []
               }
             _ -> []
           }
         })
       })
     })
+  let all = list.append(make_types, all)
   list.fold(all, dict.new(), fn(acc, ty) { dict.insert(acc, mangle_glue(ty), ty) })
   |> dict.to_list
   |> list.map(fn(pair) {
@@ -5469,10 +5448,21 @@ fn collect_dynamic_types(functions) -> List(Type) {
   })
 }
 
+fn operand_type_or_empty(by_name, op) -> List(Type) {
+  case op {
+    ir.Var(name) ->
+      case dict.get(by_name, name) {
+        Ok(ty) -> [ty]
+        Error(_) -> []
+      }
+    _ -> []
+  }
+}
+
 /// `void(i8*)` glue that loads a `Dynamic` payload from its box and drops it.
-fn emit_dynamic_glue(lits, recursive, fields_of, elem: Type) -> String {
+fn emit_box_glue(lits, recursive, fields_of, elem: Type) -> String {
   let ty_s = llvm_ty(elem, recursive)
-  let name = "Gleamc_Dynamic_" <> mangle_glue(elem) <> "_drop"
+  let name = "Gleamc_BoxDrop_" <> mangle_glue(elem) <> "_drop"
   let b = new_builder()
   let b = emit_line(b, "define void @" <> name <> "(i8* %slot) {")
   let #(p, b) = fresh(b)
@@ -5480,7 +5470,7 @@ fn emit_dynamic_glue(lits, recursive, fields_of, elem: Type) -> String {
   let #(v, b) = fresh(b)
   let b =
     emit_line(b, "  " <> v <> " = load " <> ty_s <> ", " <> ty_s <> "* " <> p)
-  let b = rc_expr(lits, recursive, fields_of, "drop", elem, ty_s, v, "dynamic", b)
+  let b = rc_expr(lits, recursive, fields_of, "drop", elem, ty_s, v, "box", b)
   let b = emit_line(b, "  ret void")
   let b = emit_line(b, "}")
   string.join(list.reverse(b.lines), "\n") <> "\n"
@@ -6198,6 +6188,30 @@ fn dynamic_tag_of(ty: Type) -> Int {
         False -> 9
       }
     _ -> 9
+  }
+}
+
+/// Box a message of `ty`, attaching the type's drop glue when it has any (so
+/// an abandoned queued message drops its payload).
+fn emit_box_alloc(ctx: Ctx, box: String, ty: Type, b: Builder) -> Builder {
+  let size = ty_size_expr(ty, ctx.recursive)
+  case ownership.needs_drop(ty, ctx.ctors) {
+    True ->
+      emit_line(
+        b,
+        "  "
+          <> box
+          <> " = call i8* @gleamc_box_alloc_meta(i64 "
+          <> size
+          <> ", void (i8*)* @Gleamc_BoxDrop_"
+          <> mangle_glue(ty)
+          <> "_drop)",
+      )
+    False ->
+      emit_line(
+        b,
+        "  " <> box <> " = call i8* @gleamc_box_alloc(i64 " <> size <> ")",
+      )
   }
 }
 
