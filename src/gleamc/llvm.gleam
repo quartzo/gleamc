@@ -493,6 +493,8 @@ fn header(audit: Bool) -> String {
   <> "declare i8* @Gleamc_uv_await_box(i8*)\n"
   <> "declare i8* @gleamc_box_alloc(i64)\n"
   <> "declare void @gleamc_box_free(i8*)\n"
+  <> "declare void @Gleamc_subject_retain(i64)\n"
+  <> "declare void @Gleamc_subject_release(i64)\n"
   <> "declare i64 @Gleamc_process_ffi_new_subject()\n"
   <> "declare i32 @Gleamc_process_ffi_send(i64, i8*)\n"
   <> "declare i8* @Gleamc_process_ffi_receive(i64)\n"
@@ -4506,6 +4508,14 @@ fn surface_mangle(ty: Type) -> String {
   }
 }
 
+fn subject_rc(which: String, reg: String, b: Builder) -> Builder {
+  let call = case which {
+    "retain" -> "Gleamc_subject_retain"
+    _ -> "Gleamc_subject_release"
+  }
+  emit_line(b, "  call void @" <> call <> "(i64 " <> reg <> ")")
+}
+
 fn buffer_rc(which: String, reg: String, b: Builder) -> Builder {
   let call = case which {
     "retain" -> "Gleamc_buffer_retain"
@@ -6439,20 +6449,26 @@ fn rc_expr(
     // `Buffer(a)` is an opaque cell: retain/release the block (its own drop
     // runs the per-element glue stored in the header).
     ast.TApp("Buffer", _) -> buffer_rc(which, reg, b)
+    // `Subject(a)` is a refcounted mailbox handle (i64 pointer).
+    ast.TApp("Subject", _) -> subject_rc(which, reg, b)
     TNamed(name) ->
-      case ast.buffer_elem_name(name) {
-        Ok(_) -> buffer_rc(which, reg, b)
+      case ast.subject_elem_name(name) {
+        Ok(_) -> subject_rc(which, reg, b)
         Error(_) ->
-          emit_line(
-            b,
-            "  call void @"
-              <> rc_name(which, ty)
-              <> "("
-              <> ty_s
-              <> " "
-              <> reg
-              <> ")",
-          )
+          case ast.buffer_elem_name(name) {
+            Ok(_) -> buffer_rc(which, reg, b)
+            Error(_) ->
+              emit_line(
+                b,
+                "  call void @"
+                  <> rc_name(which, ty)
+                  <> "("
+                  <> ty_s
+                  <> " "
+                  <> reg
+                  <> ")",
+              )
+          }
       }
     ast.TTuple(_) -> {
       emit_line(

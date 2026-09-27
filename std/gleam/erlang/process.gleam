@@ -18,7 +18,9 @@ pub fn send(subject: Subject(message), message: message) -> Nil {
 /// `Subject`, waiting at most `within` milliseconds.
 pub fn receive(from: Subject(message), within: Int) -> Result(message, Nil) {
   case process_ffi.wait_any(from, within) {
-    1 -> Ok(receive_forever(from))
+    // A message is queued: read it straight from the builtin (a borrow) rather
+    // than through `receive_forever`, so no ownership is transferred.
+    1 -> Ok(process_ffi.receive(from))
     _ -> Error(Nil)
   }
 }

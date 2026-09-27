@@ -389,6 +389,8 @@ void gleamc_box_free(void* box);
 /* ------------------------------------------------------------------ */
 
 int64_t Gleamc_process_ffi_new_subject(void);
+void Gleamc_subject_retain(int64_t handle);
+void Gleamc_subject_release(int64_t handle);
 int32_t Gleamc_process_ffi_send(int64_t handle, void* box);
 GleamcFuture* Gleamc_process_ffi_receive(int64_t handle);
 /* Waits until a message is available on the subject or `ms` elapse. The

@@ -1253,6 +1253,29 @@ int64_t Gleamc_process_ffi_new_subject(void) {
     return (int64_t)(intptr_t)mb;
 }
 
+/* The compiler refcounts `Subject(a)` handles: retain copies, release at death.
+ * Queued boxes are freed (their payload references are abandoned — the runtime
+ * has no per-message drop). The refcount lives in the allocator header, so use
+ * the `gleamc_retain`/`gleamc_release` macros rather than the struct's (vestigial)
+ * `hdr` field. */
+void Gleamc_subject_retain(int64_t handle) {
+    GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)handle;
+    if (mb != NULL) gleamc_retain(mb);
+}
+
+void Gleamc_subject_release(int64_t handle) {
+    GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)handle;
+    if (mb == NULL) return;
+    GleamcHdr* h = (GleamcHdr*)((uint8_t*)mb - sizeof(GleamcHdr));
+    if (h->refcount != GLEAMC_RC_STATIC && h->refcount == 1) {
+        for (int i = 0; i < mb->nmsg; i++) gleamc_box_free(mb->msgs[i]);
+        free(mb->msgs);
+        free(mb->waiters);
+        free(mb->notifiers);
+    }
+    gleamc_release(mb);
+}
+
 static void gleamc_mailbox_add_notifier(GleamcMailbox* mb, GleamcFuture* f) {
     if (mb->nnotify == mb->ncap) {
         int cap = mb->ncap == 0 ? 4 : mb->ncap * 2;
@@ -1362,9 +1385,7 @@ typedef struct {
 } GleamcWaitTimer;
 
 static void gleamc_wait_timer_close_cb(uv_handle_t* h) {
-    GleamcWaitTimer* wt = (GleamcWaitTimer*)h->data;
-    gleamc_release(wt->fut);
-    free(wt);
+    free((GleamcWaitTimer*)h->data);
 }
 
 static void gleamc_wait_timer_cb(uv_timer_t* t) {
@@ -1376,6 +1397,10 @@ static void gleamc_wait_timer_cb(uv_timer_t* t) {
         wt->fut->value_i = 0;
         wt->fut->done = true;
     }
+    /* Release the timer's reference now, so it is gone even if the loop stops
+     * before the close callback runs. */
+    gleamc_release(wt->fut);
+    wt->fut = NULL;
     uv_close((uv_handle_t*)t, gleamc_wait_timer_close_cb);
 }
 
@@ -1450,6 +1475,7 @@ static void gleamc_send_timer_cb(uv_timer_t* t) {
     st->done = true;
     Gleamc_process_ffi_send(st->subject, st->box); /* transfers the box */
     st->box = NULL;
+    Gleamc_subject_release(st->subject);
     uv_close((uv_handle_t*)t, gleamc_send_timer_close_cb);
 }
 
@@ -1462,6 +1488,7 @@ int64_t Gleamc_process_ffi_send_after(int64_t subject, int64_t delay, void* box)
     st->subject = subject;
     st->box = box;
     st->done = false;
+    Gleamc_subject_retain(subject);
     st->deadline = (int64_t)gleamc_now_ms() + (delay < 0 ? 0 : delay);
     uv_timer_init((uv_loop_t*)gleamc_uv_loop(), &st->timer);
     st->timer.data = st;
@@ -1481,6 +1508,7 @@ int64_t Gleamc_process_ffi_cancel_timer(int64_t handle) {
         gleamc_box_free(st->box);
         st->box = NULL;
     }
+    Gleamc_subject_release(st->subject);
     st->done = true;
     uv_close((uv_handle_t*)&st->timer, gleamc_send_timer_close_cb);
     return remaining;
@@ -1519,9 +1547,7 @@ typedef struct {
 } GleamcSelectorTimer;
 
 static void gleamc_selector_timer_close_cb(uv_handle_t* h) {
-    GleamcSelectorTimer* st = (GleamcSelectorTimer*)h->data;
-    gleamc_release(st->fut);
-    free(st);
+    free((GleamcSelectorTimer*)h->data);
 }
 
 static void gleamc_selector_timer_cb(uv_timer_t* t) {
@@ -1531,6 +1557,8 @@ static void gleamc_selector_timer_cb(uv_timer_t* t) {
         st->fut->done = true;
     }
     gleamc_selector_clear_wait(st->sel);
+    gleamc_release(st->fut);
+    st->fut = NULL;
     uv_close((uv_handle_t*)t, gleamc_selector_timer_close_cb);
 }
 
@@ -1551,6 +1579,7 @@ int64_t Gleamc_process_ffi_selector_add(int64_t handle, int64_t subject) {
         sel->cap = cap;
     }
     sel->subjects[sel->nsub++] = subject;
+    Gleamc_subject_retain(subject);
     return handle;
 }
 
@@ -1562,6 +1591,7 @@ int64_t Gleamc_process_ffi_selector_remove(int64_t handle, int64_t subject) {
             for (int j = i + 1; j < sel->nsub; j++)
                 sel->subjects[j - 1] = sel->subjects[j];
             sel->nsub--;
+            Gleamc_subject_release(subject);
             break;
         }
     }
@@ -1571,6 +1601,8 @@ int64_t Gleamc_process_ffi_selector_remove(int64_t handle, int64_t subject) {
 int64_t Gleamc_process_ffi_selector_subject(int64_t handle, int64_t index) {
     GleamcSelector* sel = (GleamcSelector*)(intptr_t)handle;
     if (sel == NULL || index < 0 || index >= sel->nsub) return 0;
+    /* The caller owns the returned handle, so take a reference. */
+    Gleamc_subject_retain(sel->subjects[index]);
     return sel->subjects[index];
 }
 

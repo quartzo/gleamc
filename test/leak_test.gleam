@@ -114,3 +114,47 @@ pub fn leak_map2_partial_ownership_test() {
     toolchain.run_shell("env GLEAMC_MEM_REPORT=1 " <> dir <> "/map2")
   assert string.contains(output, "live blocks = 0")
 }
+
+/// `Subject(a)` handles are refcounted: a subject used and dropped (including
+/// through `receive(within:)`, whose timeout path used to leak a wait future)
+/// must free its mailbox.
+const subject_source = "import gleam/int
+import gleam/erlang/process
+import gleam/io
+
+pub fn main() {
+  let s = process.new_subject()
+  process.send(s, 7)
+  io.println(int.to_string(process.receive_forever(from: s)))
+
+  let t = process.new_subject()
+  case process.receive(from: t, within: 20) {
+    Ok(_) -> Nil
+    Error(_) -> Nil
+  }
+}
+"
+
+pub fn leak_subject_test() {
+  let _ = ffi.run("mkdir -p " <> dir)
+  let assert Ok(_) = ffi.write_file(dir <> "/subject.gleam", subject_source)
+  let assert Ok(modules) = loader.load(dir <> "/subject.gleam")
+  let assert Ok(ll_code) = pipeline.compile_modules_llvm(modules)
+  let assert Ok(_) = ffi.write_file(dir <> "/subject.ll", ll_code)
+
+  let cmd =
+    toolchain.build_command(
+      toolchain.default_cc(),
+      toolchain.Debug,
+      [dir <> "/subject.ll", "runtime/gleam_runtime.c"],
+      ["runtime"],
+      dir <> "/subject",
+    )
+  let #(compile_status, _compile_out) = toolchain.run_shell(cmd)
+  assert compile_status == 0 as "program failed to compile"
+
+  let #(_status, output) =
+    toolchain.run_shell("env GLEAMC_MEM_REPORT=1 " <> dir <> "/subject")
+  assert string.contains(output, "7")
+  assert string.contains(output, "live blocks = 0")
+}

@@ -138,9 +138,12 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   `Abnormal(Dynamic)`), `send_exit`/`send_abnormal_exit`,
   `select_specific_monitor`/`select_other`/`select_record` and names are not
   implemented, and `AwaitError` only has `Timeout`. A
-  `Subject` handle is not refcount-dropped (one leak per subject) and boxes
-  queued but never received leak; a timed-out task's boxed result also leaks.
-  Draining a mailbox does not join the spawned senders.
+  `Subject(a)` handles are refcounted and their mailbox is freed when the last
+  reference dies (queued boxes are freed too, but their payload references are
+  abandoned — there is no per-message drop); subjects held by a live
+  `Selector` and task inboxes stay alive. Boxes queued but never received, and
+  a timed-out task's boxed result, still leak. Draining a mailbox does not join
+  the spawned senders.
 
 ## Standard library coverage
 

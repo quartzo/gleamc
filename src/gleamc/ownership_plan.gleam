@@ -319,8 +319,8 @@ fn needs_drop_seen(ty, fields_of, recursive, seen) -> Bool {
     // `Buffer(a)` is a refcounted cell that must be released even when its
     // element type is trivial (e.g. `Buffer(Int)`).
     TApp("Buffer", _) -> True
-    // `Subject(a)` / `Task(a)` are opaque handles (scalars): nothing to drop.
-    TApp("Subject", _) -> False
+    // `Subject(a)` is a refcounted mailbox cell; `Task(a)` is a scalar handle.
+    TApp("Subject", _) -> True
     TApp("Task", _) -> False
     TApp(_, args) ->
       list.any(args, fn(inner) {
@@ -332,8 +332,8 @@ fn needs_drop_seen(ty, fields_of, recursive, seen) -> Bool {
         Ok(_) -> True
         Error(_) ->
           case subject_elem_name(name), task_elem_name(name) {
-            // Monomorphised `Subject(a)` / `Task(a)` handles (scalars).
-            Ok(_), _ -> False
+            // Monomorphised `Subject(a)` is refcounted; `Task(a)` is a scalar.
+            Ok(_), _ -> True
             _, Ok(_) -> False
             _, Error(_) ->
               case dict.get(recursive, name) {
