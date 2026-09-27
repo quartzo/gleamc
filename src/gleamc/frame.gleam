@@ -226,7 +226,7 @@ fn slot_map(locals) -> Dict(String, Int) {
   let #(_, _, map) =
     list.fold(locals, #(dict.new(), 0, dict.new()), fn(acc, local) {
       let #(seen, next, map) = acc
-      let ir.Local(name, _) = local
+      let ir.Local(name, _, _) = local
       case dict.has_key(seen, name) {
         True -> #(seen, next, map)
         False ->
@@ -269,7 +269,7 @@ fn demote_function(function: ir.Function) -> ir.Function {
   let frame_ty = frame_type_name(name)
   let by_name =
     list.fold(locals, dict.new(), fn(acc, local) {
-      let ir.Local(n, t) = local
+      let ir.Local(n, t, _) = local
       dict.insert(acc, n, t)
     })
   // Slots follow the function's local layout (the frame's storage), so they
@@ -310,7 +310,7 @@ fn demote_function(function: ir.Function) -> ir.Function {
       let ir.Block(_, ops, _) = block
       list.filter_map(ops, fn(op) {
         case op {
-          ir.OpFrameGet(dest, _, _, ty) -> Ok(ir.Local(dest, ty))
+          ir.OpFrameGet(dest, _, _, ty) -> Ok(ir.Local(dest, ty, ir.Slot))
           _ -> Error(Nil)
         }
       })

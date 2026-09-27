@@ -52,7 +52,7 @@ pub fn compute(
 ) -> Result(Plan, Nil) {
   let handles =
     list.fold(locals, dict.new(), fn(acc, local) {
-      let ir.Local(local_name, local_ty) = local
+      let ir.Local(local_name, local_ty, _) = local
       case needs_drop_in(local_ty, fields_of, recursive) {
         True -> dict.insert(acc, local_name, local_ty)
         False -> acc
@@ -269,7 +269,7 @@ pub fn compute(
             )
           let drops =
             list.filter_map(locals, fn(local) {
-              let ir.Local(local_name, local_ty) = local
+              let ir.Local(local_name, local_ty, _) = local
               case dict.get(dead, local_name) {
                 Ok(_) ->
                   case dict.get(elided_subjects, local_name) {

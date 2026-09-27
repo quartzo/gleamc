@@ -172,5 +172,5 @@ fn finish_block(term, _ret, asyncs, locals, counter, label) {
 
 fn fresh_local(prefix, ty, locals, counter) {
   let name = prefix <> int.to_string(counter)
-  #(name, [ir.Local(name, ty), ..locals], counter + 1)
+  #(name, [ir.Local(name, ty, ir.Slot), ..locals], counter + 1)
 }

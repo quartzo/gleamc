@@ -15,6 +15,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import gleamc/abi
 import gleamc/ast.{type Type, TNamed, TString}
 import gleamc/checker
 import gleamc/ffi
@@ -51,6 +52,9 @@ type Ctx {
     /// / `TailMachine` retain an argument for the callee only when the caller
     /// frame still owns it (otherwise the value is moved and retaining leaks).
     frame_fields: Dict(String, Bool),
+    /// The locals promoted to SSA values by `ssa.gleam`. Their reads and writes
+    /// go through the `Builder`'s `values` map instead of a memory slot.
+    reg_locals: Dict(String, Bool),
   )
 }
 
@@ -873,7 +877,7 @@ fn emit_make_helper(custom, ctor, recursive) -> String {
       let #(_, ty) = field
       make_param_ty(ty, recursive) <> " %f" <> int.to_string(i)
     })
-  let b = Builder(next: 0, lines: [])
+  let b = new_builder()
   let b =
     emit_line(
       b,
@@ -1106,7 +1110,7 @@ fn collect_tuple_types(
       let ir.Function(_, _, ret, blocks, locals) = function
       let from_locals =
         list.flat_map(locals, fn(local) {
-          let ir.Local(_, ty) = local
+          let ir.Local(_, ty, _) = local
           tuple_types_in(ty)
         })
       let from_ops =
@@ -1316,8 +1320,10 @@ fn emit_function(
       machine_fns: machine_fns,
       frame: None,
       frame_fields: dict.new(),
+      reg_locals: reg_locals_map(locals),
     )
-  let b = Builder(next: 0, lines: [])
+  let b = new_builder()
+  let b = seed_reg_params(ctx, params, b)
   let b = emit_allocas(ctx, params, locals, b)
   let b = case blocks {
     [ir.Block(label, _, _), ..] ->
@@ -1331,7 +1337,7 @@ fn emit_function(
       llvm_ty(local_type(by_name, param), recursive) <> " %arg." <> safe(param)
     })
   let ret_s = llvm_ty(ret, recursive)
-  let sret = ret_needs_sret(ret, recursive)
+  let sret = abi.ret_needs_sret(ret, recursive)
   let params_s = case sret {
     True ->
       "ptr sret(" <> ret_s <> ") %__out"
@@ -1368,7 +1374,7 @@ fn unique_locals(locals: List(ir.Local)) -> List(ir.Local) {
   let #(_, rev) =
     list.fold(locals, #(dict.new(), []), fn(acc, local) {
       let #(seen, rev) = acc
-      let ir.Local(name, _) = local
+      let ir.Local(name, _, _) = local
       case dict.get(seen, name) {
         Ok(_) -> acc
         Error(_) -> #(dict.insert(seen, name, True), [local, ..rev])
@@ -1398,7 +1404,7 @@ fn frame_info(function: ir.Function, _recursive) -> FrameInfo {
   let uniq = unique_locals(locals)
   let fields =
     dict.from_list(list.index_map(uniq, fn(local, index) {
-      let ir.Local(n, _) = local
+      let ir.Local(n, _, _) = local
       #(n, index)
     }))
   let state = list.length(uniq)
@@ -1494,7 +1500,7 @@ fn emit_frame_drop(function, recursive, fields_of, lits) -> String {
   let body = "fd_" <> safe(name) <> "_body"
   let teardown = "fd_" <> safe(name) <> "_teardown"
   let rel = "fd_" <> safe(name) <> "_rel"
-  let b = Builder(next: 0, lines: [])
+  let b = new_builder()
   let b = emit_line(b, "define void @" <> frame_drop_sym(fr_ty) <> "(i8* %env) {")
   let b = emit_line(b, "  %isnull = icmp eq i8* %env, null")
   let b = emit_line(b, "  br i1 %isnull, label %" <> done <> ", label %" <> body)
@@ -1601,7 +1607,7 @@ fn frame_type_decl(function: ir.Function, recursive) -> String {
   let ir.Function(_, _, ret, _, locals) = function
   let field_tys =
     list.map(unique_locals(locals), fn(local) {
-      let ir.Local(_, ty) = local
+      let ir.Local(_, ty, _) = local
       llvm_ty(ty, recursive)
     })
   let tail = case is_nil_type(ret) {
@@ -2026,6 +2032,7 @@ fn emit_machine_function(
       machine_fns: machine_fns,
       frame: Some(info),
       frame_fields: frame_field_set(function),
+      reg_locals: dict.new(),
     )
   let resumes =
     list.fold(blocks, dict.new(), fn(acc, block) {
@@ -2035,7 +2042,7 @@ fn emit_machine_function(
         _ -> acc
       }
     })
-  let b = Builder(next: 0, lines: [])
+  let b = new_builder()
   let b =
     emit_line(b, "define i1 @Gleamc_" <> name <> "_step(" <> fr_ty <> "* %__fr) {")
   let b = emit_frame_locals(ctx, fr_ty, locals, b)
@@ -2075,7 +2082,7 @@ fn emit_machine_wrapper(function: ir.Function, info: FrameInfo, recursive: Dict(
     list.map(params, fn(param) {
       llvm_ty(local_type(by_name, param), recursive) <> " %arg." <> safe(param)
     })
-  let b = Builder(next: 0, lines: [])
+  let b = new_builder()
   let b =
     emit_line(
       b,
@@ -2188,7 +2195,7 @@ fn emit_copy_result(function: ir.Function, recursive: Dict(String, Bool), lits) 
   let info = frame_info(function, recursive)
   let FrameInfo(fr_ty, _reg, _fields, _state, _fut, result_idx, _) = info
   let ret_ty = llvm_ty(ret, recursive)
-  let b = Builder(next: 0, lines: [])
+  let b = new_builder()
   let b =
     emit_line(
       b,
@@ -2259,12 +2266,13 @@ fn emit_frame_function(
       machine_fns: machine_fns,
       frame: Some(info),
       frame_fields: frame_field_set(function),
+      reg_locals: dict.new(),
     )
   let args =
     list.map(params, fn(param) {
       llvm_ty(local_type(by_name, param), recursive) <> " %arg." <> safe(param)
     })
-  let sret = ret_needs_sret(ret, recursive)
+  let sret = abi.ret_needs_sret(ret, recursive)
   let params_s = case sret {
     True ->
       "ptr sret(" <> ret_ty <> ") %__out"
@@ -2274,7 +2282,7 @@ fn emit_frame_function(
       }
     False -> string.join(args, ", ")
   }
-  let b = Builder(next: 0, lines: [])
+  let b = new_builder()
   let b =
     emit_line(
       b,
@@ -2344,24 +2352,46 @@ fn emit_allocas(
 ) -> Builder {
   let b =
     list.fold(locals, b, fn(b, local) {
-      let ir.Local(name, ty) = local
-      let ty_s = llvm_ty(ty, ctx.recursive)
-      emit_line(b, "  " <> local_ptr(ctx, name) <> " = alloca " <> ty_s)
+      let ir.Local(name, ty, storage) = local
+      case storage {
+        ir.Reg -> b
+        ir.Slot -> {
+          let ty_s = llvm_ty(ty, ctx.recursive)
+          emit_line(b, "  " <> local_ptr(ctx, name) <> " = alloca " <> ty_s)
+        }
+      }
     })
   list.fold(params, b, fn(b, param) {
-    let ty = local_type(ctx.by_name, param)
-    let ty_s = llvm_ty(ty, ctx.recursive)
-    emit_line(
-      b,
-      "  store "
-        <> ty_s
-        <> " %arg."
-        <> safe(param)
-        <> ", "
-        <> ty_s
-        <> "* "
-        <> local_ptr(ctx, param),
-    )
+    case dict.has_key(ctx.reg_locals, param) {
+      True -> b
+      False -> {
+        let ty = local_type(ctx.by_name, param)
+        let ty_s = llvm_ty(ty, ctx.recursive)
+        emit_line(
+          b,
+          "  store "
+            <> ty_s
+            <> " %arg."
+            <> safe(param)
+            <> ", "
+            <> ty_s
+            <> "* "
+            <> local_ptr(ctx, param),
+        )
+      }
+    }
+  })
+}
+
+/// Bind every promoted parameter to its incoming `%arg.<name>` register, so
+/// `read_val` finds it in the `Builder`'s value map instead of loading a slot.
+fn seed_reg_params(ctx: Ctx, params: List(String), b: Builder) -> Builder {
+  list.fold(params, b, fn(b, param) {
+    case dict.has_key(ctx.reg_locals, param) {
+      True ->
+        Builder(..b, values: dict.insert(b.values, param, "%arg." <> safe(param)))
+      False -> b
+    }
   })
 }
 
@@ -2422,7 +2452,7 @@ fn emit_exit_term(ctx: Ctx, term: ir.Terminator, drops: List(ir.Op), b: Builder)
       let ret_ty = llvm_ty(ctx.ret, ctx.recursive)
       let #(_, v, b) = read_val(ctx, value, b)
       let b = emit_drops(ctx, drops, b)
-      case ret_needs_sret(ctx.ret, ctx.recursive) {
+      case abi.ret_needs_sret(ctx.ret, ctx.recursive) {
         True -> {
           let b =
             emit_line(b, "  store " <> ret_ty <> " " <> v <> ", ptr %__out")
@@ -2448,7 +2478,7 @@ fn emit_exit_term(ctx: Ctx, term: ir.Terminator, drops: List(ir.Op), b: Builder)
       let #(env, b) = extract_value(fn_s, fv, [1], b)
       let #(b, arg_list) = read_args(ctx, args, b)
       let ret_s = llvm_ty(ctx.ret, ctx.recursive)
-      case ret_needs_sret(ctx.ret, ctx.recursive) {
+      case abi.ret_needs_sret(ctx.ret, ctx.recursive) {
         True -> {
           let b =
             emit_line(
@@ -2505,7 +2535,7 @@ fn emit_tail_call(
     True -> "musttail call "
     False -> "call "
   }
-  case ret_needs_sret(ctx.ret, ctx.recursive) {
+  case abi.ret_needs_sret(ctx.ret, ctx.recursive) {
     True -> {
       let b =
         emit_line(
@@ -2541,23 +2571,6 @@ fn emit_tail_call(
 /// ABI (a large aggregate). Such a value must be returned through an **explicit**
 /// sret parameter: `musttail` forbids the automatic sret conversion, but an
 /// explicit one is a plain pointer argument that can be forwarded unchanged.
-fn ret_needs_sret(ty: Type, recursive: Dict(String, Bool)) -> Bool {
-  case ty {
-    ast.TInt | ast.TFloat | ast.TBool | ast.TNil -> False
-    TString -> False
-    TNamed("Nil") -> False
-    TNamed("BitArray") -> False
-    TNamed("void*") | TNamed("Future") | TNamed("Handle") -> False
-    ast.TFun(_, _) -> False
-    TNamed(name) -> !is_recursive(recursive, name)
-    _ -> True
-  }
-}
-
-/// Whether a direct tail call may be marked `musttail`. The default calling
-/// convention requires the caller and callee prototypes to match exactly, which
-/// holds for self- and same-signature mutual recursion. Aggregate returns are
-/// passed as an explicit sret pointer, so they do not block `musttail`.
 fn musttail_ok(ctx: Ctx, fun: String) -> Bool {
   prototype_matches(ctx, fun)
 }
@@ -2639,7 +2652,7 @@ fn frame_gep(
 /// so every existing `local_ptr(ctx, name)` keeps working unchanged.
 fn emit_frame_locals(ctx: Ctx, fr_ty: String, locals: List(ir.Local), b: Builder) {
   list.fold(unique_locals(locals), b, fn(b, local) {
-    let ir.Local(name, _) = local
+    let ir.Local(name, _, _) = local
     case ctx.frame {
       Some(FrameInfo(_, fr_reg, fields, _, _, _, _)) ->
         case dict.get(fields, name) {
@@ -2768,7 +2781,7 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
     ir.OpCall(dest, fun, args, ret_ty) -> {
       let #(b, arg_list) = read_args(ctx, args, b)
       let ret_s = llvm_ty(ret_ty, ctx.recursive)
-      case ret_needs_sret(ret_ty, ctx.recursive) {
+      case abi.ret_needs_sret(ret_ty, ctx.recursive) {
         // The callee writes the aggregate into `dest`'s own slot.
         True -> {
           let #(destp, b) = local_addr(ctx, dest, b)
@@ -4004,7 +4017,7 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
       let #(env, b) = extract_value(fn_s, fv, [1], b)
       let #(b, arg_list) = read_args(ctx, args, b)
       let ret_s = llvm_ty(ret_ty, ctx.recursive)
-      case ret_needs_sret(ret_ty, ctx.recursive) {
+      case abi.ret_needs_sret(ret_ty, ctx.recursive) {
         True -> {
           let #(destp, b) = local_addr(ctx, dest, b)
           let b =
@@ -4203,15 +4216,26 @@ fn read_args(ctx: Ctx, args: List(ir.Operand), b: Builder) {
 
 fn read_val(ctx: Ctx, operand: ir.Operand, b: Builder) {
   case operand {
-    ir.Var(name) -> {
-      let ty = local_type(ctx.by_name, name)
-      let ty_s = llvm_ty(ty, ctx.recursive)
-      let #(ptr, b) = local_addr(ctx, name, b)
-      let #(tmp, b) = fresh(b)
-      let b =
-        emit_line(b, "  " <> tmp <> " = load " <> ty_s <> ", " <> ty_s <> "* " <> ptr)
-      #(ty_s, tmp, b)
-    }
+    ir.Var(name) ->
+      case dict.get(b.values, name) {
+        // A promoted local (or parameter): it is an SSA register, no load.
+        Ok(reg) -> {
+          let ty_s = llvm_ty(local_type(ctx.by_name, name), ctx.recursive)
+          #(ty_s, reg, b)
+        }
+        Error(_) -> {
+          let ty = local_type(ctx.by_name, name)
+          let ty_s = llvm_ty(ty, ctx.recursive)
+          let #(ptr, b) = local_addr(ctx, name, b)
+          let #(tmp, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  " <> tmp <> " = load " <> ty_s <> ", " <> ty_s <> "* " <> ptr,
+            )
+          #(ty_s, tmp, b)
+        }
+      }
     ir.Lit(value) -> read_literal(ctx, value, b)
   }
 }
@@ -4264,8 +4288,14 @@ fn store_local(
   val: String,
   b: Builder,
 ) -> Builder {
-  let #(ptr, b) = local_addr(ctx, dest, b)
-  emit_line(b, "  store " <> ty_s <> " " <> val <> ", " <> ty_s <> "* " <> ptr)
+  case dict.has_key(ctx.reg_locals, dest) {
+    // A promoted local: bind the SSA register instead of storing a slot.
+    True -> Builder(..b, values: dict.insert(b.values, dest, val))
+    False -> {
+      let #(ptr, b) = local_addr(ctx, dest, b)
+      emit_line(b, "  store " <> ty_s <> " " <> val <> ", " <> ty_s <> "* " <> ptr)
+    }
+  }
 }
 
 fn operand_type(by_name: Dict(String, Type), operand: ir.Operand) -> Type {
@@ -4294,8 +4324,18 @@ fn local_type(by_name: Dict(String, Type), name: String) -> Type {
 
 fn locals_map(locals: List(ir.Local)) -> Dict(String, Type) {
   list.fold(locals, dict.new(), fn(acc, local) {
-    let ir.Local(name, ty) = local
+    let ir.Local(name, ty, _) = local
     dict.insert(acc, name, ty)
+  })
+}
+
+fn reg_locals_map(locals: List(ir.Local)) -> Dict(String, Bool) {
+  list.fold(locals, dict.new(), fn(acc, local) {
+    let ir.Local(name, _, storage) = local
+    case storage {
+      ir.Reg -> dict.insert(acc, name, True)
+      ir.Slot -> acc
+    }
   })
 }
 
@@ -4460,19 +4500,12 @@ fn runtime_declared(name: String) -> Bool {
   }
 }
 
-fn is_file_result(ty: Type) -> Bool {
-  case ty {
-    TNamed("FileResult") -> True
-    _ -> False
-  }
-}
-
 /// Runtime functions that return or take `GleamcFileResult` (a 32-byte
 /// aggregate) use the C ABI: `sret` for the result and `byval` pointers for
 /// arguments. Emitting them by value would mismatch clang's lowering.
 fn builtin_arg_ty(by_name, recursive, arg) -> String {
   let ty = operand_type(by_name, arg)
-  case is_file_result(ty) {
+  case abi.is_file_result(ty) {
     True -> "ptr byval(%GleamcFileResult)"
     False -> llvm_ty(ty, recursive)
   }
@@ -4568,7 +4601,7 @@ fn collect_buffer_elems(custom_types, functions) -> List(Type) {
       list.append(
         buffer_elems_in(ret),
         list.flat_map(locals, fn(local) {
-          let ir.Local(_, ty) = local
+          let ir.Local(_, ty, _) = local
           buffer_elems_in(ty)
         }),
       )
@@ -4623,7 +4656,7 @@ fn emit_buffer_slot_glue(
 ) -> String {
   let ty_s = llvm_ty(elem, recursive)
   let name = "Gleamc_Buffer_" <> mangle_glue(elem) <> "_" <> which
-  let b = Builder(next: 0, lines: [])
+  let b = new_builder()
   let b = emit_line(b, "define void @" <> name <> "(i8* %slot) {")
   let #(p, b) = fresh(b)
   let b =
@@ -4657,7 +4690,7 @@ fn builtin_decl(builtin, ret_ty, args, by_name, recursive) -> String {
       list.map(args, fn(arg) { builtin_arg_ty(by_name, recursive, arg) }),
       ", ",
     )
-  case is_file_result(ret_ty) {
+  case abi.is_file_result(ret_ty) {
     True ->
       "declare void @"
       <> name
@@ -4681,12 +4714,12 @@ fn builtin_decl(builtin, ret_ty, args, by_name, recursive) -> String {
 fn emit_builtin_call(ctx: Ctx, dest, builtin, args, ret_ty, b) {
   let name = builtin_symbol(builtin)
   let ret_s = llvm_ty(ret_ty, ctx.recursive)
-  let sret = is_file_result(ret_ty)
+  let sret = abi.is_file_result(ret_ty)
   let #(b, rev_parts) =
     list.fold(args, #(b, []), fn(acc, arg) {
       let #(b, parts) = acc
       let oty = operand_type(ctx.by_name, arg)
-      case is_file_result(oty) {
+      case abi.is_file_result(oty) {
         True -> {
           let #(_, v, b) = read_val(ctx, arg, b)
           let #(slot, b) = fresh(b)
@@ -4833,7 +4866,7 @@ fn code_ty(fn_ty: Type, recursive: Dict(String, Bool)) -> String {
     ast.TFun(params, ret) -> {
       let gleam_args =
         list.map(params, fn(param) { llvm_ty(param, recursive) })
-      case ret_needs_sret(ret, recursive) {
+      case abi.ret_needs_sret(ret, recursive) {
         // The explicit out pointer comes first, then the closure environment.
         True ->
           "void (ptr, i8*"
@@ -4887,7 +4920,7 @@ fn collect_fn_types(
       let ir.Function(_, _, ret, blocks, locals) = function
       let from_locals =
         list.flat_map(locals, fn(local) {
-          let ir.Local(_, ty) = local
+          let ir.Local(_, ty, _) = local
           fn_types_in(ty)
         })
       let from_ops =
@@ -4965,7 +4998,7 @@ fn wrapper_def(function: ir.Function, code: String, recursive) -> String {
   // typed parameter declarations for the call arguments too.
   let args = string.join(decls, ", ")
   let ret_s = llvm_ty(ret, recursive)
-  let sret = ret_needs_sret(ret, recursive)
+  let sret = abi.ret_needs_sret(ret, recursive)
   let params_decl = case sret {
     True ->
       "ptr sret(" <> ret_s <> ") %out, i8* %env"
@@ -5098,7 +5131,7 @@ fn emit_eq_glue(
 ) -> String {
   let ty_s = llvm_ty(ty, recursive)
   let name = eq_name_ty(ty)
-  let b = Builder(next: 0, lines: [])
+  let b = new_builder()
   let b =
     emit_line(
       b,
@@ -5520,7 +5553,7 @@ fn inspect_val(recursive, lits, ty: Type, val: String, b: Builder) {
 fn emit_show_glue(recursive, custom_types, lits, ty) -> String {
   let ty_s = llvm_ty(ty, recursive)
   let name = "Gleamc_Inspect_" <> mangle_glue(ty)
-  let b = Builder(next: 0, lines: [])
+  let b = new_builder()
   let b =
     emit_line(b, "define %GleamcString @" <> name <> "(" <> ty_s <> " %a) {")
   let #(b, _) = show_body(recursive, custom_types, lits, ty, ty_s, b)
@@ -5884,7 +5917,7 @@ fn variant_index_of_type(_lits, type_name, base) -> Int {
 fn emit_cmp_glue(recursive, custom_types, ty) -> String {
   let ty_s = llvm_ty(ty, recursive)
   let name = "Gleamc_Cmp_" <> mangle_glue(ty)
-  let b = Builder(next: 0, lines: [])
+  let b = new_builder()
   let b =
     emit_line(
       b,
@@ -6539,7 +6572,7 @@ fn emit_rc_glue(
 ) -> String {
   let ty_s = llvm_ty(ty, recursive)
   let name = rc_name(which, ty)
-  let b = Builder(next: 0, lines: [])
+  let b = new_builder()
   let b = case ty {
     ast.TTuple(types) -> {
       let b = emit_line(b, "define void @" <> name <> "(" <> ty_s <> " %v) {")
@@ -6921,15 +6954,22 @@ fn rc_glue_list(
 // ---------------------------------------------------------------------------
 
 type Builder {
-  Builder(next: Int, lines: List(String))
+  Builder(next: Int, lines: List(String), values: Dict(String, String))
+}
+
+fn new_builder() -> Builder {
+  Builder(next: 0, lines: [], values: dict.new())
 }
 
 fn fresh(b: Builder) -> #(String, Builder) {
-  let Builder(next, lines) = b
-  #("%t" <> int.to_string(next), Builder(next: next + 1, lines: lines))
+  let Builder(next, lines, values) = b
+  #(
+    "%t" <> int.to_string(next),
+    Builder(next: next + 1, lines: lines, values: values),
+  )
 }
 
 fn emit_line(b: Builder, text: String) -> Builder {
-  let Builder(next, lines) = b
-  Builder(next: next, lines: [text, ..lines])
+  let Builder(next, lines, values) = b
+  Builder(next: next, lines: [text, ..lines], values: values)
 }

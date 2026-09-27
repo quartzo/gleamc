@@ -132,8 +132,17 @@ pub type Block {
   Block(label: String, ops: List(Op), term: Terminator)
 }
 
+/// Where a local lives after the SSA pass: a memory `Slot` (an alloca / frame
+/// field, address-takeable) or a `Reg` (a pure SSA value the pass promoted; the
+/// backend keeps it in a register and never emits an alloca for it). See
+/// `ssa.gleam`.
+pub type Storage {
+  Slot
+  Reg
+}
+
 pub type Local {
-  Local(name: String, ty: Type)
+  Local(name: String, ty: Type, storage: Storage)
 }
 
 pub type Function {
@@ -373,8 +382,15 @@ pub fn to_text(module: Module) -> String {
         "  locals:\n"
         <> string.join(
           list.map(locals, fn(local) {
-            let Local(local_name, local_ty) = local
-            "    " <> local_name <> ": " <> describe_type(local_ty)
+            let Local(local_name, local_ty, storage) = local
+            "    "
+            <> local_name
+            <> ": "
+            <> describe_type(local_ty)
+            <> case storage {
+              Slot -> ""
+              Reg -> " (reg)"
+            }
           }),
           "\n",
         )

@@ -27,6 +27,7 @@ import gleamc/ownership
 import gleamc/parser
 import gleamc/qualify
 import gleamc/spawn
+import gleamc/ssa
 import gleamc/tmono
 
 /// Single-module convenience (entry module name "").
@@ -120,7 +121,10 @@ fn cascade(modules: List(#(String, Module))) {
   let ir_module = frame.materialize(ir_module)
   let t = mark("frame", t)
   let owned = ownership.insert(ir_module, checked.ctors)
-  let _ = mark("ownership", t)
+  let t = mark("ownership", t)
+  // Promote single-definition locals to SSA values (no alloca/load/store).
+  let owned = ssa.promote(owned, ownership.recursive_types(checked.ctors))
+  let _ = mark("ssa", t)
   Ok(#(typed_module, owned, checked.ctors, custom_types_of(typed_module)))
 }
 

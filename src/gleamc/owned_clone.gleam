@@ -80,7 +80,7 @@ fn has_borrow_handle(function, param_modes, is_handle) -> Bool {
   let ir.Function(_, params, _, _, locals) = function
   let by_local =
     list.fold(locals, dict.new(), fn(acc, local) {
-      let ir.Local(name, ty) = local
+      let ir.Local(name, ty, _) = local
       dict.insert(acc, name, ty)
     })
   let indexed = list.index_map(params, fn(param, index) { #(param, index) })

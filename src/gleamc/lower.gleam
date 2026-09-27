@@ -55,7 +55,7 @@ fn fresh_local(b: Builder, prefix: String, ty: Type) -> #(String, Builder) {
   #(
     name,
     Builder(..b, next_id: id + 1, locals_rev: [
-      ir.Local(name, ty),
+      ir.Local(name, ty, ir.Slot),
       ..b.locals_rev
     ]),
   )
@@ -164,7 +164,7 @@ fn lower_function(
   let initial_locals =
     list.map(function.params, fn(param) {
       let #(name, ty) = param
-      ir.Local(name, ty)
+      ir.Local(name, ty, ir.Slot)
     })
   let env =
     list.map(function.params, fn(param) {
