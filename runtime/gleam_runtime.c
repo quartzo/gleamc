@@ -1253,10 +1253,13 @@ typedef struct GleamcMailbox {
     void** deferred;
     int ndef;
     int dcap;
+    /* The task that created the subject (its owner), for `subject_owner`. */
+    int64_t owner;
 } GleamcMailbox;
 
 int64_t Gleamc_process_ffi_new_subject(void) {
     GleamcMailbox* mb = (GleamcMailbox*)gleamc_alloc0(sizeof(GleamcMailbox));
+    mb->owner = gleamc_current_task_id;
     return (int64_t)(intptr_t)mb;
 }
 
@@ -1624,6 +1627,16 @@ int64_t Gleamc_process_ffi_selector_remove(int64_t handle, int64_t subject) {
     return handle;
 }
 
+/* Copies `b`'s subjects into `a` (deduplicated) and returns `a`. */
+int64_t Gleamc_process_ffi_selector_merge(int64_t a, int64_t b) {
+    GleamcSelector* sa = (GleamcSelector*)(intptr_t)a;
+    GleamcSelector* sb = (GleamcSelector*)(intptr_t)b;
+    if (sa == NULL || sb == NULL) return a;
+    for (int i = 0; i < sb->nsub; i++)
+        Gleamc_process_ffi_selector_add(a, sb->subjects[i]);
+    return a;
+}
+
 int64_t Gleamc_process_ffi_selector_subject(int64_t handle, int64_t index) {
     GleamcSelector* sel = (GleamcSelector*)(intptr_t)handle;
     if (sel == NULL || index < 0 || index >= sel->nsub) return 0;
@@ -1642,7 +1655,7 @@ GleamcFuture* Gleamc_process_ffi_selector_wait(int64_t handle, int64_t ms) {
     }
     for (int i = 0; i < sel->nsub; i++) {
         GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)sel->subjects[i];
-        if (mb != NULL && mb->nmsg > 0) {
+        if (mb != NULL && (mb->nmsg > 0 || mb->ndef > 0)) {
             f->value_i = 1;
             f->done = true;
             return f;
@@ -1918,6 +1931,20 @@ int32_t Gleamc_process_ffi_kill(int64_t pid) {
     return 0;
 }
 
+/* `exit(pid, Normal)`: a trapping target gets an `ExitMessage`, a non-trapping
+ * one ignores the signal. */
+int32_t Gleamc_process_ffi_send_exit(int64_t pid) {
+    GleamcTask2* t = gleamc_task_by_id(pid);
+    if (t == NULL || t->finished) return 0;
+    if (t->trap_exit && Gleamc_make_process_ExitMessage_ExitMessage != NULL) {
+        if (t->inbox_exit == NULL) t->inbox_exit = gleamc_mailbox_new();
+        void* box =
+            Gleamc_make_process_ExitMessage_ExitMessage(gleamc_current_task_id, 0);
+        gleamc_mailbox_send_box(t->inbox_exit, box);
+    }
+    return 0;
+}
+
 int32_t Gleamc_process_ffi_unreceive(int64_t handle, void* box) {
     GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)handle;
     if (mb == NULL) { gleamc_box_free(box); return 0; }
@@ -1942,6 +1969,26 @@ int64_t Gleamc_process_ffi_mailbox_len(int64_t handle) {
 }
 
 int64_t Gleamc_process_ffi_subject_handle(int64_t handle) { return handle; }
+
+/* The owning task id of a subject, or the pid registered for a named subject,
+ * or -1. */
+int64_t Gleamc_process_ffi_subject_owner(int64_t handle) {
+    for (int i = 0; i < gleamc_names_n; i++) {
+        if (gleamc_names[i].name == handle) return gleamc_names[i].pid;
+    }
+    GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)handle;
+    return mb == NULL ? -1 : mb->owner;
+}
+
+/* The name handle a subject was created from, or -1 if it has no name. */
+int64_t Gleamc_process_ffi_subject_name(int64_t handle) {
+    for (int i = 0; i < gleamc_names_n; i++) {
+        if (gleamc_names[i].name == handle) return handle;
+    }
+    return -1;
+}
+
+int64_t Gleamc_process_ffi_name_of_int(int64_t handle) { return handle; }
 
 void gleamc_run_until(GleamcFuture* target) {
     void* loop = gleamc_uv_loop();

@@ -118,10 +118,18 @@ pub fn table() -> Dict(String, FfiSig) {
     "process_ffi.selector_wait",
     FfiSig([Borrow, Borrow], OwnedResult),
   )
+  |> dict.insert(
+    "process_ffi.selector_merge",
+    FfiSig([Borrow, Borrow], OwnedResult),
+  )
   |> dict.insert("process_ffi.unreceive", FfiSig([Borrow, Owned], OwnedResult))
   |> dict.insert("process_ffi.has_message", FfiSig([Borrow], OwnedResult))
   |> dict.insert("process_ffi.mailbox_len", FfiSig([Borrow], OwnedResult))
   |> dict.insert("process_ffi.subject_handle", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("process_ffi.subject_owner", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("process_ffi.subject_name", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("process_ffi.name_of_int", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("process_ffi.send_exit", FfiSig([Borrow], OwnedResult))
   |> dict.insert("task.async", FfiSig([Borrow], OwnedResult))
   |> dict.insert("task_ffi.await", FfiSig([Borrow], OwnedResult))
   |> dict.insert("int.to_string", FfiSig([Borrow], OwnedResult))

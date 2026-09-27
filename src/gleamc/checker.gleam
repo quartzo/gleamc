@@ -2456,6 +2456,60 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         _ -> Error(CheckError("process_ffi.subject_handle expects a Subject(a)"))
       }
     }
+    "process_ffi", "subject_owner" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [subject] ->
+          case subject_elem_type(tmono.type_of(subject)) {
+            Ok(_) ->
+              Ok(builtin_call("process_ffi", "subject_owner", [tmono.type_of(subject)], TInt, typed_args))
+            Error(_) -> Error(CheckError("process_ffi.subject_owner expects a Subject(a)"))
+          }
+        _ -> Error(CheckError("process_ffi.subject_owner expects a Subject(a)"))
+      }
+    }
+    "process_ffi", "subject_name" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [subject] ->
+          case subject_elem_type(tmono.type_of(subject)) {
+            Ok(_) ->
+              Ok(builtin_call("process_ffi", "subject_name", [tmono.type_of(subject)], TInt, typed_args))
+            Error(_) -> Error(CheckError("process_ffi.subject_name expects a Subject(a)"))
+          }
+        _ -> Error(CheckError("process_ffi.subject_name expects a Subject(a)"))
+      }
+    }
+    "process_ffi", "name_of_int" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      Ok(builtin_call(
+        "process_ffi",
+        "name_of_int",
+        [TInt],
+        TApp("Name", [TVar("__name_elem")]),
+        typed_args,
+      ))
+    }
+    "process_ffi", "selector_merge" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TInt, TInt],
+        TInt,
+        "process_ffi.selector_merge",
+      )
+    "process_ffi", "send_exit" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("Pid")],
+        TNil,
+        "process_ffi.send_exit",
+      )
     "task_ffi", "pid" -> {
       use typed_args <- result.try(infer_all(env, signatures, ctors, args))
       case typed_args {

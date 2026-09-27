@@ -504,6 +504,11 @@ fn header(audit: Bool) -> String {
   <> "declare i64 @Gleamc_process_ffi_mailbox_len(i64)\n"
   <> "declare i1 @Gleamc_process_ffi_monitor_eq(i64, i64)\n"
   <> "declare i64 @Gleamc_process_ffi_subject_handle(i64)\n"
+  <> "declare i64 @Gleamc_process_ffi_subject_owner(i64)\n"
+  <> "declare i64 @Gleamc_process_ffi_subject_name(i64)\n"
+  <> "declare i64 @Gleamc_process_ffi_name_of_int(i64)\n"
+  <> "declare i64 @Gleamc_process_ffi_selector_merge(i64, i64)\n"
+  <> "declare i32 @Gleamc_process_ffi_send_exit(i64)\n"
   <> "declare i64 @Gleamc_process_ffi_send_after(i64, i64, i8*)\n"
   <> "declare i64 @Gleamc_process_ffi_cancel_timer(i64)\n"
   <> "declare i64 @gleamc_task_id(i8*)\n"
@@ -5036,6 +5041,11 @@ fn runtime_declared(name: String) -> Bool {
     | "Gleamc_process_ffi_has_message"
     | "Gleamc_process_ffi_mailbox_len"
     | "Gleamc_process_ffi_subject_handle"
+    | "Gleamc_process_ffi_subject_owner"
+    | "Gleamc_process_ffi_subject_name"
+    | "Gleamc_process_ffi_name_of_int"
+    | "Gleamc_process_ffi_selector_merge"
+    | "Gleamc_process_ffi_send_exit"
     | "Gleamc_process_ffi_monitor_eq"
     | "Gleamc_process_ffi_cancel_timer"
     | "Gleamc_buffer_new"
@@ -5911,10 +5921,21 @@ fn is_handle_like(ty: Type) -> Bool {
     TNamed("Selector") -> True
     TNamed("Name") -> True
     TNamed(name) ->
-      case ast.subject_elem_name(name), ast.task_elem_name(name) {
-        Ok(_), _ -> True
-        _, Ok(_) -> True
-        _, Error(_) -> False
+      case ast.subject_elem_name(name) {
+        Ok(_) -> True
+        Error(_) ->
+          case ast.task_elem_name(name) {
+            Ok(_) -> True
+            Error(_) ->
+              case ast.name_elem_name(name) {
+                Ok(_) -> True
+                Error(_) ->
+                  case ast.selector_elem_name(name) {
+                    Ok(_) -> True
+                    Error(_) -> False
+                  }
+              }
+          }
       }
     _ -> False
   }

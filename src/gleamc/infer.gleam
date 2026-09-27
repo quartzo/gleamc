@@ -1109,6 +1109,23 @@ fn builtins() -> Dict(String, Scheme) {
     "process_ffi.subject_handle",
     Scheme([9180], Fun([Con("Subject", [Var(9180)])], i)),
   )
+  |> dict.insert(
+    "process_ffi.subject_owner",
+    Scheme([9181], Fun([Con("Subject", [Var(9181)])], i)),
+  )
+  |> dict.insert(
+    "process_ffi.subject_name",
+    Scheme([9182], Fun([Con("Subject", [Var(9182)])], i)),
+  )
+  |> dict.insert(
+    "process_ffi.name_of_int",
+    Scheme([9183], Fun([i], Con("Name", [Var(9183)]))),
+  )
+  |> dict.insert("process_ffi.selector_merge", Scheme(none, Fun([i, i], i)))
+  |> dict.insert(
+    "process_ffi.send_exit",
+    Scheme(none, Fun([Con("Pid", [])], n)),
+  )
 }
 
 /// The names of every builtin, used by `ffi_modes` coverage checks.

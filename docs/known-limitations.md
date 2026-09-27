@@ -125,7 +125,8 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   `task.await(t, timeout)` crashes on timeout like the original. `Pid`
   operations `self`, `is_alive`, `spawn_unlinked` and `task.pid` are provided
   (`Pid` is a stable task id), as are selectors (`new_selector`, `select`,
-  `select_map`, `deselect`, `selector_receive`, `selector_receive_forever`) and
+  `select_map`, `map_selector`, `merge_selector`, `deselect`,
+  `selector_receive`, `selector_receive_forever`) and
   `send_after`/`cancel_timer`. A `Selector` is a Gleam record holding an opaque
   handle plus an in-process handler list; `selector_receive*` polls the handlers
   (so the `mapping` closures run directly, no forwarder task), sets aside
@@ -136,14 +137,14 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   (`Gleamc_make_process_Down_ProcessDown`) — `monitor`, `demonitor`,
   `demonitor_process`, `select_monitors`, `select_specific_monitor`,
   `link`, `unlink`, `trap_exits` and
-  `select_trapped_exits`, plus `kill`. A non-trapping link **propagates the
-  exit** (the linked task is terminated); a trapping link gets an
-  `ExitMessage`. Names are supported (`new_name`, `register`, `unregister`,
+  `select_trapped_exits`, plus `kill` and `send_exit`. A non-trapping link
+  **propagates the exit** (the linked task is terminated); a trapping link gets
+  an `ExitMessage`. Names are supported (`new_name`, `register`, `unregister`,
   `named`, `named_subject`); a `Name(a)` is a subject handle, so
-  `named_subject` returns it. Restrictions: `ExitReason` only has
-  `Normal`/`Killed` (no `Abnormal(Dynamic)`), `send_exit`/`send_abnormal_exit`
-  and `select_other`/`select_record` are not
-  implemented, `subject_name`/`subject_owner` are missing, and `AwaitError`
+  `named_subject` returns it and `subject_name`/`subject_owner` look it up.
+  Restrictions: `ExitReason` only has `Normal`/`Killed` (no
+  `Abnormal(Dynamic)`), `send_abnormal_exit` and
+  `select_other`/`select_record` are not implemented, and `AwaitError`
   only has `Timeout`. A
   `Subject(a)` handles are refcounted and their mailbox is freed when the last
   reference dies (queued boxes are freed too, but their payload references are

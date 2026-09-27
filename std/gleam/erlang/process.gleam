@@ -120,6 +120,25 @@ pub fn named_subject(name: Name(message)) -> Subject(message) {
   process_ffi.named_subject(name)
 }
 
+/// Get the owner process of a subject. For a named subject this is the process
+/// registered under the name, returning an error if none is registered.
+pub fn subject_owner(subject: Subject(message)) -> Result(Pid, Nil) {
+  let owner = process_ffi.subject_owner(subject)
+  case owner < 0 {
+    True -> Error(Nil)
+    False -> Ok(process_ffi.pid_of_int(owner))
+  }
+}
+
+/// Get the name of a subject, returning `Error(Nil)` if it has none.
+pub fn subject_name(subject: Subject(message)) -> Result(Name(message), Nil) {
+  let name = process_ffi.subject_name(subject)
+  case name < 0 {
+    True -> Error(Nil)
+    False -> Ok(process_ffi.name_of_int(name))
+  }
+}
+
 /// Monitor a process, so that a `Down` message is sent to the current process
 /// when it exits. Remove it with `demonitor`.
 pub fn monitor(pid: Pid) -> Monitor {
@@ -149,6 +168,12 @@ pub fn select_monitors(
 /// Send an untrappable kill signal to a process, terminating it.
 pub fn kill(pid: Pid) -> Nil {
   process_ffi.kill(pid)
+}
+
+/// Send an exit signal to a process. A trapping process receives an
+/// `ExitMessage`; a non-trapping one ignores a `Normal` signal.
+pub fn send_exit(to: Pid) -> Nil {
+  process_ffi.send_exit(to)
 }
 
 /// Create a link between the current process and `pid`.
@@ -205,10 +230,48 @@ pub fn deselect(
   )
 }
 
+/// Transform the payload of every handler in a `Selector`.
+pub fn map_selector(a: Selector(a), b: fn(a) -> b) -> Selector(b) {
+  Selector(handle: a.handle, handlers: map_handlers(a.handlers, b))
+}
+
+fn map_handlers(handlers: Handlers(a), f: fn(a) -> b) -> Handlers(b) {
+  case handlers {
+    Done -> Done
+    More(handle, run, rest) ->
+      More(
+        handle,
+        fn() {
+          case run() {
+            Ok(value) -> Ok(f(value))
+            Error(_) -> Error(Nil)
+          }
+        },
+        map_handlers(rest, f),
+      )
+  }
+}
+
+/// Merge two selectors into one containing the handlers of both. If a subject
+/// is handled by both, the second selector's handler takes precedence.
+pub fn merge_selector(
+  a: Selector(payload),
+  b: Selector(payload),
+) -> Selector(payload) {
+  Selector(
+    handle: process_ffi.selector_merge(a.handle, b.handle),
+    handlers: append_handlers(b.handlers, a.handlers),
+  )
+}
+
+fn append_handlers(x: Handlers(payload), y: Handlers(payload)) -> Handlers(payload) {
+  case x {
+    Done -> y
+    More(handle, run, rest) -> More(handle, run, append_handlers(rest, y))
+  }
+}
+
 /// Add a `Subject` to a `Selector`, transforming each message with `mapping`.
-///
-/// The transform runs in a forwarder task that reads the subject and sends the
-/// mapped value on an internal subject the selector waits on.
 pub fn select_map(
   selector: Selector(payload),
   for: Subject(message),

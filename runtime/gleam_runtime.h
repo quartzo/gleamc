@@ -395,6 +395,9 @@ int32_t Gleamc_process_ffi_unreceive(int64_t handle, void* box);
 bool Gleamc_process_ffi_has_message(int64_t handle);
 int64_t Gleamc_process_ffi_mailbox_len(int64_t handle);
 int64_t Gleamc_process_ffi_subject_handle(int64_t handle);
+int64_t Gleamc_process_ffi_subject_owner(int64_t handle);
+int64_t Gleamc_process_ffi_subject_name(int64_t handle);
+int64_t Gleamc_process_ffi_name_of_int(int64_t handle);
 int32_t Gleamc_process_ffi_send(int64_t handle, void* box);
 GleamcFuture* Gleamc_process_ffi_receive(int64_t handle);
 /* Waits until a message is available on the subject or `ms` elapse. The
@@ -435,11 +438,13 @@ int32_t Gleamc_process_ffi_trap_exits(bool on);
 bool Gleamc_process_ffi_link(int64_t pid);
 int32_t Gleamc_process_ffi_unlink(int64_t pid);
 int32_t Gleamc_process_ffi_kill(int64_t pid);
+int32_t Gleamc_process_ffi_send_exit(int64_t pid);
 
 /* Selectors: wait for a message on any of several subjects. */
 int64_t Gleamc_process_ffi_selector_new(void);
 int64_t Gleamc_process_ffi_selector_add(int64_t handle, int64_t subject);
 int64_t Gleamc_process_ffi_selector_remove(int64_t handle, int64_t subject);
+int64_t Gleamc_process_ffi_selector_merge(int64_t a, int64_t b);
 int64_t Gleamc_process_ffi_selector_subject(int64_t handle, int64_t index);
 GleamcFuture* Gleamc_process_ffi_selector_wait(int64_t handle, int64_t ms);
 int64_t Gleamc_process_ffi_selector_ready(int64_t handle);
