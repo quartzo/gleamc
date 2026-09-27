@@ -1123,7 +1123,8 @@ fn arms(subject, tokens, acc) {
 fn parse_arm(tokens) {
   use #(alternatives, rest) <- and_then(arm_patterns(tokens, []))
   let #(guard, rest1) = parse_guard(skip_newlines(rest))
-  use rest2 <- and_then(expect_symbol(rest1, "->"))
+  // A multi-line guard ends on its own line, before the arm's `->`.
+  use rest2 <- and_then(expect_symbol(skip_newlines(rest1), "->"))
   use #(body, rest3) <- and_then(parse_expr(skip_newlines(rest2)))
   Ok(#(
     list.map(arm_combinations(alternatives), fn(pat) { Arm(pat, guard, body) }),

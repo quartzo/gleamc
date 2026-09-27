@@ -27,6 +27,23 @@ pub fn parse_type_variable_test() {
   ])) = parser.parse("fn id(x: a) -> a { x }")
 }
 
+/// A multi-line guard uses leading `||`/`&&` continuations and its `->` on a
+/// new line (the shape `gleam format` produces).
+pub fn parse_multiline_guard_test() {
+  let source =
+    "fn f(x: Int) -> Int {
+  case x {
+    n if n == 1
+      || n == 2
+      || n == 3
+    -> n
+    _ -> 0
+  }
+}"
+  let assert Ok(Module([DFunction(Function(_, "f", _, _, _, _))])) =
+    parser.parse(source)
+}
+
 pub fn parse_generic_application_test() {
   let assert Ok(Module([
     DFunction(Function(
