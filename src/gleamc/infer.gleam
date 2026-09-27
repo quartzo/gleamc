@@ -1126,6 +1126,11 @@ fn builtins() -> Dict(String, Scheme) {
     Scheme([9183], Fun([i], Con("Name", [Var(9183)]))),
   )
   |> dict.insert("process_ffi.selector_merge", Scheme(none, Fun([i, i], i)))
+  |> dict.insert("process_ffi.selector_watch_owned", Scheme(none, Fun([i], i)))
+  |> dict.insert(
+    "process_ffi.selector_other_raw",
+    Scheme(none, Fun([i], Con("Dynamic", []))),
+  )
   |> dict.insert(
     "process_ffi.send_exit",
     Scheme(none, Fun([Con("Pid", [])], n)),

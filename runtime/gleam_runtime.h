@@ -454,6 +454,8 @@ int64_t Gleamc_process_ffi_selector_new(void);
 int64_t Gleamc_process_ffi_selector_add(int64_t handle, int64_t subject);
 int64_t Gleamc_process_ffi_selector_remove(int64_t handle, int64_t subject);
 int64_t Gleamc_process_ffi_selector_merge(int64_t a, int64_t b);
+int64_t Gleamc_process_ffi_selector_watch_owned(int64_t handle);
+int64_t Gleamc_process_ffi_selector_other_raw(int64_t handle);
 int64_t Gleamc_process_ffi_selector_subject(int64_t handle, int64_t index);
 GleamcFuture* Gleamc_process_ffi_selector_wait(int64_t handle, int64_t ms);
 int64_t Gleamc_process_ffi_selector_ready(int64_t handle);

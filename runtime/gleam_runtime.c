@@ -1073,7 +1073,16 @@ typedef struct {
     /* Set by `kill`/link propagation; the driver terminates the task. */
     bool kill_requested;
     int64_t kill_reason;
+    /* Subjects this task owns (their mailboxes), for `select_other`. */
+    GleamcMailbox** owned;
+    int nowned;
+    int ocap;
 } GleamcTask2;
+
+static GleamcTask2* gleamc_task_by_id(int64_t id);
+static GleamcMailbox* gleamc_mailbox_new(void);
+static void gleamc_task_add_owned(GleamcTask2* t, GleamcMailbox* mb);
+static void gleamc_task_remove_owned(GleamcTask2* t, GleamcMailbox* mb);
 
 static GleamcTask2 gleamc_tasks2[GLEAMC_TASKS_MAX];
 static int gleamc_tasks2_n = 0;
@@ -1261,9 +1270,50 @@ typedef struct GleamcMailbox {
     int64_t owner;
 } GleamcMailbox;
 
+static void gleamc_task_add_owned(GleamcTask2* t, GleamcMailbox* mb) {
+    if (t == NULL) return;
+    if (t->nowned == t->ocap) {
+        int cap = t->ocap == 0 ? 8 : t->ocap * 2;
+        GleamcMailbox** grown =
+            (GleamcMailbox**)realloc(t->owned, (size_t)cap * sizeof(GleamcMailbox*));
+        if (grown == NULL) return;
+        t->owned = grown;
+        t->ocap = cap;
+    }
+    t->owned[t->nowned++] = mb;
+}
+
+static void gleamc_task_remove_owned(GleamcTask2* t, GleamcMailbox* mb) {
+    if (t == NULL || t->owned == NULL) return;
+    for (int i = 0; i < t->nowned; i++) {
+        if (t->owned[i] == mb) {
+            for (int j = i + 1; j < t->nowned; j++) t->owned[j - 1] = t->owned[j];
+            t->nowned--;
+            return;
+        }
+    }
+}
+
+static void gleamc_task_register_subject(GleamcTask2* t, GleamcMailbox* mb) {
+    if (mb == NULL) return;
+    mb->owner = (t != NULL) ? t->id : gleamc_current_task_id;
+    gleamc_task_add_owned(t, mb);
+}
+
+/* Lazily create a task's monitor/exit inbox, owned by the task (so
+ * `select_other` can see its messages). */
+static GleamcMailbox* gleamc_task_inbox(GleamcTask2* t, GleamcMailbox** slot) {
+    if (*slot == NULL) {
+        *slot = gleamc_mailbox_new();
+        if (t != NULL) gleamc_task_register_subject(t, *slot);
+        else if (*slot != NULL) (*slot)->owner = gleamc_current_task_id;
+    }
+    return *slot;
+}
+
 int64_t Gleamc_process_ffi_new_subject(void) {
     GleamcMailbox* mb = (GleamcMailbox*)gleamc_alloc0(sizeof(GleamcMailbox));
-    mb->owner = gleamc_current_task_id;
+    gleamc_task_register_subject(gleamc_task_by_id(gleamc_current_task_id), mb);
     return (int64_t)(intptr_t)mb;
 }
 
@@ -1282,6 +1332,7 @@ void Gleamc_subject_release(int64_t handle) {
     if (mb == NULL) return;
     GleamcHdr* h = (GleamcHdr*)((uint8_t*)mb - sizeof(GleamcHdr));
     if (h->refcount != GLEAMC_RC_STATIC && h->refcount == 1) {
+        gleamc_task_remove_owned(gleamc_task_by_id(mb->owner), mb);
         for (int i = 0; i < mb->nmsg; i++) gleamc_box_free(mb->msgs[i]);
         for (int i = 0; i < mb->ndef; i++) gleamc_box_free(mb->deferred[i]);
         free(mb->msgs);
@@ -1641,6 +1692,30 @@ int64_t Gleamc_process_ffi_selector_merge(int64_t a, int64_t b) {
     return a;
 }
 
+/* Add every subject the current task owns to the selector, so `select_other`
+ * watches them (a process only receives messages sent to subjects it owns). */
+int64_t Gleamc_process_ffi_selector_watch_owned(int64_t handle) {
+    GleamcTask2* me = gleamc_task_by_id(gleamc_current_task_id);
+    if (me == NULL) return handle;
+    for (int i = 0; i < me->nowned; i++)
+        Gleamc_process_ffi_selector_add(handle, (int64_t)(intptr_t)me->owned[i]);
+    return handle;
+}
+
+/* Take the oldest message from any subject the selector watches and return it
+ * as a `Dynamic` (class "other", i.e. the raw box), or 0 when none is queued. */
+int64_t Gleamc_process_ffi_selector_other_raw(int64_t handle) {
+    GleamcSelector* sel = (GleamcSelector*)(intptr_t)handle;
+    if (sel == NULL) return 0;
+    for (int i = 0; i < sel->nsub; i++) {
+        GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)sel->subjects[i];
+        if (mb == NULL) continue;
+        void* box = gleamc_mailbox_take(mb);
+        if (box != NULL) return (int64_t)(intptr_t)Gleamc_dynamic_new(9, box);
+    }
+    return 0;
+}
+
 int64_t Gleamc_process_ffi_selector_subject(int64_t handle, int64_t index) {
     GleamcSelector* sel = (GleamcSelector*)(intptr_t)handle;
     if (sel == NULL || index < 0 || index >= sel->nsub) return 0;
@@ -1782,7 +1857,7 @@ int64_t Gleamc_process_ffi_monitor(int64_t pid) {
     GleamcTask2* target = gleamc_task_by_id(pid);
     if (target == NULL) {
         if (me != NULL && Gleamc_make_process_Down_ProcessDown != NULL) {
-            if (me->inbox_down == NULL) me->inbox_down = gleamc_mailbox_new();
+            gleamc_task_inbox(me, &me->inbox_down);
             void* box = Gleamc_make_process_Down_ProcessDown(mid, pid, 1);
             gleamc_mailbox_send_box(me->inbox_down, box);
         }
@@ -1822,14 +1897,14 @@ int32_t Gleamc_process_ffi_demonitor(int64_t mid) {
 int64_t Gleamc_process_ffi_self_down_inbox(void) {
     GleamcTask2* me = gleamc_task_by_id(gleamc_current_task_id);
     if (me == NULL) return 0;
-    if (me->inbox_down == NULL) me->inbox_down = gleamc_mailbox_new();
+    gleamc_task_inbox(me, &me->inbox_down);
     return (int64_t)(intptr_t)me->inbox_down;
 }
 
 int64_t Gleamc_process_ffi_self_exit_inbox(void) {
     GleamcTask2* me = gleamc_task_by_id(gleamc_current_task_id);
     if (me == NULL) return 0;
-    if (me->inbox_exit == NULL) me->inbox_exit = gleamc_mailbox_new();
+    gleamc_task_inbox(me, &me->inbox_exit);
     return (int64_t)(intptr_t)me->inbox_exit;
 }
 
@@ -1886,7 +1961,7 @@ static void gleamc_task_notify_exit(GleamcTask2* t, int64_t reason) {
         int64_t watcher = t->monitors[i * 2 + 1];
         GleamcTask2* w = gleamc_task_by_id(watcher);
         if (w == NULL || Gleamc_make_process_Down_ProcessDown == NULL) continue;
-        if (w->inbox_down == NULL) w->inbox_down = gleamc_mailbox_new();
+        gleamc_task_inbox(w, &w->inbox_down);
         void* box = Gleamc_make_process_Down_ProcessDown(mid, t->id, reason);
         gleamc_mailbox_send_box(w->inbox_down, box);
     }
@@ -1894,7 +1969,7 @@ static void gleamc_task_notify_exit(GleamcTask2* t, int64_t reason) {
         GleamcTask2* l = gleamc_task_by_id(t->links[i]);
         if (l == NULL) continue;
         if (l->trap_exit && Gleamc_make_process_ExitMessage_ExitMessage != NULL) {
-            if (l->inbox_exit == NULL) l->inbox_exit = gleamc_mailbox_new();
+            gleamc_task_inbox(l, &l->inbox_exit);
             void* box = Gleamc_make_process_ExitMessage_ExitMessage(t->id, reason);
             gleamc_mailbox_send_box(l->inbox_exit, box);
         } else {
@@ -1921,6 +1996,11 @@ static void gleamc_task_finish(GleamcTask2* t, int64_t reason, bool copy) {
         }
     }
     gleamc_task_notify_exit(t, reason);
+    /* The subject list is only used by the owning task's `select_other`. */
+    free(t->owned);
+    t->owned = NULL;
+    t->nowned = 0;
+    t->ocap = 0;
     if (t->frame_drop != NULL) t->frame_drop(t->frame);
     else gleamc_release(t->frame);
     if (t->detached && t->done != NULL) gleamc_release(t->done);
@@ -1942,7 +2022,7 @@ int32_t Gleamc_process_ffi_send_exit(int64_t pid) {
     GleamcTask2* t = gleamc_task_by_id(pid);
     if (t == NULL || t->finished) return 0;
     if (t->trap_exit && Gleamc_make_process_ExitMessage_ExitMessage != NULL) {
-        if (t->inbox_exit == NULL) t->inbox_exit = gleamc_mailbox_new();
+        gleamc_task_inbox(t, &t->inbox_exit);
         void* box =
             Gleamc_make_process_ExitMessage_ExitMessage(gleamc_current_task_id, 0);
         gleamc_mailbox_send_box(t->inbox_exit, box);
@@ -1959,7 +2039,7 @@ int32_t Gleamc_process_ffi_send_exit_message(int64_t pid, void* box) {
         return 0;
     }
     if (t->trap_exit) {
-        if (t->inbox_exit == NULL) t->inbox_exit = gleamc_mailbox_new();
+        gleamc_task_inbox(t, &t->inbox_exit);
         gleamc_mailbox_send_box(t->inbox_exit, box);
     } else {
         gleamc_box_free(box);

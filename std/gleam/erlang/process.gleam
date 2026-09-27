@@ -292,6 +292,25 @@ pub fn select_map(
   add_handler(selector, for, fn(message) { Ok(mapping(message)) })
 }
 
+/// Add a catch-all handler, used when no other handler in the selector matches.
+/// The raw message is handed to `mapping` as a `Dynamic`.
+pub fn select_other(
+  selector: Selector(payload),
+  mapping: fn(Dynamic) -> payload,
+) -> Selector(payload) {
+  let handle = process_ffi.selector_watch_owned(selector.handle)
+  Selector(
+    handle: handle,
+    handlers: append_handler(selector.handlers, More(-1, fn() {
+      let raw = process_ffi.selector_other_raw(handle)
+      case dynamic_ffi.classify(raw) < 0 {
+        True -> Error(Nil)
+        False -> Ok(mapping(raw))
+      }
+    }, Done)),
+  )
+}
+
 fn add_handler(
   selector: Selector(payload),
   subject: Subject(message),

@@ -125,7 +125,7 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   `task.await(t, timeout)` crashes on timeout like the original. `Pid`
   operations `self`, `is_alive`, `spawn_unlinked` and `task.pid` are provided
   (`Pid` is a stable task id), as are selectors (`new_selector`, `select`,
-  `select_map`, `map_selector`, `merge_selector`, `deselect`,
+  `select_map`, `map_selector`, `merge_selector`, `select_other`, `deselect`,
   `selector_receive`, `selector_receive_forever`) and
   `send_after`/`cancel_timer`. A `Selector` is a Gleam record holding an opaque
   handle plus an in-process handler list; `selector_receive*` polls the handlers
@@ -146,9 +146,11 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   `send_abnormal_exit` now carries the reason. `gleam/dynamic` is a subset:
   `from`, `unsafe_coerce`, `classify` and the `Int`/`Float`/`String`/`Bool`
   accessors (no `list`/tuple reification or decoders).
-  `select_other`/`select_record` are not implemented — they match any message
-  in the process mailbox, but the runtime gives each `Subject` its own mailbox
-  rather than one per process. `AwaitError` has `Timeout` and
+  `select_other` is a catch-all over the subjects the process owns — a process
+  receives only subjects it owns, so this is faithful — but a subject created
+  *after* `select_other` is not watched (register it first). `select_record`
+  is not implemented: it matches foreign tuple-tagged messages, which a
+  pure-Gleam runtime has no notion of. `AwaitError` has `Timeout` and
   `Exit(Dynamic)` (a task killed before producing a value; the reason is the
   `Killed` exit reason, wrapped as a `Dynamic`). A
   `Subject(a)` handles are refcounted and their mailbox is freed when the last

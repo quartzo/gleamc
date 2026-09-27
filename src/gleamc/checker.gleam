@@ -2500,6 +2500,26 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         TInt,
         "process_ffi.selector_merge",
       )
+    "process_ffi", "selector_watch_owned" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TInt],
+        TInt,
+        "process_ffi.selector_watch_owned",
+      )
+    "process_ffi", "selector_other_raw" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TInt],
+        TNamed("Dynamic"),
+        "process_ffi.selector_other_raw",
+      )
     "process_ffi", "send_exit" ->
       check_builtin(
         env,

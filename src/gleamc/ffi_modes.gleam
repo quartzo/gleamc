@@ -122,6 +122,14 @@ pub fn table() -> Dict(String, FfiSig) {
     "process_ffi.selector_merge",
     FfiSig([Borrow, Borrow], OwnedResult),
   )
+  |> dict.insert(
+    "process_ffi.selector_watch_owned",
+    FfiSig([Borrow], OwnedResult),
+  )
+  |> dict.insert(
+    "process_ffi.selector_other_raw",
+    FfiSig([Borrow], OwnedResult),
+  )
   |> dict.insert("process_ffi.unreceive", FfiSig([Borrow, Owned], OwnedResult))
   |> dict.insert("process_ffi.has_message", FfiSig([Borrow], OwnedResult))
   |> dict.insert("process_ffi.mailbox_len", FfiSig([Borrow], OwnedResult))
