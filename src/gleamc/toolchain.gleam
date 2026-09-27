@@ -46,7 +46,10 @@ fn audit_flag() -> String {
 }
 
 fn link_flag(_cc: String) -> String {
-  " -fuse-ld=mold"
+  case ffi.which("mold") {
+    Ok(_) -> " -fuse-ld=mold"
+    Error(_) -> ""
+  }
 }
 
 fn include_flags(include_dirs: List(String)) -> String {

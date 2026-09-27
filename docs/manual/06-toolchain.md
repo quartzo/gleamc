@@ -2,7 +2,8 @@
 
 ## Requirements
 
-- `clang` (or `gcc`) and `mold` for linking.
+- `clang` (or `gcc`) and `mold` (recommended; the default linker is used when
+  `mold` is absent) for linking.
 - `libuv` (`-luv`), `utf8proc` (`-lutf8proc`), ICU (`-licuuc`).
 - The compiler itself is a Gleam project and is built with the **official**
   Gleam toolchain (that dependency is not self-hosted yet).

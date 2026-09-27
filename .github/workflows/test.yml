@@ -18,6 +18,7 @@ jobs:
           gleam-version: "1.18.1"
           rebar3-version: "3"
           # elixir-version: "1"
+      - run: sudo apt-get update && sudo apt-get install -y mold libuv1-dev libutf8proc-dev libicu-dev clang
       - run: gleam deps download
       - run: gleam test
       - run: gleam format --check src test
