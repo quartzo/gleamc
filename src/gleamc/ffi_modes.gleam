@@ -96,6 +96,10 @@ pub fn table() -> Dict(String, FfiSig) {
     FfiSig([Borrow, Borrow], OwnedResult),
   )
   |> dict.insert(
+    "process_ffi.selector_remove",
+    FfiSig([Borrow, Borrow], OwnedResult),
+  )
+  |> dict.insert(
     "process_ffi.selector_wait",
     FfiSig([Borrow, Borrow], OwnedResult),
   )

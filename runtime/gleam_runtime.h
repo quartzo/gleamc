@@ -414,6 +414,7 @@ int64_t Gleamc_process_ffi_cancel_timer(int64_t handle);
 /* Selectors: wait for a message on any of several subjects. */
 int64_t Gleamc_process_ffi_selector_new(void);
 int64_t Gleamc_process_ffi_selector_add(int64_t handle, int64_t subject);
+int64_t Gleamc_process_ffi_selector_remove(int64_t handle, int64_t subject);
 int64_t Gleamc_process_ffi_selector_subject(int64_t handle, int64_t index);
 GleamcFuture* Gleamc_process_ffi_selector_wait(int64_t handle, int64_t ms);
 int64_t Gleamc_process_ffi_selector_ready(int64_t handle);

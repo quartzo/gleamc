@@ -2394,6 +2394,44 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
           ))
       }
     }
+    "process_ffi", "selector_remove" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [selector, subject] ->
+          case selector_elem_type(tmono.type_of(selector)) {
+            Ok(elem) ->
+              case subject_elem_type(tmono.type_of(subject)) {
+                Ok(sub_elem) ->
+                  case elem == sub_elem {
+                    True ->
+                      Ok(builtin_call(
+                        "process_ffi",
+                        "selector_remove",
+                        [tmono.type_of(selector), tmono.type_of(subject)],
+                        tmono.type_of(selector),
+                        typed_args,
+                      ))
+                    False ->
+                      Error(CheckError(
+                        "process_ffi.selector_remove: subject type mismatch",
+                      ))
+                  }
+                Error(_) ->
+                  Error(CheckError(
+                    "process_ffi.selector_remove expects (Selector(a), Subject(a))",
+                  ))
+              }
+            Error(_) ->
+              Error(CheckError(
+                "process_ffi.selector_remove expects (Selector(a), Subject(a))",
+              ))
+          }
+        _ ->
+          Error(CheckError(
+            "process_ffi.selector_remove expects (Selector(a), Subject(a))",
+          ))
+      }
+    }
     "process_ffi", "selector_wait" -> {
       use typed_args <- result.try(infer_all(env, signatures, ctors, args))
       case typed_args {

@@ -1518,6 +1518,20 @@ int64_t Gleamc_process_ffi_selector_add(int64_t handle, int64_t subject) {
     return handle;
 }
 
+int64_t Gleamc_process_ffi_selector_remove(int64_t handle, int64_t subject) {
+    GleamcSelector* sel = (GleamcSelector*)(intptr_t)handle;
+    if (sel == NULL) return handle;
+    for (int i = 0; i < sel->nsub; i++) {
+        if (sel->subjects[i] == subject) {
+            for (int j = i + 1; j < sel->nsub; j++)
+                sel->subjects[j - 1] = sel->subjects[j];
+            sel->nsub--;
+            break;
+        }
+    }
+    return handle;
+}
+
 int64_t Gleamc_process_ffi_selector_subject(int64_t handle, int64_t index) {
     GleamcSelector* sel = (GleamcSelector*)(intptr_t)handle;
     if (sel == NULL || index < 0 || index >= sel->nsub) return 0;

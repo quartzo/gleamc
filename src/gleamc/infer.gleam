@@ -1016,6 +1016,16 @@ fn builtins() -> Dict(String, Scheme) {
     ),
   )
   |> dict.insert(
+    "process_ffi.selector_remove",
+    Scheme(
+      [9150],
+      Fun(
+        [Con("Selector", [Var(9150)]), Con("Subject", [Var(9150)])],
+        Con("Selector", [Var(9150)]),
+      ),
+    ),
+  )
+  |> dict.insert(
     "process_ffi.selector_wait",
     Scheme([9142], Fun([Con("Selector", [Var(9142)]), i], i)),
   )

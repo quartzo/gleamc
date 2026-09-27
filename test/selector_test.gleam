@@ -4,11 +4,15 @@ import gleamc/loader
 import gleamc/pipeline
 import gleamc/toolchain
 
-// Selectors (`new_selector`/`select`/`selector_receive*`) and scheduled sends
-// (`send_after`/`cancel_timer`).
+// Selectors (`new_selector`/`select`/`select_map`/`deselect`/`selector_receive*`)
+// and scheduled sends (`send_after`/`cancel_timer`).
 const source = "import gleam/erlang/process
 import gleam/int
 import gleam/io
+
+fn show(x: Int) -> String {
+  int.to_string(x)
+}
 
 pub fn main() {
   let a = process.new_subject()
@@ -28,6 +32,16 @@ pub fn main() {
     Error(_) -> io.println(\"timeout\")
   }
 
+  let ints = process.new_subject()
+  let strings = process.new_subject()
+  let mapped =
+    process.new_selector()
+    |> process.select_map(for: ints, mapping: show)
+    |> process.select(for: strings)
+    |> process.deselect(for: strings)
+  process.send(ints, 3)
+  io.println(process.selector_receive_forever(from: mapped))
+
   let d = process.new_subject()
   let _timer = process.send_after(d, 20, 99)
   io.println(int.to_string(process.receive_forever(from: d)))
@@ -45,8 +59,9 @@ pub fn main() {
 }
 "
 
-/// End-to-end: a selector picks the queued subject (scan order) or times out,
-/// `send_after` delivers later, and `cancel_timer` stops a pending send.
+/// End-to-end: selectors pick the queued subject or time out, `select_map`
+/// transforms, `deselect` removes, `send_after` delivers and `cancel_timer`
+/// stops a pending send.
 pub fn selector_and_timer_test() {
   let _ = ffi.run("mkdir -p /tmp/gleamc-test")
   let entry = "/tmp/gleamc-test/selector.gleam"
@@ -70,6 +85,7 @@ pub fn selector_and_timer_test() {
   assert run_status == 0 as output
   assert string.contains(output, "20") as output
   assert string.contains(output, "timeout") as output
+  assert string.contains(output, "3") as output
   assert string.contains(output, "99") as output
   assert string.contains(output, "cancelled") as output
   assert string.contains(output, "nothing") as output

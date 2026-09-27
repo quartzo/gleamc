@@ -52,6 +52,38 @@ pub fn select(
   process_ffi.selector_add(selector, for)
 }
 
+/// Remove a `Subject` from a `Selector`.
+pub fn deselect(
+  selector: Selector(payload),
+  for: Subject(payload),
+) -> Selector(payload) {
+  process_ffi.selector_remove(selector, for)
+}
+
+/// Add a `Subject` to a `Selector`, transforming each message with `mapping`.
+///
+/// The transform runs in a forwarder task that reads the subject and sends the
+/// mapped value on an internal subject the selector waits on.
+pub fn select_map(
+  selector: Selector(payload),
+  for: Subject(message),
+  mapping: fn(message) -> payload,
+) -> Selector(payload) {
+  let mapped = new_subject()
+  let _ = process.spawn(fn() { forward(for, mapped, mapping) })
+  process_ffi.selector_add(selector, mapped)
+}
+
+fn forward(
+  from: Subject(message),
+  to: Subject(payload),
+  mapping: fn(message) -> payload,
+) -> Nil {
+  let message = receive_forever(from: from)
+  send(to, mapping(message))
+  forward(from, to, mapping)
+}
+
 /// Receive a message from any of the `Selector`'s subjects, within `within`
 /// milliseconds.
 pub fn selector_receive(
