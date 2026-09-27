@@ -3721,6 +3721,30 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
       let b = store_local(ctx, dest, ty_s, v, b)
       #(b, Nil)
     }
+    ir.OpPhi(dest, incoming) -> {
+      let ty_s = llvm_ty(local_type(ctx.by_name, dest), ctx.recursive)
+      // Read each incoming value in the join block (its definition dominates)
+      // and form the LLVM `phi` with one `[value, %pred]` per predecessor.
+      let #(rev, b) =
+        list.fold(incoming, #([], b), fn(acc, pair) {
+          let #(rev, b) = acc
+          let #(operand, label) = pair
+          let #(_, value, b) = read_val(ctx, operand, b)
+          #(["[" <> value <> ", %" <> block_name(ctx, label) <> "]", ..rev], b)
+        })
+      let #(reg, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> reg
+            <> " = phi "
+            <> ty_s
+            <> " "
+            <> string.join(list.reverse(rev), ", "),
+        )
+      #(Builder(..b, values: dict.insert(b.values, dest, reg)), Nil)
+    }
     ir.OpRetain(src, ty) -> {
       case src == frame.frame_local {
         // The frame handle lives in the machine frame; retaining it for a

@@ -45,6 +45,10 @@ pub type Op {
   OpField(dest: String, subject: Operand, ctor: String, index: Int, ty: Type)
   /// dest = src with ownership semantics (used for case results).
   OpCopy(dest: String, src: Operand, ty: Type)
+  /// SSA join: `dest` takes the value of the operand of the predecessor block
+  /// control came from. Inserted by the `ssa` pass in place of the `OpCopy`
+  /// result temporaries; the backend renders it as an LLVM `phi`.
+  OpPhi(dest: String, incoming: List(#(Operand, String)))
   /// Function value (closure): code pointer + optional heap environment.
   OpClosure(
     dest: String,
@@ -178,6 +182,7 @@ pub fn op_dest(op: Op) -> Result(String, Nil) {
     OpTagIs(dest, _, _, _) -> Ok(dest)
     OpField(dest, _, _, _, _) -> Ok(dest)
     OpCopy(dest, _, _) -> Ok(dest)
+    OpPhi(dest, _) -> Ok(dest)
     OpClosure(dest, _, _, _, _) -> Ok(dest)
     OpEnvGet(dest, _, _, _) -> Ok(dest)
     OpCallIndirect(dest, _, _, _) -> Ok(dest)
@@ -207,6 +212,11 @@ pub fn op_reads(op: Op) -> List(Operand) {
     OpTagIs(_, subject, _, _) -> [subject]
     OpField(_, subject, _, _, _) -> [subject]
     OpCopy(_, src, _) -> [src]
+    OpPhi(_, incoming) ->
+      list.map(incoming, fn(pair) {
+        let #(operand, _) = pair
+        operand
+      })
     // A closure that captures the defining frame references it directly: the
     // frame owns the captured values (read back with `OpEnvGet`), so the
     // capture operands are metadata, not values the closure reads.
@@ -504,6 +514,18 @@ fn op_text(op: Op) -> String {
       <> operand_text(src)
       <> " : "
       <> describe_type(ty)
+    OpPhi(dest, incoming) ->
+      "    "
+      <> dest
+      <> " = phi ["
+      <> string.join(
+        list.map(incoming, fn(pair) {
+          let #(operand, label) = pair
+          operand_text(operand) <> " @" <> label
+        }),
+        ", ",
+      )
+      <> "]"
     OpClosure(dest, code, captures, env_ty, ty) -> {
       let env_suffix = case env_ty {
         "" -> ""
