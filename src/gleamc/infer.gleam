@@ -1002,6 +1002,10 @@ fn builtins() -> Dict(String, Scheme) {
     Scheme(none, Fun([Con("Timer", [])], i)),
   )
   |> dict.insert(
+    "process_ffi.kill",
+    Scheme(none, Fun([Con("Pid", [])], n)),
+  )
+  |> dict.insert(
     "process_ffi.monitor",
     Scheme(none, Fun([Con("Pid", [])], Con("Monitor", []))),
   )

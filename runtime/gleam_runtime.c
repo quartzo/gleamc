@@ -1070,6 +1070,9 @@ typedef struct {
     int nlink;
     int linkcap;
     bool trap_exit;
+    /* Set by `kill`/link propagation; the driver terminates the task. */
+    bool kill_requested;
+    int64_t kill_reason;
 } GleamcTask2;
 
 static GleamcTask2 gleamc_tasks2[GLEAMC_TASKS_MAX];
@@ -1759,10 +1762,42 @@ static void gleamc_task_notify_exit(GleamcTask2* t, int64_t reason) {
             if (l->inbox_exit == NULL) l->inbox_exit = gleamc_mailbox_new();
             void* box = Gleamc_make_process_ExitMessage_ExitMessage(t->id, reason);
             gleamc_mailbox_send_box(l->inbox_exit, box);
+        } else {
+            /* Not trapping: propagate the exit by terminating the linked task. */
+            l->kill_requested = true;
+            l->kill_reason = reason;
         }
-        /* Real crash propagation (killing the linked task) is not implemented. */
         gleamc_task_unlink_one(l, t->id);
     }
+}
+
+/* Final bookkeeping for a task that ends (normally, `copy` true, or because it
+ * was killed, `copy` false and the result discarded). */
+static void gleamc_task_finish(GleamcTask2* t, int64_t reason, bool copy) {
+    if (copy && t->copy_result != NULL && t->result_dst != NULL)
+        t->copy_result(t->frame, t->result_dst);
+    if (t->done != NULL) {
+        t->done->done = true;
+        if (t->done->notify != NULL) {
+            t->done->notify->value_i = 1;
+            t->done->notify->done = true;
+            t->done->notify = NULL;
+        }
+    }
+    gleamc_task_notify_exit(t, reason);
+    if (t->frame_drop != NULL) t->frame_drop(t->frame);
+    else gleamc_release(t->frame);
+    if (t->detached && t->done != NULL) gleamc_release(t->done);
+    t->finished = true;
+}
+
+int32_t Gleamc_process_ffi_kill(int64_t pid) {
+    GleamcTask2* t = gleamc_task_by_id(pid);
+    if (t != NULL && !t->finished) {
+        t->kill_requested = true;
+        t->kill_reason = 1; /* Killed */
+    }
+    return 0;
 }
 
 void gleamc_run_until(GleamcFuture* target) {
@@ -1779,6 +1814,15 @@ void gleamc_run_until(GleamcFuture* target) {
             if (t->finished) {
                 /* A nested run only marks tasks finished (it must not move a
                  * running task); the outermost run compacts them. */
+                if (!nested) {
+                    gleamc_tasks2[i] = gleamc_tasks2[gleamc_tasks2_n - 1];
+                    gleamc_tasks2_n--;
+                    i--;
+                }
+                continue;
+            }
+            if (t->kill_requested) {
+                gleamc_task_finish(t, t->kill_reason, false);
                 if (!nested) {
                     gleamc_tasks2[i] = gleamc_tasks2[gleamc_tasks2_n - 1];
                     gleamc_tasks2_n--;
@@ -1806,28 +1850,7 @@ void gleamc_run_until(GleamcFuture* target) {
             gleamc_current_task_id = saved_id;
             t->running = false;
             if (done) {
-                if (t->copy_result != NULL && t->result_dst != NULL)
-                    t->copy_result(t->frame, t->result_dst);
-                if (t->done != NULL) {
-                    t->done->done = true;
-                    /* Complete a `try_await` wait racing this task. */
-                    if (t->done->notify != NULL) {
-                        t->done->notify->value_i = 1;
-                        t->done->notify->done = true;
-                        t->done->notify = NULL;
-                    }
-                }
-                /* Deliver monitor/link notifications before the task goes. */
-                gleamc_task_notify_exit(t, 0);
-                /* `frame_drop` releases the frame (it ends in an rc_release). */
-                if (t->frame_drop != NULL) t->frame_drop(t->frame);
-                else gleamc_release(t->frame);
-                /* A spawned task owns its completion future; release it here
-                 * (a detached `t->done` may be the only reference left). */
-                if (t->detached && t->done != NULL) {
-                    gleamc_release(t->done);
-                }
-                t->finished = true;
+                gleamc_task_finish(t, 0, true);
                 if (!nested) {
                     gleamc_tasks2[i] = gleamc_tasks2[gleamc_tasks2_n - 1];
                     gleamc_tasks2_n--;

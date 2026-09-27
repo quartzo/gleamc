@@ -2531,6 +2531,16 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         _ -> Error(CheckError("task_ffi.pid expects a Task(a)"))
       }
     }
+    "process_ffi", "kill" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("Pid")],
+        TNil,
+        "process_ffi.kill",
+      )
     "process_ffi", "monitor" ->
       check_builtin(
         env,

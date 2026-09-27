@@ -132,11 +132,12 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   `ExitMessage` values with backend-emitted constructor helpers
   (`Gleamc_make_process_Down_ProcessDown`) — `monitor`, `demonitor`,
   `demonitor_process`, `select_monitors`, `link`, `unlink`, `trap_exits` and
-  `select_trapped_exits`. Restrictions: `ExitReason` only has `Normal`/`Killed`
-  (no `Abnormal(Dynamic)`), a link does **not** propagate a real exit (no kill;
-  only trapped exits get an `ExitMessage`), `select_specific_monitor`/
-  `select_other`/`select_record` and names are not implemented, there is no
-  `kill`, and `AwaitError` only has `Timeout`. A
+  `select_trapped_exits`, plus `kill`. A non-trapping link **propagates the
+  exit** (the linked task is terminated); a trapping link gets an
+  `ExitMessage`. Restrictions: `ExitReason` only has `Normal`/`Killed` (no
+  `Abnormal(Dynamic)`), `send_exit`/`send_abnormal_exit`,
+  `select_specific_monitor`/`select_other`/`select_record` and names are not
+  implemented, and `AwaitError` only has `Timeout`. A
   `Subject` handle is not refcount-dropped (one leak per subject) and boxes
   queued but never received leak; a timed-out task's boxed result also leaks.
   Draining a mailbox does not join the spawned senders.

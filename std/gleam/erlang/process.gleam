@@ -92,6 +92,11 @@ pub fn select_monitors(
   select_map(selector, for: process_ffi.self_down_inbox(), mapping: mapping)
 }
 
+/// Send an untrappable kill signal to a process, terminating it.
+pub fn kill(pid: Pid) -> Nil {
+  process_ffi.kill(pid)
+}
+
 /// Create a link between the current process and `pid`.
 pub fn link(pid: Pid) -> Bool {
   process_ffi.link(pid)

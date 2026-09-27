@@ -91,6 +91,7 @@ pub fn table() -> Dict(String, FfiSig) {
   )
   |> dict.insert("process_ffi.cancel_timer", FfiSig([Borrow], OwnedResult))
   |> dict.insert("process_ffi.monitor", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("process_ffi.kill", FfiSig([Borrow], OwnedResult))
   |> dict.insert("process_ffi.demonitor", FfiSig([Borrow], OwnedResult))
   |> dict.insert("process_ffi.self_down_inbox", FfiSig([], OwnedResult))
   |> dict.insert("process_ffi.self_exit_inbox", FfiSig([], OwnedResult))
