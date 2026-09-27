@@ -125,9 +125,11 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   `task.await(t, timeout)` crashes on timeout like the original. `Pid`
   operations `self`, `is_alive`, `spawn_unlinked` and `task.pid` are provided
   (`Pid` is a stable task id), as are selectors (`new_selector`, `select`,
-  `select_map`, `map_selector`, `merge_selector`, `select_other`, `deselect`,
-  `selector_receive`, `selector_receive_forever`) and
-  `send_after`/`cancel_timer`. A `Selector` is a Gleam record holding an opaque
+  `select_map`, `map_selector`, `merge_selector`, `select_other`,
+  `deselect_specific_monitor`, `deselect`, `selector_receive`,
+  `selector_receive_forever`) and
+  `send_after`/`cancel_timer`. Request/reply is provided on top of those
+  (`call`, `call_forever`), plus `flush_messages`. A `Selector` is a Gleam record holding an opaque
   handle plus an in-process handler list; `selector_receive*` polls the handlers
   (so the `mapping` closures run directly, no forwarder task), sets aside
   messages no handler accepts and re-examines them on the next wake. Monitor/link

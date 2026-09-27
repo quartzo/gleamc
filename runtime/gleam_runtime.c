@@ -2350,6 +2350,24 @@ int64_t Gleamc_process_ffi_subject_name(int64_t handle) {
 
 int64_t Gleamc_process_ffi_name_of_int(int64_t handle) { return handle; }
 
+int64_t Gleamc_process_ffi_monitor_to_int(int64_t monitor) { return monitor; }
+
+/* `flush_messages`: drop every message queued in a subject the current task
+ * owns (their payloads are dropped by the per-message glue). */
+int32_t Gleamc_process_ffi_flush_messages(void) {
+    GleamcTask2* me = gleamc_task_by_id(gleamc_current_task_id);
+    if (me == NULL) return 0;
+    for (int i = 0; i < me->nowned; i++) {
+        GleamcMailbox* mb = me->owned[i];
+        if (mb == NULL) continue;
+        for (int j = 0; j < mb->nmsg; j++) gleamc_box_free(mb->msgs[j]);
+        mb->nmsg = 0;
+        for (int j = 0; j < mb->ndef; j++) gleamc_box_free(mb->deferred[j]);
+        mb->ndef = 0;
+    }
+    return 0;
+}
+
 /* Free a mailbox's queued boxes and its arrays (the cell itself is left to the
  * subject's own refcount / the OS). Used only at shutdown. */
 static void gleamc_mailbox_drain(GleamcMailbox* mb) {

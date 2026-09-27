@@ -224,15 +224,31 @@ pub fn select_specific_monitor(
   monitor: Monitor,
   mapping: fn(Down) -> payload,
 ) -> Selector(payload) {
-  add_handler(selector, process_ffi.self_down_inbox(), fn(down) {
-    case down {
-      ProcessDown(down_monitor, _, _) ->
-        case process_ffi.monitor_eq(down_monitor, monitor) {
-          True -> Ok(mapping(down))
-          False -> Error(Nil)
-        }
-    }
-  })
+  add_handler_keyed(
+    selector,
+    process_ffi.self_down_inbox(),
+    process_ffi.monitor_to_int(monitor),
+    fn(down) {
+      case down {
+        ProcessDown(down_monitor, _, _) ->
+          case process_ffi.monitor_eq(down_monitor, monitor) {
+            True -> Ok(mapping(down))
+            False -> Error(Nil)
+          }
+      }
+    },
+  )
+}
+
+/// Remove a handler added by `select_specific_monitor`.
+pub fn deselect_specific_monitor(
+  selector: Selector(payload),
+  monitor: Monitor,
+) -> Selector(payload) {
+  Selector(
+    handle: selector.handle,
+    handlers: remove_handler(selector.handlers, process_ffi.monitor_to_int(monitor)),
+  )
 }
 
 /// Remove a `Subject` from a `Selector`.
@@ -320,12 +336,21 @@ fn add_handler(
   subject: Subject(message),
   decide: fn(message) -> Result(payload, Nil),
 ) -> Selector(payload) {
+  add_handler_keyed(selector, subject, process_ffi.subject_handle(subject), decide)
+}
+
+fn add_handler_keyed(
+  selector: Selector(payload),
+  subject: Subject(message),
+  key: Int,
+  decide: fn(message) -> Result(payload, Nil),
+) -> Selector(payload) {
   Selector(
     handle: process_ffi.selector_add(selector.handle, subject),
     handlers: append_handler(
       selector.handlers,
       More(
-        process_ffi.subject_handle(subject),
+        key,
         fn() { drain(subject, decide, process_ffi.mailbox_len(subject)) },
         Done,
       ),
@@ -444,4 +469,51 @@ pub fn sleep(a: Int) -> Nil {
 /// Suspend the current process forever.
 pub fn sleep_forever() -> Nil {
   process_ffi.receive(new_subject())
+}
+
+/// Discard every message queued for the current process. Use with caution, as
+/// it may make senders waiting for a reply hang.
+pub fn flush_messages() -> Nil {
+  process_ffi.flush_messages()
+}
+
+fn perform_call(
+  subject: Subject(message),
+  make_request: fn(Subject(reply)) -> message,
+  run_selector: fn(Selector(reply)) -> Result(reply, Nil),
+) -> reply {
+  let reply_subject = new_subject()
+  let assert Ok(callee) = subject_owner(subject)
+  let monitor = monitor(callee)
+  send(subject, make_request(reply_subject))
+  let reply =
+    new_selector()
+    |> select(reply_subject)
+    |> select_specific_monitor(monitor, fn(_down) {
+      panic as "callee exited before sending a reply"
+    })
+    |> run_selector
+  let assert Ok(reply) = reply
+  demonitor_process(monitor)
+  reply
+}
+
+/// Send a message to a process and wait up to `waiting` milliseconds for a
+/// reply. Crashes if the callee exits or does not reply in time.
+pub fn call(
+  subject: Subject(message),
+  waiting: Int,
+  sending: fn(Subject(reply)) -> message,
+) -> reply {
+  perform_call(subject, sending, fn(s) {
+    selector_receive(from: s, within: waiting)
+  })
+}
+
+/// Send a message to a process and wait forever for a reply.
+pub fn call_forever(
+  subject: Subject(message),
+  sending: fn(Subject(reply)) -> message,
+) -> reply {
+  perform_call(subject, sending, fn(s) { Ok(selector_receive_forever(from: s)) })
 }

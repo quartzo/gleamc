@@ -2490,6 +2490,26 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         typed_args,
       ))
     }
+    "process_ffi", "monitor_to_int" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("Monitor")],
+        TInt,
+        "process_ffi.monitor_to_int",
+      )
+    "process_ffi", "flush_messages" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [],
+        TNil,
+        "process_ffi.flush_messages",
+      )
     "process_ffi", "selector_merge" ->
       check_builtin(
         env,

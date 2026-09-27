@@ -137,6 +137,8 @@ pub fn table() -> Dict(String, FfiSig) {
   |> dict.insert("process_ffi.subject_owner", FfiSig([Borrow], OwnedResult))
   |> dict.insert("process_ffi.subject_name", FfiSig([Borrow], OwnedResult))
   |> dict.insert("process_ffi.name_of_int", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("process_ffi.monitor_to_int", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("process_ffi.flush_messages", FfiSig([], OwnedResult))
   |> dict.insert("process_ffi.traps", FfiSig([Borrow], OwnedResult))
   |> dict.insert("process_ffi.send_exit", FfiSig([Borrow], OwnedResult))
   |> dict.insert(

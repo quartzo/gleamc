@@ -409,6 +409,8 @@ int64_t Gleamc_process_ffi_subject_handle(int64_t handle);
 int64_t Gleamc_process_ffi_subject_owner(int64_t handle);
 int64_t Gleamc_process_ffi_subject_name(int64_t handle);
 int64_t Gleamc_process_ffi_name_of_int(int64_t handle);
+int64_t Gleamc_process_ffi_monitor_to_int(int64_t monitor);
+int32_t Gleamc_process_ffi_flush_messages(void);
 int32_t Gleamc_process_ffi_send(int64_t handle, void* box);
 GleamcFuture* Gleamc_process_ffi_receive(int64_t handle);
 /* Waits until a message is available on the subject or `ms` elapse. The

@@ -1123,6 +1123,11 @@ fn builtins() -> Dict(String, Scheme) {
     "process_ffi.name_of_int",
     Scheme([9183], Fun([i], Con("Name", [Var(9183)]))),
   )
+  |> dict.insert(
+    "process_ffi.monitor_to_int",
+    Scheme(none, Fun([Con("Monitor", [])], i)),
+  )
+  |> dict.insert("process_ffi.flush_messages", Scheme(none, Fun([], n)))
   |> dict.insert("process_ffi.selector_merge", Scheme(none, Fun([sh, sh], sh)))
   |> dict.insert("process_ffi.selector_watch_owned", Scheme(none, Fun([sh], sh)))
   |> dict.insert(
