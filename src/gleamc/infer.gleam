@@ -1002,6 +1002,31 @@ fn builtins() -> Dict(String, Scheme) {
     Scheme(none, Fun([Con("Timer", [])], i)),
   )
   |> dict.insert(
+    "process_ffi.monitor",
+    Scheme(none, Fun([Con("Pid", [])], Con("Monitor", []))),
+  )
+  |> dict.insert(
+    "process_ffi.demonitor",
+    Scheme(none, Fun([Con("Monitor", [])], n)),
+  )
+  |> dict.insert(
+    "process_ffi.self_down_inbox",
+    Scheme(none, Fun([], Con("Subject", [Con("process_Down", [])]))),
+  )
+  |> dict.insert(
+    "process_ffi.self_exit_inbox",
+    Scheme(none, Fun([], Con("Subject", [Con("process_ExitMessage", [])]))),
+  )
+  |> dict.insert("process_ffi.trap_exits", Scheme(none, Fun([b], n)))
+  |> dict.insert(
+    "process_ffi.link",
+    Scheme(none, Fun([Con("Pid", [])], b)),
+  )
+  |> dict.insert(
+    "process_ffi.unlink",
+    Scheme(none, Fun([Con("Pid", [])], n)),
+  )
+  |> dict.insert(
     "process_ffi.selector_new",
     Scheme([9140], Fun([], Con("Selector", [Var(9140)]))),
   )

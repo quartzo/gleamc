@@ -411,6 +411,15 @@ int64_t Gleamc_task_ffi_pid(GleamcFuture* task);
 int64_t Gleamc_process_ffi_send_after(int64_t subject, int64_t delay, void* box);
 int64_t Gleamc_process_ffi_cancel_timer(int64_t handle);
 
+/* Monitors and links (`Down` / `ExitMessage` delivered to a task's inbox). */
+int64_t Gleamc_process_ffi_monitor(int64_t pid);
+int32_t Gleamc_process_ffi_demonitor(int64_t monitor);
+int64_t Gleamc_process_ffi_self_down_inbox(void);
+int64_t Gleamc_process_ffi_self_exit_inbox(void);
+int32_t Gleamc_process_ffi_trap_exits(bool on);
+bool Gleamc_process_ffi_link(int64_t pid);
+int32_t Gleamc_process_ffi_unlink(int64_t pid);
+
 /* Selectors: wait for a message on any of several subjects. */
 int64_t Gleamc_process_ffi_selector_new(void);
 int64_t Gleamc_process_ffi_selector_add(int64_t handle, int64_t subject);

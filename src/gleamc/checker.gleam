@@ -2531,6 +2531,76 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         _ -> Error(CheckError("task_ffi.pid expects a Task(a)"))
       }
     }
+    "process_ffi", "monitor" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("Pid")],
+        TNamed("Monitor"),
+        "process_ffi.monitor",
+      )
+    "process_ffi", "demonitor" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("Monitor")],
+        TNil,
+        "process_ffi.demonitor",
+      )
+    "process_ffi", "self_down_inbox" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [],
+        TApp("Subject", [TNamed("process_Down")]),
+        "process_ffi.self_down_inbox",
+      )
+    "process_ffi", "self_exit_inbox" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [],
+        TApp("Subject", [TNamed("process_ExitMessage")]),
+        "process_ffi.self_exit_inbox",
+      )
+    "process_ffi", "trap_exits" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TBool],
+        TNil,
+        "process_ffi.trap_exits",
+      )
+    "process_ffi", "link" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("Pid")],
+        TBool,
+        "process_ffi.link",
+      )
+    "process_ffi", "unlink" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("Pid")],
+        TNil,
+        "process_ffi.unlink",
+      )
     _, _ ->
       Error(CheckError(
         "unknown module function `" <> module <> "." <> name <> "`",

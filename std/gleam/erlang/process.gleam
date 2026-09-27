@@ -38,6 +38,22 @@ pub fn is_alive(a: Pid) -> Bool {
   process_ffi.is_alive(a)
 }
 
+/// A message received when a monitored process exits.
+pub type Down {
+  ProcessDown(monitor: Monitor, pid: Pid, reason: ExitReason)
+}
+
+/// Why a process exited.
+pub type ExitReason {
+  Normal
+  Killed
+}
+
+/// A message received when a linked process exits and exits are trapped.
+pub type ExitMessage {
+  ExitMessage(pid: Pid, reason: ExitReason)
+}
+
 /// Create a new `Selector`, which can wait for a message on several subjects
 /// at once.
 pub fn new_selector() -> Selector(payload) {
@@ -50,6 +66,54 @@ pub fn select(
   for: Subject(payload),
 ) -> Selector(payload) {
   process_ffi.selector_add(selector, for)
+}
+
+/// Monitor a process, so that a `Down` message is sent to the current process
+/// when it exits. Remove it with `demonitor`.
+pub fn monitor(pid: Pid) -> Monitor {
+  process_ffi.monitor(pid)
+}
+
+/// Stop monitoring a process.
+pub fn demonitor(monitor: Monitor) -> Nil {
+  process_ffi.demonitor(monitor)
+}
+
+/// Stop monitoring a process (alias of `demonitor`).
+pub fn demonitor_process(monitor: Monitor) -> Nil {
+  process_ffi.demonitor(monitor)
+}
+
+/// Add a handler for `Down` messages from any monitor to a `Selector`.
+pub fn select_monitors(
+  selector: Selector(payload),
+  mapping: fn(Down) -> payload,
+) -> Selector(payload) {
+  select_map(selector, for: process_ffi.self_down_inbox(), mapping: mapping)
+}
+
+/// Create a link between the current process and `pid`.
+pub fn link(pid: Pid) -> Bool {
+  process_ffi.link(pid)
+}
+
+/// Remove any link between the current process and `pid`.
+pub fn unlink(pid: Pid) -> Nil {
+  process_ffi.unlink(pid)
+}
+
+/// Set whether the current process traps exits; when it does, a linked
+/// process exiting sends an `ExitMessage` instead of propagating.
+pub fn trap_exits(a: Bool) -> Nil {
+  process_ffi.trap_exits(a)
+}
+
+/// Add a handler for trapped exit messages to a `Selector`.
+pub fn select_trapped_exits(
+  selector: Selector(payload),
+  handler: fn(ExitMessage) -> payload,
+) -> Selector(payload) {
+  select_map(selector, for: process_ffi.self_exit_inbox(), mapping: handler)
 }
 
 /// Remove a `Subject` from a `Selector`.

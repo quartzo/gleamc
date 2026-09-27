@@ -127,11 +127,16 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   (`Pid` is a stable task id), as are selectors (`new_selector`, `select`,
   `select_map`, `deselect`, `selector_receive`, `selector_receive_forever`) and
   `send_after`/`cancel_timer`. `select_map` runs the transform in a forwarder
-  task (C cannot call a Gleam closure). Restrictions: no `select_other`/
-  `select_record`, no `monitor`/`link`/exits/names, no `kill`, and `AwaitError`
-  only has `Timeout` (no `Exit(Dynamic)`). Monitor/link/exits are blocked on a
-  per-task mailbox: the runtime has no per-process inbox, so a `Down`/exit
-  message cannot be delivered to the monitoring process. A
+  task (C cannot call a Gleam closure). Monitor/link is supported: each task has
+  a per-task inbox (created on demand) and the runtime builds the typed `Down`/
+  `ExitMessage` values with backend-emitted constructor helpers
+  (`Gleamc_make_process_Down_ProcessDown`) — `monitor`, `demonitor`,
+  `demonitor_process`, `select_monitors`, `link`, `unlink`, `trap_exits` and
+  `select_trapped_exits`. Restrictions: `ExitReason` only has `Normal`/`Killed`
+  (no `Abnormal(Dynamic)`), a link does **not** propagate a real exit (no kill;
+  only trapped exits get an `ExitMessage`), `select_specific_monitor`/
+  `select_other`/`select_record` and names are not implemented, there is no
+  `kill`, and `AwaitError` only has `Timeout`. A
   `Subject` handle is not refcount-dropped (one leak per subject) and boxes
   queued but never received leak; a timed-out task's boxed result also leaks.
   Draining a mailbox does not join the spawned senders.

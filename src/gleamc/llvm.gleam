@@ -155,6 +155,7 @@ pub fn emit_chunks(
       literal_global(content, index)
     })
 
+  let make_helpers = emit_make_helpers(custom_types, recursive)
   let type_code =
     string.join(
       list.map(custom_types, fn(custom) { custom_type_decl(custom, recursive) }),
@@ -322,6 +323,7 @@ pub fn emit_chunks(
       [header(audit)],
       intersperse(global_decls, "\n"),
       ["\n\n", type_code, "\n\n", builtins, "\n\n"],
+      [make_helpers, "\n\n"],
       intersperse(defs_bodies, "\n\n"),
       ["\n\n", frame_drops, "\n\n", wrappers, "\n\n"],
       intersperse(eq_glue_fns, "\n\n"),
@@ -673,6 +675,7 @@ fn llvm_ty(ty: Type, recursive: Dict(String, Bool)) -> String {
     // A process identifier (a stable task id), a scheduled-send timer and a
     // selector handle.
     TNamed("Pid") -> "i64"
+    TNamed("Monitor") -> "i64"
     TNamed("Timer") -> "i64"
     TNamed("Selector") -> "i64"
     // Async I/O handle (a file descriptor); opaque scalar.
@@ -792,6 +795,212 @@ fn custom_type_decl(
   }
   <> "\n"
   <> string.join(groups, "\n")
+}
+
+/// Constructor helpers the C runtime calls to build the monitor/exit messages
+/// (`Down`, `ExitMessage`), whose LLVM layout is compiler-owned. Emitted only
+/// when the std process module's types are present. An `ExitReason` field is
+/// passed as an `i64` code and built inline.
+fn emit_make_helpers(custom_types, recursive) -> String {
+  let by_name =
+    dict.from_list(list.map(custom_types, fn(custom) {
+      let ast.CustomType(_, name, _, _, _) = custom
+      #(name, custom)
+    }))
+  let exit_reason = find_type(by_name, "ExitReason")
+  case exit_reason {
+    Error(_) -> ""
+    Ok(_) ->
+      [#("Down", "ProcessDown"), #("ExitMessage", "ExitMessage")]
+      |> list.filter_map(fn(pair) {
+        let #(suffix, ctor) = pair
+        case find_type(by_name, suffix) {
+          Ok(custom) -> Ok(emit_make_helper(custom, ctor, recursive))
+          Error(_) -> Error(Nil)
+        }
+      })
+      |> string.join("\n\n")
+  }
+}
+
+/// A custom type whose (possibly module-qualified) name ends with `_<suffix>` or
+/// equals it: `Down`/`process_Down`.
+fn find_type(by_name, suffix) -> Result(ast.CustomType, Nil) {
+  case dict.get(by_name, suffix) {
+    Ok(custom) -> Ok(custom)
+    Error(_) ->
+      dict.to_list(by_name)
+      |> list.find_map(fn(pair) {
+        let #(name, custom) = pair
+        case string.ends_with(name, "_" <> suffix) {
+          True -> Ok(custom)
+          False -> Error(Nil)
+        }
+      })
+  }
+}
+
+fn is_exit_reason_type(ty: Type) -> Bool {
+  case ty {
+    TNamed(name) -> string.ends_with(name, "ExitReason")
+    _ -> False
+  }
+}
+
+fn make_param_ty(ty: Type, recursive) -> String {
+  case is_exit_reason_type(ty) {
+    True -> "i64"
+    False -> llvm_ty(ty, recursive)
+  }
+}
+
+fn emit_make_helper(custom, ctor, recursive) -> String {
+  let ast.CustomType(_, type_name, _, variants, _) = custom
+  let #(index, fields) = variant_index_fields(variants, ctor)
+  let ty_s = "%" <> type_name
+  let var_ty = ty_s <> ".v" <> int.to_string(index)
+  let params =
+    list.index_map(fields, fn(field, i) {
+      let #(_, ty) = field
+      make_param_ty(ty, recursive) <> " %f" <> int.to_string(i)
+    })
+  let b = Builder(next: 0, lines: [])
+  let b =
+    emit_line(
+      b,
+      "define i8* @Gleamc_make_"
+        <> type_name
+        <> "_"
+        <> ctor
+        <> "("
+        <> string.join(params, ", ")
+        <> ") {",
+    )
+  let #(payload, b) =
+    list.fold(
+      list.index_map(fields, fn(f, i) { #(f, i) }),
+      #("undef", b),
+      fn(acc, pair) {
+        let #(field, i) = pair
+        let #(base, b) = acc
+        let #(_, ty) = field
+        case is_exit_reason_type(ty) {
+          True -> {
+            let #(rc, b) = fresh(b)
+            let b =
+              emit_line(
+                b,
+                "  " <> rc <> " = trunc i64 %f" <> int.to_string(i) <> " to i8",
+              )
+            let #(er, b) = fresh(b)
+            let b =
+              emit_line(
+                b,
+                "  " <> er <> " = insertvalue %ExitReason undef, i8 " <> rc <> ", 0",
+              )
+            let #(v, b) = fresh(b)
+            let b =
+              emit_line(
+                b,
+                "  "
+                  <> v
+                  <> " = insertvalue "
+                  <> var_ty
+                  <> " "
+                  <> base
+                  <> ", %ExitReason "
+                  <> er
+                  <> ", "
+                  <> int.to_string(i),
+              )
+            #(v, b)
+          }
+          _ -> {
+            let fty = llvm_ty(ty, recursive)
+            let #(v, b) = fresh(b)
+            let b =
+              emit_line(
+                b,
+                "  "
+                  <> v
+                  <> " = insertvalue "
+                  <> var_ty
+                  <> " "
+                  <> base
+                  <> ", "
+                  <> fty
+                  <> " %f"
+                  <> int.to_string(i)
+                  <> ", "
+                  <> int.to_string(i),
+              )
+            #(v, b)
+          }
+        }
+      },
+    )
+  let #(d0, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  "
+        <> d0
+        <> " = insertvalue "
+        <> ty_s
+        <> " undef, i8 "
+        <> int.to_string(index)
+        <> ", 0",
+    )
+  let #(d1, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  "
+        <> d1
+        <> " = insertvalue "
+        <> ty_s
+        <> " "
+        <> d0
+        <> ", "
+        <> var_ty
+        <> " "
+        <> payload
+        <> ", "
+        <> int.to_string(index + 1),
+    )
+  let #(raw, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  "
+        <> raw
+        <> " = call i8* @gleamc_alloc(i64 "
+        <> ty_size_expr(TNamed(type_name), recursive)
+        <> ")",
+    )
+  let #(p, b) = fresh(b)
+  let b =
+    emit_line(b, "  " <> p <> " = bitcast i8* " <> raw <> " to " <> ty_s <> "*")
+  let b =
+    emit_line(b, "  store " <> ty_s <> " " <> d1 <> ", " <> ty_s <> "* " <> p)
+  let b = emit_line(b, "  ret i8* " <> raw)
+  let b = emit_line(b, "}")
+  string.join(list.reverse(b.lines), "\n") <> "\n"
+}
+
+fn variant_index_fields(variants, ctor) -> #(Int, List(#(String, Type))) {
+  list.fold(
+    list.index_map(variants, fn(v, i) { #(v, i) }),
+    #(0, []),
+    fn(acc, pair) {
+      let #(variant, i) = pair
+      let ast.Variant(name, fields) = variant
+      case name == ctor {
+        True -> #(i, fields)
+        False -> acc
+      }
+    },
+  )
 }
 
 fn tuple_type_decl(ty: Type, recursive: Dict(String, Bool)) -> String {
@@ -5065,6 +5274,7 @@ fn is_handle_like(ty: Type) -> Bool {
     ast.TApp("Timer", _) -> True
     ast.TApp("Selector", _) -> True
     TNamed("Pid") -> True
+    TNamed("Monitor") -> True
     TNamed("Timer") -> True
     TNamed("Selector") -> True
     TNamed(name) ->

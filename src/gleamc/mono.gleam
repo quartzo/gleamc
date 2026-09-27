@@ -527,6 +527,16 @@ fn mono_type(
       use #(ret2, state) <- result_try(mono_type(state, surface_map, ret))
       Ok(#(TFun(params2, ret2), state))
     }
+    TNamed(name) ->
+      // A custom type referenced only as a field of another type (e.g.
+      // `ExitReason` inside `Down`) must still be emitted, so request it.
+      case dict.get(state.surface_types, name) {
+        Ok(_) -> {
+          let #(specialized, state) = request_type(state, name, [])
+          Ok(#(TNamed(specialized), state))
+        }
+        Error(_) -> Ok(#(ty, state))
+      }
     _ -> Ok(#(ty, state))
   }
 }

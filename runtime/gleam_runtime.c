@@ -1023,6 +1023,17 @@ GleamcFuture* Gleamc_std_time_timer(int64_t ms) {
 /* so control always returns to this loop (no per-wrapper `sched_run`).*/
 /* ------------------------------------------------------------------ */
 
+/* The mailbox struct is defined below; a task owns up to two inboxes (one for
+ * `Down` monitor messages, one for `ExitMessage`). */
+typedef struct GleamcMailbox GleamcMailbox;
+
+/* Constructor helpers emitted by the backend for the std process types; weak so
+ * a program that never imports `process` links. */
+extern void* Gleamc_make_process_Down_ProcessDown(int64_t, int64_t, int64_t)
+    __attribute__((weak));
+extern void* Gleamc_make_process_ExitMessage_ExitMessage(int64_t, int64_t)
+    __attribute__((weak));
+
 typedef struct {
     bool (*step)(void*);
     void* frame;
@@ -1046,6 +1057,19 @@ typedef struct {
     bool detached;
     /* Stable process identifier (`Pid`); never reused. */
     int64_t id;
+    /* Monitor (`Down`) and trapped-exit (`ExitMessage`) inboxes, created on
+     * demand. */
+    GleamcMailbox* inbox_down;
+    GleamcMailbox* inbox_exit;
+    /* Monitors watching this task: pairs of (monitor id, watcher task id). */
+    int64_t* monitors;
+    int nmon;
+    int moncap;
+    /* Tasks linked to this one (Pids). */
+    int64_t* links;
+    int nlink;
+    int linkcap;
+    bool trap_exit;
 } GleamcTask2;
 
 static GleamcTask2 gleamc_tasks2[GLEAMC_TASKS_MAX];
@@ -1205,7 +1229,7 @@ void* Gleamc_uv_await_box(GleamcFuture* f) {
 /* box is queued, so it never suspends on a non-empty mailbox.         */
 /* ------------------------------------------------------------------ */
 
-typedef struct {
+typedef struct GleamcMailbox {
     GleamcHdr hdr;
     void** msgs;
     int nmsg;
@@ -1249,11 +1273,16 @@ static void gleamc_mailbox_remove_notifier(GleamcMailbox* mb, GleamcFuture* f) {
     }
 }
 
-int32_t Gleamc_process_ffi_send(int64_t handle, void* box) {
-    GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)handle;
+static GleamcMailbox* gleamc_mailbox_new(void) {
+    return (GleamcMailbox*)gleamc_alloc0(sizeof(GleamcMailbox));
+}
+
+/* Enqueue a box, handing it to a waiting `receive` or signalling a `wait_any`.
+ * Takes ownership of `box` either way. */
+static void gleamc_mailbox_send_box(GleamcMailbox* mb, void* box) {
     if (mb == NULL) {
         gleamc_box_free(box);
-        return 0;
+        return;
     }
     if (mb->nwait > 0) {
         GleamcFuture* f = mb->waiters[0];
@@ -1262,14 +1291,14 @@ int32_t Gleamc_process_ffi_send(int64_t handle, void* box) {
         mb->nwait--;
         f->value_p = box;
         f->done = true;
-        return 0;
+        return;
     }
     if (mb->nmsg == mb->mcap) {
         int cap = mb->mcap == 0 ? 8 : mb->mcap * 2;
         void** grown = (void**)realloc(mb->msgs, (size_t)cap * sizeof(void*));
         if (grown == NULL) {
             gleamc_box_free(box);
-            return 0;
+            return;
         }
         mb->msgs = grown;
         mb->mcap = cap;
@@ -1284,6 +1313,10 @@ int32_t Gleamc_process_ffi_send(int64_t handle, void* box) {
         f->value_i = 1;
         f->done = true;
     }
+}
+
+int32_t Gleamc_process_ffi_send(int64_t handle, void* box) {
+    gleamc_mailbox_send_box((GleamcMailbox*)(intptr_t)handle, box);
     return 0;
 }
 
@@ -1592,6 +1625,146 @@ int64_t Gleamc_process_ffi_selector_ready(int64_t handle) {
     return index;
 }
 
+/* ------------------------------------------------------------------ */
+/* Monitors and links.                                                 */
+/* ------------------------------------------------------------------ */
+
+static GleamcTask2* gleamc_task_by_id(int64_t id) {
+    for (int i = 0; i < gleamc_tasks2_n; i++) {
+        if (gleamc_tasks2[i].id == id) return &gleamc_tasks2[i];
+    }
+    return NULL;
+}
+
+static int64_t gleamc_next_monitor_id = 1;
+
+int64_t Gleamc_process_ffi_monitor(int64_t pid) {
+    int64_t mid = gleamc_next_monitor_id++;
+    GleamcTask2* me = gleamc_task_by_id(gleamc_current_task_id);
+    GleamcTask2* target = gleamc_task_by_id(pid);
+    if (target == NULL) {
+        if (me != NULL && Gleamc_make_process_Down_ProcessDown != NULL) {
+            if (me->inbox_down == NULL) me->inbox_down = gleamc_mailbox_new();
+            void* box = Gleamc_make_process_Down_ProcessDown(mid, pid, 1);
+            gleamc_mailbox_send_box(me->inbox_down, box);
+        }
+        return mid;
+    }
+    if (target->nmon == target->moncap) {
+        int cap = target->moncap == 0 ? 4 : target->moncap * 2;
+        int64_t* grown =
+            (int64_t*)realloc(target->monitors, (size_t)cap * 2 * sizeof(int64_t));
+        if (grown == NULL) return mid;
+        target->monitors = grown;
+        target->moncap = cap;
+    }
+    target->monitors[target->nmon * 2] = mid;
+    target->monitors[target->nmon * 2 + 1] = gleamc_current_task_id;
+    target->nmon++;
+    return mid;
+}
+
+int32_t Gleamc_process_ffi_demonitor(int64_t mid) {
+    for (int i = 0; i < gleamc_tasks2_n; i++) {
+        GleamcTask2* t = &gleamc_tasks2[i];
+        for (int j = 0; j < t->nmon; j++) {
+            if (t->monitors[j * 2] == mid) {
+                for (int k = j + 1; k < t->nmon; k++) {
+                    t->monitors[(k - 1) * 2] = t->monitors[k * 2];
+                    t->monitors[(k - 1) * 2 + 1] = t->monitors[k * 2 + 1];
+                }
+                t->nmon--;
+                return 0;
+            }
+        }
+    }
+    return 0;
+}
+
+int64_t Gleamc_process_ffi_self_down_inbox(void) {
+    GleamcTask2* me = gleamc_task_by_id(gleamc_current_task_id);
+    if (me == NULL) return 0;
+    if (me->inbox_down == NULL) me->inbox_down = gleamc_mailbox_new();
+    return (int64_t)(intptr_t)me->inbox_down;
+}
+
+int64_t Gleamc_process_ffi_self_exit_inbox(void) {
+    GleamcTask2* me = gleamc_task_by_id(gleamc_current_task_id);
+    if (me == NULL) return 0;
+    if (me->inbox_exit == NULL) me->inbox_exit = gleamc_mailbox_new();
+    return (int64_t)(intptr_t)me->inbox_exit;
+}
+
+int32_t Gleamc_process_ffi_trap_exits(bool on) {
+    GleamcTask2* me = gleamc_task_by_id(gleamc_current_task_id);
+    if (me != NULL) me->trap_exit = on;
+    return 0;
+}
+
+static void gleamc_task_link_push(GleamcTask2* t, int64_t pid) {
+    if (t->nlink == t->linkcap) {
+        int cap = t->linkcap == 0 ? 4 : t->linkcap * 2;
+        int64_t* grown = (int64_t*)realloc(t->links, (size_t)cap * sizeof(int64_t));
+        if (grown == NULL) return;
+        t->links = grown;
+        t->linkcap = cap;
+    }
+    t->links[t->nlink++] = pid;
+}
+
+bool Gleamc_process_ffi_link(int64_t pid) {
+    GleamcTask2* me = gleamc_task_by_id(gleamc_current_task_id);
+    GleamcTask2* target = gleamc_task_by_id(pid);
+    if (me == NULL || target == NULL) return false;
+    gleamc_task_link_push(me, pid);
+    gleamc_task_link_push(target, me->id);
+    return true;
+}
+
+static void gleamc_task_unlink_one(GleamcTask2* t, int64_t pid) {
+    for (int i = 0; i < t->nlink; i++) {
+        if (t->links[i] == pid) {
+            for (int j = i + 1; j < t->nlink; j++) t->links[j - 1] = t->links[j];
+            t->nlink--;
+            return;
+        }
+    }
+}
+
+int32_t Gleamc_process_ffi_unlink(int64_t pid) {
+    GleamcTask2* me = gleamc_task_by_id(gleamc_current_task_id);
+    GleamcTask2* target = gleamc_task_by_id(pid);
+    if (me == NULL) return 0;
+    gleamc_task_unlink_one(me, pid);
+    if (target != NULL) gleamc_task_unlink_one(target, me->id);
+    return 0;
+}
+
+/* Notify a finishing task's monitors (a `Down` to each watcher's inbox) and its
+ * links (an `ExitMessage` to each trapping linked task's exit inbox). */
+static void gleamc_task_notify_exit(GleamcTask2* t, int64_t reason) {
+    for (int i = 0; i < t->nmon; i++) {
+        int64_t mid = t->monitors[i * 2];
+        int64_t watcher = t->monitors[i * 2 + 1];
+        GleamcTask2* w = gleamc_task_by_id(watcher);
+        if (w == NULL || Gleamc_make_process_Down_ProcessDown == NULL) continue;
+        if (w->inbox_down == NULL) w->inbox_down = gleamc_mailbox_new();
+        void* box = Gleamc_make_process_Down_ProcessDown(mid, t->id, reason);
+        gleamc_mailbox_send_box(w->inbox_down, box);
+    }
+    for (int i = 0; i < t->nlink; i++) {
+        GleamcTask2* l = gleamc_task_by_id(t->links[i]);
+        if (l == NULL) continue;
+        if (l->trap_exit && Gleamc_make_process_ExitMessage_ExitMessage != NULL) {
+            if (l->inbox_exit == NULL) l->inbox_exit = gleamc_mailbox_new();
+            void* box = Gleamc_make_process_ExitMessage_ExitMessage(t->id, reason);
+            gleamc_mailbox_send_box(l->inbox_exit, box);
+        }
+        /* Real crash propagation (killing the linked task) is not implemented. */
+        gleamc_task_unlink_one(l, t->id);
+    }
+}
+
 void gleamc_run_until(GleamcFuture* target) {
     void* loop = gleamc_uv_loop();
     int nested = gleamc_run_depth++;
@@ -1644,6 +1817,8 @@ void gleamc_run_until(GleamcFuture* target) {
                         t->done->notify = NULL;
                     }
                 }
+                /* Deliver monitor/link notifications before the task goes. */
+                gleamc_task_notify_exit(t, 0);
                 /* `frame_drop` releases the frame (it ends in an rc_release). */
                 if (t->frame_drop != NULL) t->frame_drop(t->frame);
                 else gleamc_release(t->frame);
