@@ -502,6 +502,11 @@ fn header(audit: Bool) -> String {
   <> "declare i64 @Gleamc_process_ffi_new_subject()\n"
   <> "declare i32 @Gleamc_process_ffi_send(i64, i8*)\n"
   <> "declare i8* @Gleamc_process_ffi_receive(i64)\n"
+  <> "declare i32 @Gleamc_process_ffi_unreceive(i64, i8*)\n"
+  <> "declare i1 @Gleamc_process_ffi_has_message(i64)\n"
+  <> "declare i64 @Gleamc_process_ffi_mailbox_len(i64)\n"
+  <> "declare i1 @Gleamc_process_ffi_monitor_eq(i64, i64)\n"
+  <> "declare i64 @Gleamc_process_ffi_subject_handle(i64)\n"
   <> "declare i64 @Gleamc_process_ffi_send_after(i64, i64, i8*)\n"
   <> "declare i64 @Gleamc_process_ffi_cancel_timer(i64)\n"
   <> "declare i64 @gleamc_task_id(i8*)\n"
@@ -899,6 +904,7 @@ fn emit_make_helper(custom, ctor, recursive) -> String {
         let #(_, ty) = field
         case is_exit_reason_type(ty) {
           True -> {
+            let er_ty = llvm_ty(ty, recursive)
             let #(rc, b) = fresh(b)
             let b =
               emit_line(
@@ -909,7 +915,7 @@ fn emit_make_helper(custom, ctor, recursive) -> String {
             let b =
               emit_line(
                 b,
-                "  " <> er <> " = insertvalue %ExitReason undef, i8 " <> rc <> ", 0",
+                "  " <> er <> " = insertvalue " <> er_ty <> " undef, i8 " <> rc <> ", 0",
               )
             let #(v, b) = fresh(b)
             let b =
@@ -921,7 +927,9 @@ fn emit_make_helper(custom, ctor, recursive) -> String {
                   <> var_ty
                   <> " "
                   <> base
-                  <> ", %ExitReason "
+                  <> ", "
+                  <> er_ty
+                  <> " "
                   <> er
                   <> ", "
                   <> int.to_string(i),
@@ -1008,7 +1016,13 @@ fn variant_index_fields(variants, ctor) -> #(Int, List(#(String, Type))) {
     fn(acc, pair) {
       let #(variant, i) = pair
       let ast.Variant(name, fields) = variant
-      case name == ctor {
+      // Monomorphisation renames a constructor to `<Base>_<Type>` (e.g.
+      // `ProcessDown_process_Down`), so match on the base name.
+      let base = case list.last(string.split(name, ".")) {
+        Ok(last) -> last
+        Error(_) -> name
+      }
+      case base == ctor || string.starts_with(base, ctor <> "_") {
         True -> #(i, fields)
         False -> acc
       }
@@ -1799,13 +1813,40 @@ fn emit_machine_term(ctx: Ctx, info: FrameInfo, term: ir.Terminator, b: Builder)
     // keep the caller's frame across it. Store the result and finish the step.
     ir.Tailcall(fun, args) -> {
       let #(b, arg_list) = read_args(ctx, args, b)
-      let #(r, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  " <> r <> " = call " <> ret_ty <> " @Gleamc_" <> fun <> "(" <> arg_list <> ")",
-        )
-      emit_machine_finish(ctx, info, r, b)
+      case abi.ret_needs_sret(ctx.ret, ctx.recursive) {
+        True -> {
+          let ret_s = llvm_ty(ctx.ret, ctx.recursive)
+          let #(tmp, b) = fresh(b)
+          let b = emit_line(b, "  " <> tmp <> " = alloca " <> ret_s)
+          let b =
+            emit_line(
+              b,
+              "  call void @Gleamc_"
+                <> fun
+                <> "(ptr sret("
+                <> ret_s
+                <> ") "
+                <> tmp
+                <> case arg_list {
+                  "" -> ""
+                  _ -> ", " <> arg_list
+                }
+                <> ")",
+            )
+          let #(r, b) = fresh(b)
+          let b = emit_line(b, "  " <> r <> " = load " <> ret_s <> ", ptr " <> tmp)
+          emit_machine_finish(ctx, info, r, b)
+        }
+        False -> {
+          let #(r, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  " <> r <> " = call " <> ret_ty <> " @Gleamc_" <> fun <> "(" <> arg_list <> ")",
+            )
+          emit_machine_finish(ctx, info, r, b)
+        }
+      }
     }
     ir.TailcallIndirect(fval, args) -> {
       let fn_ty = operand_type(ctx.by_name, fval)
@@ -1814,17 +1855,46 @@ fn emit_machine_term(ctx: Ctx, info: FrameInfo, term: ir.Terminator, b: Builder)
       let #(code, b) = extract_value(fn_s, fv, [0], b)
       let #(env, b) = extract_value(fn_s, fv, [1], b)
       let #(b, arg_list) = read_args(ctx, args, b)
-      let callargs = case arg_list {
-        "" -> "i8* " <> env
-        _ -> "i8* " <> env <> ", " <> arg_list
+      case abi.ret_needs_sret(ctx.ret, ctx.recursive) {
+        True -> {
+          let ret_s = llvm_ty(ctx.ret, ctx.recursive)
+          let #(tmp, b) = fresh(b)
+          let b = emit_line(b, "  " <> tmp <> " = alloca " <> ret_s)
+          let b =
+            emit_line(
+              b,
+              "  call void "
+                <> code
+                <> "(ptr sret("
+                <> ret_s
+                <> ") "
+                <> tmp
+                <> ", i8* "
+                <> env
+                <> case arg_list {
+                  "" -> ""
+                  _ -> ", " <> arg_list
+                }
+                <> ")",
+            )
+          let #(r, b) = fresh(b)
+          let b = emit_line(b, "  " <> r <> " = load " <> ret_s <> ", ptr " <> tmp)
+          emit_machine_finish(ctx, info, r, b)
+        }
+        False -> {
+          let callargs = case arg_list {
+            "" -> "i8* " <> env
+            _ -> "i8* " <> env <> ", " <> arg_list
+          }
+          let #(r, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  " <> r <> " = call " <> ret_ty <> " " <> code <> "(" <> callargs <> ")",
+            )
+          emit_machine_finish(ctx, info, r, b)
+        }
       }
-      let #(r, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  " <> r <> " = call " <> ret_ty <> " " <> code <> "(" <> callargs <> ")",
-        )
-      emit_machine_finish(ctx, info, r, b)
     }
     // Handled by `emit_machine_blocks` before reaching here.
     ir.Suspend(_, _, _, _) -> emit_line(b, "  unreachable")
@@ -2078,15 +2148,36 @@ fn emit_machine_wrapper(function: ir.Function, info: FrameInfo, recursive: Dict(
   let by_name = locals_map(locals)
   let ret_ty = llvm_ty(ret, recursive)
   let nil = is_nil_type(ret)
+  let sret = abi.ret_needs_sret(ret, recursive)
   let args =
     list.map(params, fn(param) {
       llvm_ty(local_type(by_name, param), recursive) <> " %arg." <> safe(param)
     })
+  let sig_args = case sret {
+    True ->
+      "ptr sret("
+      <> ret_ty
+      <> ") %__out"
+      <> case args {
+        [] -> ""
+        _ -> ", " <> string.join(args, ", ")
+      }
+    False -> string.join(args, ", ")
+  }
   let b = new_builder()
   let b =
     emit_line(
       b,
-      "define " <> ret_ty <> " @Gleamc_" <> name <> "(" <> string.join(args, ", ") <> ") {",
+      "define "
+      <> case sret {
+        True -> "void"
+        False -> ret_ty
+      }
+      <> " @Gleamc_"
+      <> name
+      <> "("
+      <> sig_args
+      <> ") {",
     )
   let b =
     emit_line(
@@ -2126,12 +2217,16 @@ fn emit_machine_wrapper(function: ir.Function, info: FrameInfo, recursive: Dict(
   let #(fp, b) = frame_gep("%__fr", fr_ty, fut_idx, b)
   let b = emit_line(b, "  store i8* null, i8** " <> fp)
   let #(futp, b) = frame_gep("%__fr", fr_ty, fut_idx, b)
-  let #(dst_arg, b) = case nil {
-    True -> #("i8* null", b)
-    False -> {
-      let b = emit_line(b, "  %__out = alloca " <> ret_ty)
-      #("i8* %__out", b)
-    }
+  let #(dst_arg, b) = case sret {
+    True -> #("i8* %__out", b)
+    False ->
+      case nil {
+        True -> #("i8* null", b)
+        False -> {
+          let b = emit_line(b, "  %__out = alloca " <> ret_ty)
+          #("i8* %__out", b)
+        }
+      }
   }
   let copy = case nil {
     True -> "void (i8*, i8*)* null"
@@ -2176,14 +2271,18 @@ fn emit_machine_wrapper(function: ir.Function, info: FrameInfo, recursive: Dict(
   // The root does not await its own completion future.
   let b =
     emit_line(b, "  call void @Gleamc_rc_release(i8* " <> donef <> ", i8* null)")
-  let b = case nil {
-    True -> emit_line(b, "  ret i32 0")
-    False -> {
-      let #(rv, b) = fresh(b)
-      let b =
-        emit_line(b, "  " <> rv <> " = load " <> ret_ty <> ", " <> ret_ty <> "* %__out")
-      emit_line(b, "  ret " <> ret_ty <> " " <> rv)
-    }
+  let b = case sret {
+    True -> emit_line(b, "  ret void")
+    False ->
+      case nil {
+        True -> emit_line(b, "  ret i32 0")
+        False -> {
+          let #(rv, b) = fresh(b)
+          let b =
+            emit_line(b, "  " <> rv <> " = load " <> ret_ty <> ", " <> ret_ty <> "* %__out")
+          emit_line(b, "  ret " <> ret_ty <> " " <> rv)
+        }
+      }
   }
   string.join(list.reverse(b.lines), "\n") <> "\n}\n"
 }
@@ -3383,6 +3482,33 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
           let b = store_local(ctx, dest, "i32", r, b)
           #(b, Nil)
         }
+        "process_ffi.unreceive" -> {
+          let #(subject_arg, msg_arg) = case args {
+            [s, m, ..] -> #(s, m)
+            _ -> #(ir.Lit(ir.LUnit), ir.Lit(ir.LUnit))
+          }
+          let #(_, subject, b) = read_val(ctx, subject_arg, b)
+          let #(ty, value, b) = read_val(ctx, msg_arg, b)
+          let #(box, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  " <> box <> " = call i8* @gleamc_box_alloc(i64 "
+                <> ty_size_expr(operand_type(ctx.by_name, msg_arg), ctx.recursive) <> ")",
+            )
+          let #(slot, b) = fresh(b)
+          let b = emit_line(b, "  " <> slot <> " = bitcast i8* " <> box <> " to " <> ty <> "*")
+          let b = emit_line(b, "  store " <> ty <> " " <> value <> ", " <> ty <> "* " <> slot)
+          let #(r, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  " <> r <> " = call i32 @Gleamc_process_ffi_unreceive(i64 "
+                <> subject <> ", i8* " <> box <> ")",
+            )
+          let b = store_local(ctx, dest, "i32", r, b)
+          #(b, Nil)
+        }
         "process_ffi.send_after" -> {
           // Box the message and schedule a libuv timer that sends it.
           let #(subject_arg, delay_arg, msg_arg) = case args {
@@ -4505,6 +4631,11 @@ fn runtime_declared(name: String) -> Bool {
     | "Gleamc_process_ffi_send"
     | "Gleamc_process_ffi_receive"
     | "Gleamc_process_ffi_send_after"
+    | "Gleamc_process_ffi_unreceive"
+    | "Gleamc_process_ffi_has_message"
+    | "Gleamc_process_ffi_mailbox_len"
+    | "Gleamc_process_ffi_subject_handle"
+    | "Gleamc_process_ffi_monitor_eq"
     | "Gleamc_process_ffi_cancel_timer"
     | "Gleamc_buffer_new"
     | "Gleamc_buffer_len"
@@ -4810,6 +4941,7 @@ fn special_builtin(name: String) -> Bool {
     | "gleamc.hash"
     | "process_ffi.send"
     | "process_ffi.send_after"
+    | "process_ffi.unreceive"
     | "buffer.new"
     | "buffer.len"
     | "buffer.get"

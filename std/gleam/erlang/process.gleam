@@ -56,10 +56,23 @@ pub type ExitMessage {
   ExitMessage(pid: Pid, reason: ExitReason)
 }
 
+/// The handlers of a `Selector`, as a recursive list.
+type Handlers(payload) {
+  More(handle: Int, run: fn() -> Result(payload, Nil), rest: Handlers(payload))
+  Done
+}
+
+/// Waits for a message on any of several subjects at once. Each handler polls
+/// non-destructively; a message no handler accepts is set aside and re-examined
+/// on the next wake.
+pub opaque type Selector(payload) {
+  Selector(handle: Int, handlers: Handlers(payload))
+}
+
 /// Create a new `Selector`, which can wait for a message on several subjects
 /// at once.
 pub fn new_selector() -> Selector(payload) {
-  process_ffi.selector_new()
+  Selector(handle: process_ffi.selector_new(), handlers: Done)
 }
 
 /// Add a `Subject` to a `Selector`.
@@ -67,7 +80,7 @@ pub fn select(
   selector: Selector(payload),
   for: Subject(payload),
 ) -> Selector(payload) {
-  process_ffi.selector_add(selector, for)
+  add_handler(selector, for, fn(message) { Ok(message) })
 }
 
 /// Generate a new name that a process can register itself with using
@@ -128,7 +141,9 @@ pub fn select_monitors(
   selector: Selector(payload),
   mapping: fn(Down) -> payload,
 ) -> Selector(payload) {
-  select_map(selector, for: process_ffi.self_down_inbox(), mapping: mapping)
+  add_handler(selector, process_ffi.self_down_inbox(), fn(down) {
+    Ok(mapping(down))
+  })
 }
 
 /// Send an untrappable kill signal to a process, terminating it.
@@ -157,7 +172,26 @@ pub fn select_trapped_exits(
   selector: Selector(payload),
   handler: fn(ExitMessage) -> payload,
 ) -> Selector(payload) {
-  select_map(selector, for: process_ffi.self_exit_inbox(), mapping: handler)
+  add_handler(selector, process_ffi.self_exit_inbox(), fn(message) {
+    Ok(handler(message))
+  })
+}
+
+/// Add a handler for `Down` messages from a specific monitor.
+pub fn select_specific_monitor(
+  selector: Selector(payload),
+  monitor: Monitor,
+  mapping: fn(Down) -> payload,
+) -> Selector(payload) {
+  add_handler(selector, process_ffi.self_down_inbox(), fn(down) {
+    case down {
+      ProcessDown(down_monitor, _, _) ->
+        case process_ffi.monitor_eq(down_monitor, monitor) {
+          True -> Ok(mapping(down))
+          False -> Error(Nil)
+        }
+    }
+  })
 }
 
 /// Remove a `Subject` from a `Selector`.
@@ -165,7 +199,10 @@ pub fn deselect(
   selector: Selector(payload),
   for: Subject(payload),
 ) -> Selector(payload) {
-  process_ffi.selector_remove(selector, for)
+  Selector(
+    handle: process_ffi.selector_remove(selector.handle, for),
+    handlers: remove_handler(selector.handlers, process_ffi.subject_handle(for)),
+  )
 }
 
 /// Add a `Subject` to a `Selector`, transforming each message with `mapping`.
@@ -177,19 +214,78 @@ pub fn select_map(
   for: Subject(message),
   mapping: fn(message) -> payload,
 ) -> Selector(payload) {
-  let mapped = new_subject()
-  let _ = process.spawn(fn() { forward(for, mapped, mapping) })
-  process_ffi.selector_add(selector, mapped)
+  add_handler(selector, for, fn(message) { Ok(mapping(message)) })
 }
 
-fn forward(
-  from: Subject(message),
-  to: Subject(payload),
-  mapping: fn(message) -> payload,
-) -> Nil {
-  let message = receive_forever(from: from)
-  send(to, mapping(message))
-  forward(from, to, mapping)
+fn add_handler(
+  selector: Selector(payload),
+  subject: Subject(message),
+  decide: fn(message) -> Result(payload, Nil),
+) -> Selector(payload) {
+  Selector(
+    handle: process_ffi.selector_add(selector.handle, subject),
+    handlers: append_handler(
+      selector.handlers,
+      More(
+        process_ffi.subject_handle(subject),
+        fn() { drain(subject, decide, process_ffi.mailbox_len(subject)) },
+        Done,
+      ),
+    ),
+  )
+}
+
+fn append_handler(handlers: Handlers(payload), item: Handlers(payload)) -> Handlers(payload) {
+  case handlers {
+    Done -> item
+    More(handle, run, rest) -> More(handle, run, append_handler(rest, item))
+  }
+}
+
+fn remove_handler(handlers: Handlers(payload), target: Int) -> Handlers(payload) {
+  case handlers {
+    Done -> Done
+    More(handle, run, rest) ->
+      case handle == target {
+        True -> remove_handler(rest, target)
+        False -> More(handle, run, remove_handler(rest, target))
+      }
+  }
+}
+
+fn drain(
+  subject: Subject(message),
+  decide: fn(message) -> Result(payload, Nil),
+  remaining: Int,
+) -> Result(payload, Nil) {
+  case remaining <= 0 {
+    True -> Error(Nil)
+    False ->
+      case process_ffi.has_message(subject) {
+        False -> Error(Nil)
+        True -> {
+          let message = process_ffi.receive(subject)
+          case decide(message) {
+            Ok(value) -> Ok(value)
+            Error(_) -> {
+              process_ffi.unreceive(subject, message)
+              drain(subject, decide, remaining - 1)
+            }
+          }
+        }
+      }
+  }
+}
+
+fn poll(handlers: Handlers(payload)) -> Result(payload, Nil) {
+  case handlers {
+    Done -> Error(Nil)
+    More(_, run, rest) ->
+      case run() {
+        Ok(value) -> Ok(value)
+        Error(_) -> poll(rest)
+      }
+  }
 }
 
 /// Receive a message from any of the `Selector`'s subjects, within `within`
@@ -198,22 +294,24 @@ pub fn selector_receive(
   from: Selector(payload),
   within: Int,
 ) -> Result(payload, Nil) {
-  let _ = process_ffi.selector_wait(from, within)
-  let index = process_ffi.selector_ready(from)
-  case index < 0 {
-    True -> Error(Nil)
-    False ->
-      Ok(receive_forever(from: process_ffi.selector_subject(from, index)))
+  case poll(from.handlers) {
+    Ok(value) -> Ok(value)
+    Error(_) ->
+      case process_ffi.selector_wait(from.handle, within) {
+        1 -> selector_receive(from, within)
+        _ -> Error(Nil)
+      }
   }
 }
 
 /// Receive a message from any of the `Selector`'s subjects, waiting forever.
 pub fn selector_receive_forever(from: Selector(payload)) -> payload {
-  let _ = process_ffi.selector_wait(from, -1)
-  let index = process_ffi.selector_ready(from)
-  case index < 0 {
-    True -> selector_receive_forever(from)
-    False -> receive_forever(from: process_ffi.selector_subject(from, index))
+  case poll(from.handlers) {
+    Ok(value) -> value
+    Error(_) -> {
+      let _ = process_ffi.selector_wait(from.handle, -1)
+      selector_receive_forever(from)
+    }
   }
 }
 

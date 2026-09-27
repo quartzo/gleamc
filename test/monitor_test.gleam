@@ -39,6 +39,18 @@ pub fn main() {
   let exit_selector =
     process.new_selector() |> process.select_trapped_exits(handler: handle_exit)
   process.selector_receive_forever(from: exit_selector)
+
+  let specific_pid = process.spawn(fn() { short() })
+  let specific_monitor = process.monitor(specific_pid)
+  let specific_selector =
+    process.new_selector()
+    |> process.select_specific_monitor(specific_monitor, fn(down) {
+      case down {
+        ProcessDown(_, _, _) -> \"specific\"
+      }
+    })
+  io.println(process.selector_receive_forever(from: specific_selector))
+
   io.println(\"done\")
 }
 "
@@ -68,5 +80,6 @@ pub fn monitor_and_link_test() {
   assert run_status == 0 as output
   assert string.contains(output, "down") as output
   assert string.contains(output, "exit") as output
+  assert string.contains(output, "specific") as output
   assert string.contains(output, "done") as output
 }

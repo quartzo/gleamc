@@ -126,19 +126,23 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   operations `self`, `is_alive`, `spawn_unlinked` and `task.pid` are provided
   (`Pid` is a stable task id), as are selectors (`new_selector`, `select`,
   `select_map`, `deselect`, `selector_receive`, `selector_receive_forever`) and
-  `send_after`/`cancel_timer`. `select_map` runs the transform in a forwarder
-  task (C cannot call a Gleam closure). Monitor/link is supported: each task has
+  `send_after`/`cancel_timer`. A `Selector` is a Gleam record holding an opaque
+  handle plus an in-process handler list; `selector_receive*` polls the handlers
+  (so the `mapping` closures run directly, no forwarder task), sets aside
+  messages no handler accepts and re-examines them on the next wake. Monitor/link
+  is supported: each task has
   a per-task inbox (created on demand) and the runtime builds the typed `Down`/
   `ExitMessage` values with backend-emitted constructor helpers
   (`Gleamc_make_process_Down_ProcessDown`) — `monitor`, `demonitor`,
-  `demonitor_process`, `select_monitors`, `link`, `unlink`, `trap_exits` and
+  `demonitor_process`, `select_monitors`, `select_specific_monitor`,
+  `link`, `unlink`, `trap_exits` and
   `select_trapped_exits`, plus `kill`. A non-trapping link **propagates the
   exit** (the linked task is terminated); a trapping link gets an
   `ExitMessage`. Names are supported (`new_name`, `register`, `unregister`,
   `named`, `named_subject`); a `Name(a)` is a subject handle, so
   `named_subject` returns it. Restrictions: `ExitReason` only has
   `Normal`/`Killed` (no `Abnormal(Dynamic)`), `send_exit`/`send_abnormal_exit`
-  and `select_specific_monitor`/`select_other`/`select_record` are not
+  and `select_other`/`select_record` are not
   implemented, `subject_name`/`subject_owner` are missing, and `AwaitError`
   only has `Timeout`. A
   `Subject(a)` handles are refcounted and their mailbox is freed when the last

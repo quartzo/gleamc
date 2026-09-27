@@ -1250,6 +1250,9 @@ typedef struct GleamcMailbox {
     GleamcFuture** notifiers;
     int nnotify;
     int ncap;
+    void** deferred;
+    int ndef;
+    int dcap;
 } GleamcMailbox;
 
 int64_t Gleamc_process_ffi_new_subject(void) {
@@ -1273,7 +1276,9 @@ void Gleamc_subject_release(int64_t handle) {
     GleamcHdr* h = (GleamcHdr*)((uint8_t*)mb - sizeof(GleamcHdr));
     if (h->refcount != GLEAMC_RC_STATIC && h->refcount == 1) {
         for (int i = 0; i < mb->nmsg; i++) gleamc_box_free(mb->msgs[i]);
+        for (int i = 0; i < mb->ndef; i++) gleamc_box_free(mb->deferred[i]);
         free(mb->msgs);
+        free(mb->deferred);
         free(mb->waiters);
         free(mb->notifiers);
     }
@@ -1350,15 +1355,29 @@ int32_t Gleamc_process_ffi_send(int64_t handle, void* box) {
     return 0;
 }
 
-GleamcFuture* Gleamc_process_ffi_receive(int64_t handle) {
-    GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)handle;
-    GleamcFuture* f = (GleamcFuture*)gleamc_alloc0(sizeof(GleamcFuture));
-    if (mb != NULL && mb->nmsg > 0) {
+static void* gleamc_mailbox_take(GleamcMailbox* mb) {
+    if (mb->ndef > 0) {
+        void* box = mb->deferred[0];
+        for (int i = 1; i < mb->ndef; i++)
+            mb->deferred[i - 1] = mb->deferred[i];
+        mb->ndef--;
+        return box;
+    }
+    if (mb->nmsg > 0) {
         void* box = mb->msgs[0];
         for (int i = 1; i < mb->nmsg; i++)
             mb->msgs[i - 1] = mb->msgs[i];
         mb->nmsg--;
-        f->value_p = box;
+        return box;
+    }
+    return NULL;
+}
+
+GleamcFuture* Gleamc_process_ffi_receive(int64_t handle) {
+    GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)handle;
+    GleamcFuture* f = (GleamcFuture*)gleamc_alloc0(sizeof(GleamcFuture));
+    if (mb != NULL && (mb->ndef > 0 || mb->nmsg > 0)) {
+        f->value_p = gleamc_mailbox_take(mb);
         f->done = true;
         return f;
     }
@@ -1574,6 +1593,9 @@ int64_t Gleamc_process_ffi_selector_new(void) {
 int64_t Gleamc_process_ffi_selector_add(int64_t handle, int64_t subject) {
     GleamcSelector* sel = (GleamcSelector*)(intptr_t)handle;
     if (sel == NULL) return handle;
+    for (int i = 0; i < sel->nsub; i++) {
+        if (sel->subjects[i] == subject) return handle;
+    }
     if (sel->nsub == sel->cap) {
         int cap = sel->cap == 0 ? 4 : sel->cap * 2;
         int64_t* grown =
@@ -1733,6 +1755,10 @@ static GleamcTask2* gleamc_task_by_id(int64_t id) {
 
 static int64_t gleamc_next_monitor_id = 1;
 
+bool Gleamc_process_ffi_monitor_eq(int64_t a, int64_t b) {
+    return a == b;
+}
+
 int64_t Gleamc_process_ffi_monitor(int64_t pid) {
     int64_t mid = gleamc_next_monitor_id++;
     GleamcTask2* me = gleamc_task_by_id(gleamc_current_task_id);
@@ -1891,6 +1917,31 @@ int32_t Gleamc_process_ffi_kill(int64_t pid) {
     }
     return 0;
 }
+
+int32_t Gleamc_process_ffi_unreceive(int64_t handle, void* box) {
+    GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)handle;
+    if (mb == NULL) { gleamc_box_free(box); return 0; }
+    if (mb->ndef == mb->dcap) {
+        int cap = mb->dcap == 0 ? 8 : mb->dcap * 2;
+        void** grown = (void**)realloc(mb->deferred, (size_t)cap * sizeof(void*));
+        if (grown == NULL) { gleamc_box_free(box); return 0; }
+        mb->deferred = grown; mb->dcap = cap;
+    }
+    mb->deferred[mb->ndef++] = box;
+    return 0;
+}
+
+bool Gleamc_process_ffi_has_message(int64_t handle) {
+    GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)handle;
+    return mb != NULL && (mb->ndef > 0 || mb->nmsg > 0);
+}
+
+int64_t Gleamc_process_ffi_mailbox_len(int64_t handle) {
+    GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)handle;
+    return mb == NULL ? 0 : (int64_t)(mb->ndef + mb->nmsg);
+}
+
+int64_t Gleamc_process_ffi_subject_handle(int64_t handle) { return handle; }
 
 void gleamc_run_until(GleamcFuture* target) {
     void* loop = gleamc_uv_loop();

@@ -391,6 +391,10 @@ void gleamc_box_free(void* box);
 int64_t Gleamc_process_ffi_new_subject(void);
 void Gleamc_subject_retain(int64_t handle);
 void Gleamc_subject_release(int64_t handle);
+int32_t Gleamc_process_ffi_unreceive(int64_t handle, void* box);
+bool Gleamc_process_ffi_has_message(int64_t handle);
+int64_t Gleamc_process_ffi_mailbox_len(int64_t handle);
+int64_t Gleamc_process_ffi_subject_handle(int64_t handle);
 int32_t Gleamc_process_ffi_send(int64_t handle, void* box);
 GleamcFuture* Gleamc_process_ffi_receive(int64_t handle);
 /* Waits until a message is available on the subject or `ms` elapse. The
@@ -423,6 +427,7 @@ int64_t Gleamc_process_ffi_named_subject(int64_t name);
 
 /* Monitors and links (`Down` / `ExitMessage` delivered to a task's inbox). */
 int64_t Gleamc_process_ffi_monitor(int64_t pid);
+bool Gleamc_process_ffi_monitor_eq(int64_t a, int64_t b);
 int32_t Gleamc_process_ffi_demonitor(int64_t monitor);
 int64_t Gleamc_process_ffi_self_down_inbox(void);
 int64_t Gleamc_process_ffi_self_exit_inbox(void);

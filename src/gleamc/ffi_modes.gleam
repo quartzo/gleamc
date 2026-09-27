@@ -99,6 +99,7 @@ pub fn table() -> Dict(String, FfiSig) {
   |> dict.insert("process_ffi.named_subject", FfiSig([Borrow], OwnedResult))
   |> dict.insert("process_ffi.pid_of_int", FfiSig([Borrow], OwnedResult))
   |> dict.insert("process_ffi.demonitor", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("process_ffi.monitor_eq", FfiSig([Borrow, Borrow], OwnedResult))
   |> dict.insert("process_ffi.self_down_inbox", FfiSig([], OwnedResult))
   |> dict.insert("process_ffi.self_exit_inbox", FfiSig([], OwnedResult))
   |> dict.insert("process_ffi.trap_exits", FfiSig([Borrow], OwnedResult))
@@ -117,11 +118,10 @@ pub fn table() -> Dict(String, FfiSig) {
     "process_ffi.selector_wait",
     FfiSig([Borrow, Borrow], OwnedResult),
   )
-  |> dict.insert("process_ffi.selector_ready", FfiSig([Borrow], OwnedResult))
-  |> dict.insert(
-    "process_ffi.selector_subject",
-    FfiSig([Borrow, Borrow], OwnedResult),
-  )
+  |> dict.insert("process_ffi.unreceive", FfiSig([Borrow, Owned], OwnedResult))
+  |> dict.insert("process_ffi.has_message", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("process_ffi.mailbox_len", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("process_ffi.subject_handle", FfiSig([Borrow], OwnedResult))
   |> dict.insert("task.async", FfiSig([Borrow], OwnedResult))
   |> dict.insert("task_ffi.await", FfiSig([Borrow], OwnedResult))
   |> dict.insert("int.to_string", FfiSig([Borrow], OwnedResult))

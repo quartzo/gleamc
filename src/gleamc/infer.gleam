@@ -1060,6 +1060,10 @@ fn builtins() -> Dict(String, Scheme) {
     Scheme(none, Fun([Con("Monitor", [])], n)),
   )
   |> dict.insert(
+    "process_ffi.monitor_eq",
+    Scheme(none, Fun([Con("Monitor", []), Con("Monitor", [])], b)),
+  )
+  |> dict.insert(
     "process_ffi.self_down_inbox",
     Scheme(none, Fun([], Con("Subject", [Con("process_Down", [])]))),
   )
@@ -1078,42 +1082,32 @@ fn builtins() -> Dict(String, Scheme) {
   )
   |> dict.insert(
     "process_ffi.selector_new",
-    Scheme([9140], Fun([], Con("Selector", [Var(9140)]))),
+    Scheme(none, Fun([], i)),
   )
   |> dict.insert(
     "process_ffi.selector_add",
-    Scheme(
-      [9141],
-      Fun(
-        [Con("Selector", [Var(9141)]), Con("Subject", [Var(9141)])],
-        Con("Selector", [Var(9141)]),
-      ),
-    ),
+    Scheme([9141], Fun([i, Con("Subject", [Var(9141)])], i)),
   )
   |> dict.insert(
     "process_ffi.selector_remove",
-    Scheme(
-      [9150],
-      Fun(
-        [Con("Selector", [Var(9150)]), Con("Subject", [Var(9150)])],
-        Con("Selector", [Var(9150)]),
-      ),
-    ),
+    Scheme([9150], Fun([i, Con("Subject", [Var(9150)])], i)),
+  )
+  |> dict.insert("process_ffi.selector_wait", Scheme(none, Fun([i, i], i)))
+  |> dict.insert(
+    "process_ffi.unreceive",
+    Scheme([9170], Fun([Con("Subject", [Var(9170)]), Var(9170)], n)),
   )
   |> dict.insert(
-    "process_ffi.selector_wait",
-    Scheme([9142], Fun([Con("Selector", [Var(9142)]), i], i)),
+    "process_ffi.has_message",
+    Scheme([9171], Fun([Con("Subject", [Var(9171)])], b)),
   )
   |> dict.insert(
-    "process_ffi.selector_ready",
-    Scheme([9143], Fun([Con("Selector", [Var(9143)])], i)),
+    "process_ffi.mailbox_len",
+    Scheme([9172], Fun([Con("Subject", [Var(9172)])], i)),
   )
   |> dict.insert(
-    "process_ffi.selector_subject",
-    Scheme(
-      [9144],
-      Fun([Con("Selector", [Var(9144)]), i], Con("Subject", [Var(9144)])),
-    ),
+    "process_ffi.subject_handle",
+    Scheme([9180], Fun([Con("Subject", [Var(9180)])], i)),
   )
 }
 
