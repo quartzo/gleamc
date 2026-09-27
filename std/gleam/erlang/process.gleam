@@ -182,10 +182,14 @@ pub fn send_exit(to: Pid) -> Nil {
 /// Send an abnormal exit signal to a process, terminating a non-trapping one.
 /// A trapping process receives `ExitMessage(self(), Abnormal(reason))`.
 pub fn send_abnormal_exit(pid: Pid, reason: a) -> Nil {
-  process_ffi.send_exit_message(
-    pid,
-    ExitMessage(self(), Abnormal(dynamic.from(reason))),
-  )
+  case process_ffi.traps(pid) {
+    True ->
+      process_ffi.send_exit_message(
+        pid,
+        ExitMessage(self(), Abnormal(dynamic.from(reason))),
+      )
+    False -> process_ffi.kill(pid)
+  }
 }
 
 /// Create a link between the current process and `pid`.

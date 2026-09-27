@@ -2002,6 +2002,11 @@ int32_t Gleamc_process_ffi_trap_exits(bool on) {
     return 0;
 }
 
+bool Gleamc_process_ffi_traps(int64_t pid) {
+    GleamcTask2* t = gleamc_task_by_id(pid);
+    return t != NULL && !t->finished && t->trap_exit;
+}
+
 static void gleamc_task_link_push(GleamcTask2* t, int64_t pid) {
     if (t->nlink == t->linkcap) {
         int cap = t->linkcap == 0 ? 4 : t->linkcap * 2;

@@ -447,6 +447,7 @@ int32_t Gleamc_process_ffi_demonitor(int64_t monitor);
 int64_t Gleamc_process_ffi_self_down_inbox(void);
 int64_t Gleamc_process_ffi_self_exit_inbox(void);
 int32_t Gleamc_process_ffi_trap_exits(bool on);
+bool Gleamc_process_ffi_traps(int64_t pid);
 bool Gleamc_process_ffi_link(int64_t pid);
 int32_t Gleamc_process_ffi_unlink(int64_t pid);
 int32_t Gleamc_process_ffi_kill(int64_t pid);

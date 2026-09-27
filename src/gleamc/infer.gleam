@@ -1130,6 +1130,10 @@ fn builtins() -> Dict(String, Scheme) {
     Scheme(none, Fun([sh], Con("Dynamic", []))),
   )
   |> dict.insert(
+    "process_ffi.traps",
+    Scheme(none, Fun([Con("Pid", [])], b)),
+  )
+  |> dict.insert(
     "process_ffi.send_exit",
     Scheme(none, Fun([Con("Pid", [])], n)),
   )

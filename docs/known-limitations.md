@@ -160,11 +160,13 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   `Task(a)` handles are refcounted (a `Dynamic` frees its box and runs a
   per-type drop glue at refcount 0; a `Task(a)`'s completion future is held by
   both the task and the caller, so a killed/timed-out handle no longer leaks
-  and no longer dangles), so those no longer leak. Still leaking: timer
-  futures, the boxed result of a task that is never awaited, tasks still
-  running when the program exits, and boxes queued but never received (their
-  payloads are never dropped). Draining a mailbox does not join the spawned
-  senders.
+  and no longer dangles). When `main` returns, `gleamc_shutdown` terminates
+  every still-pending task and frees its frame, completion future, queued
+  messages and monitor/link/inbox bookkeeping, so a short-lived program does
+  not leak what it left running (ASan-clean on the concurrency examples).
+  Still missing: a per-message payload drop (a freed box drops its cell but
+  not the payload's inner references) and closing libuv timers still pending
+  at exit. Draining a mailbox does not join the spawned senders.
 
 ## Standard library coverage
 

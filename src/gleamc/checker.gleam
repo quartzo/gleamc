@@ -2520,6 +2520,16 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         TNamed("Dynamic"),
         "process_ffi.selector_other_raw",
       )
+    "process_ffi", "traps" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("Pid")],
+        TBool,
+        "process_ffi.traps",
+      )
     "process_ffi", "send_exit" ->
       check_builtin(
         env,
