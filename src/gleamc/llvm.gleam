@@ -284,6 +284,13 @@ pub fn emit_chunks(
     list.map(collect_buffer_elems(custom_types, functions), fn(elem) {
       emit_buffer_glue(lits, recursive, custom_types, fields_of, elem)
     })
+  let dynamic_glue_fns =
+    list.filter_map(collect_dynamic_types(functions), fn(ty) {
+      case ownership.needs_drop_in(ty, fields_of, recursive) {
+        True -> Ok(emit_dynamic_glue(lits, recursive, fields_of, ty))
+        False -> Error(Nil)
+      }
+    })
   let show_glue_fns =
     list.append(
       [
@@ -332,6 +339,8 @@ pub fn emit_chunks(
       intersperse(rc_glue_fns, "\n\n"),
       ["\n\n"],
       intersperse(buffer_glue_fns, "\n\n"),
+      ["\n\n"],
+      intersperse(dynamic_glue_fns, "\n\n"),
       ["\n\n"],
       intersperse(show_glue_fns, "\n\n"),
       ["\n\n"],
@@ -512,7 +521,9 @@ fn header(audit: Bool) -> String {
   <> "declare i8* @Gleamc_process_ffi_selector_other_raw(i64)\n"
   <> "declare i32 @Gleamc_process_ffi_send_exit(i64)\n"
   <> "declare i32 @Gleamc_process_ffi_send_exit_message(i64, i8*)\n"
-  <> "declare i8* @Gleamc_dynamic_new(i32, i8*)\n"
+  <> "declare i8* @Gleamc_dynamic_new(i32, i8*, void (i8*)*)\n"
+  <> "declare void @Gleamc_dynamic_retain(i8*)\n"
+  <> "declare void @Gleamc_dynamic_release(i8*)\n"
   <> "declare i64 @Gleamc_dynamic_ffi_classify(i8*)\n"
   <> "declare i8* @Gleamc_dynamic_bits(i8*)\n"
   <> "declare i64 @Gleamc_process_ffi_send_after(i64, i64, i8*)\n"
@@ -4215,6 +4226,10 @@ fn emit_op_builtin(
         emit_line(b, "  " <> slot <> " = bitcast i8* " <> box <> " to " <> ty <> "*")
       let b =
         emit_line(b, "  store " <> ty <> " " <> value <> ", " <> ty <> "* " <> slot)
+      let drop = case ownership.needs_drop(oty, ctx.ctors) {
+        True -> "void (i8*)* @Gleamc_Dynamic_" <> mangle_glue(oty) <> "_drop"
+        False -> "void (i8*)* null"
+      }
       let #(r, b) = fresh(b)
       let b =
         emit_line(
@@ -4225,6 +4240,8 @@ fn emit_op_builtin(
             <> int.to_string(tag)
             <> ", i8* "
             <> box
+            <> ", "
+            <> drop
             <> ")",
         )
       let b = store_local(ctx, dest, "i8*", r, b)
@@ -5247,6 +5264,14 @@ fn buffer_rc(which: String, reg: String, b: Builder) -> Builder {
   emit_line(b, "  call void @" <> call <> "(i8* " <> reg <> ")")
 }
 
+fn dynamic_rc(which: String, reg: String, b: Builder) -> Builder {
+  let call = case which {
+    "retain" -> "Gleamc_dynamic_retain"
+    _ -> "Gleamc_dynamic_release"
+  }
+  emit_line(b, "  call void @" <> call <> "(i8* " <> reg <> ")")
+}
+
 /// `sizeof(ty)` as an i64 constant expression (inlined into a call argument:
 /// a standalone `ptrtoint` of a constant expression is rejected by newer LLVM).
 fn ty_size_expr(ty: Type, recursive) -> String {
@@ -5371,6 +5396,60 @@ fn emit_buffer_slot_glue(
   let b =
     emit_line(b, "  " <> v <> " = load " <> ty_s <> ", " <> ty_s <> "* " <> p)
   let b = rc_expr(lits, recursive, fields_of, which, elem, ty_s, v, "buffer", b)
+  let b = emit_line(b, "  ret void")
+  let b = emit_line(b, "}")
+  string.join(list.reverse(b.lines), "\n") <> "\n"
+}
+
+/// The value types passed to `dynamic.from`, so a `void(i8*)` drop glue can be
+/// emitted for each (handed to `Gleamc_dynamic_new`).
+fn collect_dynamic_types(functions) -> List(Type) {
+  let all =
+    list.flat_map(functions, fn(function) {
+      let ir.Function(_, _, _, blocks, locals) = function
+      let by_name =
+        list.fold(locals, dict.new(), fn(acc, local) {
+          let ir.Local(name, ty, _) = local
+          dict.insert(acc, name, ty)
+        })
+      list.flat_map(blocks, fn(block) {
+        let ir.Block(_, ops, _) = block
+        list.flat_map(ops, fn(op) {
+          case op {
+            ir.OpBuiltin(_, "dynamic_ffi.from", [arg, ..], _) ->
+              case arg {
+                ir.Var(name) ->
+                  case dict.get(by_name, name) {
+                    Ok(ty) -> [ty]
+                    Error(_) -> []
+                  }
+                _ -> []
+              }
+            _ -> []
+          }
+        })
+      })
+    })
+  list.fold(all, dict.new(), fn(acc, ty) { dict.insert(acc, mangle_glue(ty), ty) })
+  |> dict.to_list
+  |> list.map(fn(pair) {
+    let #(_, ty) = pair
+    ty
+  })
+}
+
+/// `void(i8*)` glue that loads a `Dynamic` payload from its box and drops it.
+fn emit_dynamic_glue(lits, recursive, fields_of, elem: Type) -> String {
+  let ty_s = llvm_ty(elem, recursive)
+  let name = "Gleamc_Dynamic_" <> mangle_glue(elem) <> "_drop"
+  let b = new_builder()
+  let b = emit_line(b, "define void @" <> name <> "(i8* %slot) {")
+  let #(p, b) = fresh(b)
+  let b = emit_line(b, "  " <> p <> " = bitcast i8* %slot to " <> ty_s <> "*")
+  let #(v, b) = fresh(b)
+  let b =
+    emit_line(b, "  " <> v <> " = load " <> ty_s <> ", " <> ty_s <> "* " <> p)
+  let b = rc_expr(lits, recursive, fields_of, "drop", elem, ty_s, v, "dynamic", b)
   let b = emit_line(b, "  ret void")
   let b = emit_line(b, "}")
   string.join(list.reverse(b.lines), "\n") <> "\n"
@@ -7255,8 +7334,8 @@ fn rc_expr(
     ast.TApp("Buffer", _) -> buffer_rc(which, reg, b)
     // `Subject(a)` is a refcounted mailbox handle (i64 pointer).
     ast.TApp("Subject", _) -> subject_rc(which, reg, b)
-    // `Dynamic` is an opaque boxed pointer: not refcounted.
-    TNamed("Dynamic") -> b
+    // `Dynamic` is a refcounted boxed value (`GleamcDynamic*`).
+    TNamed("Dynamic") -> dynamic_rc(which, reg, b)
     TNamed(name) ->
       case ast.subject_elem_name(name) {
         Ok(_) -> subject_rc(which, reg, b)

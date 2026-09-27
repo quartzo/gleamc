@@ -233,6 +233,28 @@ void gleamc_release_slow(GleamcHdr* h) {
     free(h);
 }
 
+/* Release a refcounted handle that owns sub-references: at refcount 0 run
+ * `dtor` (which releases the sub-references) and free the cell. Under the audit
+ * build the cell is never freed, but the destructor still runs so the audit
+ * sees the sub-references drop to 0. */
+void gleamc_release_with(void* p, void (*dtor)(void*), const char* site) {
+    if (p == NULL) return;
+    GleamcHdr* h = (GleamcHdr*)((uint8_t*)p - sizeof(GleamcHdr));
+    if (h->refcount == GLEAMC_RC_STATIC) return;
+#ifdef GLEAMC_RC_AUDIT
+    h->refcount--;
+    _audit_touch(p, site, -1);
+    if (h->refcount == 0 && dtor != NULL) dtor(p);
+#else
+    (void)site;
+    if (--h->refcount == 0) {
+        if (dtor != NULL) dtor(p);
+        _gleamc_live--;
+        free(h);
+    }
+#endif
+}
+
 size_t gleamc_live_blocks(void) { return _gleamc_live; }
 
 GleamcString gleamc_string_lit(const char* data, size_t len) {
@@ -1717,7 +1739,7 @@ int64_t Gleamc_process_ffi_selector_other_raw(int64_t handle) {
         GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)sel->subjects[i];
         if (mb == NULL) continue;
         void* box = gleamc_mailbox_take(mb);
-        if (box != NULL) return (int64_t)(intptr_t)Gleamc_dynamic_new(9, box);
+        if (box != NULL) return (int64_t)(intptr_t)Gleamc_dynamic_new(9, box, NULL);
     }
     return 0;
 }
@@ -2084,21 +2106,42 @@ int64_t Gleamc_process_ffi_subject_handle(int64_t handle) { return handle; }
 /* Dynamic values: a class tag plus a boxed payload.                   */
 /* ------------------------------------------------------------------ */
 
-void* Gleamc_dynamic_new(int32_t tag, void* box) {
-    int64_t* d = (int64_t*)gleamc_alloc0_site(2 * sizeof(int64_t), "dynamic");
-    d[0] = tag;
-    d[1] = (int64_t)(intptr_t)box;
+typedef struct {
+    int32_t tag;
+    int32_t _pad;
+    void* box;
+    void (*drop)(void*);
+} GleamcDynamic;
+
+static void gleamc_dynamic_dtor(void* p) {
+    GleamcDynamic* d = (GleamcDynamic*)p;
+    if (d->drop != NULL) d->drop(d->box);
+    gleamc_box_free(d->box);
+}
+
+void* Gleamc_dynamic_new(int32_t tag, void* box, void (*drop)(void*)) {
+    GleamcDynamic* d =
+        (GleamcDynamic*)gleamc_alloc0_site(sizeof(GleamcDynamic), "dynamic");
+    d->tag = tag;
+    d->box = box;
+    d->drop = drop;
     return d;
+}
+
+void Gleamc_dynamic_retain(void* p) { gleamc_retain(p); }
+
+void Gleamc_dynamic_release(void* p) {
+    gleamc_release_with(p, gleamc_dynamic_dtor, "dynamic");
 }
 
 int64_t Gleamc_dynamic_ffi_classify(void* dynamic) {
     if (dynamic == NULL) return -1;
-    return ((int64_t*)dynamic)[0];
+    return ((GleamcDynamic*)dynamic)->tag;
 }
 
 void* Gleamc_dynamic_bits(void* dynamic) {
     if (dynamic == NULL) return NULL;
-    return (void*)(intptr_t)((int64_t*)dynamic)[1];
+    return ((GleamcDynamic*)dynamic)->box;
 }
 
 /* The owning task id of a subject, or the pid registered for a named subject,

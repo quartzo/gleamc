@@ -49,6 +49,10 @@ void gleamc_depth_die(const char* fn);
 /* Drop to zero: frees the block (cold path). */
 void gleamc_release_slow(GleamcHdr* h);
 
+/* Release a refcounted handle with a destructor that releases its
+ * sub-references; frees the cell at refcount 0 (but not under the audit build). */
+void gleamc_release_with(void* p, void (*dtor)(void*), const char* site);
+
 /* Inline retain/release: the +1/-1 at the generated site becomes header
  * arithmetic; only the drop to zero calls into the kernel. NULL-safe. */
 #ifdef GLEAMC_RC_AUDIT
@@ -446,7 +450,9 @@ int32_t Gleamc_process_ffi_send_exit(int64_t pid);
 int32_t Gleamc_process_ffi_send_exit_message(int64_t pid, void* box);
 
 /* Dynamic values (`gleam/dynamic`): a class tag plus a boxed payload. */
-void* Gleamc_dynamic_new(int32_t tag, void* box);
+void* Gleamc_dynamic_new(int32_t tag, void* box, void (*drop)(void*));
+void Gleamc_dynamic_retain(void* p);
+void Gleamc_dynamic_release(void* p);
 int64_t Gleamc_dynamic_ffi_classify(void* dynamic);
 void* Gleamc_dynamic_bits(void* dynamic);
 

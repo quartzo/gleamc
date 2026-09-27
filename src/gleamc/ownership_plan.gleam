@@ -310,6 +310,8 @@ fn needs_drop_seen(ty, fields_of, recursive, seen) -> Bool {
     TFloat -> False
     TBool -> False
     TNil -> False
+    // `Dynamic` is a refcounted boxed value.
+    TNamed("Dynamic") -> True
     TTuple(types) ->
       list.any(types, fn(inner) {
         needs_drop_seen(inner, fields_of, recursive, seen)
