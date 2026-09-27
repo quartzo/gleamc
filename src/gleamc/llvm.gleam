@@ -105,10 +105,12 @@ pub fn emit_chunks(
       string.compare(type_name_of(a), type_name_of(b))
     })
   let custom_by_name =
-    dict.from_list(list.map(custom_types, fn(custom) {
-      let ast.CustomType(_, n, _, _, _) = custom
-      #(n, custom)
-    }))
+    dict.from_list(
+      list.map(custom_types, fn(custom) {
+        let ast.CustomType(_, n, _, _, _) = custom
+        #(n, custom)
+      }),
+    )
   let recursive = ownership.recursive_types(ctors)
   let fields_of = ownership.type_fields(ctors)
   let tuples =
@@ -269,9 +271,7 @@ pub fn emit_chunks(
         emit_cmp_glue(recursive, custom_types, TNamed("BitArray")),
         emit_cmp_glue(recursive, custom_types, ast.TNil),
       ],
-      list.map(glue_seeds, fn(ty) {
-        emit_cmp_glue(recursive, custom_types, ty)
-      }),
+      list.map(glue_seeds, fn(ty) { emit_cmp_glue(recursive, custom_types, ty) }),
     )
   let rc_glue_fns =
     list.flat_map(seeds, fn(ty) {
@@ -281,12 +281,9 @@ pub fn emit_chunks(
       ]
     })
   let buffer_glue_fns =
-    list.map(
-      collect_buffer_elems(custom_types, functions),
-      fn(elem) {
-        emit_buffer_glue(lits, recursive, custom_types, fields_of, elem)
-      },
-    )
+    list.map(collect_buffer_elems(custom_types, functions), fn(elem) {
+      emit_buffer_glue(lits, recursive, custom_types, fields_of, elem)
+    })
   let show_glue_fns =
     list.append(
       [
@@ -821,10 +818,12 @@ fn custom_type_decl(
 /// passed as an `i64` code and built inline.
 fn emit_make_helpers(custom_types, recursive) -> String {
   let by_name =
-    dict.from_list(list.map(custom_types, fn(custom) {
-      let ast.CustomType(_, name, _, _, _) = custom
-      #(name, custom)
-    }))
+    dict.from_list(
+      list.map(custom_types, fn(custom) {
+        let ast.CustomType(_, name, _, _, _) = custom
+        #(name, custom)
+      }),
+    )
   let exit_reason = find_type(by_name, "ExitReason")
   case exit_reason {
     Error(_) -> ""
@@ -915,7 +914,13 @@ fn emit_make_helper(custom, ctor, recursive) -> String {
             let b =
               emit_line(
                 b,
-                "  " <> er <> " = insertvalue " <> er_ty <> " undef, i8 " <> rc <> ", 0",
+                "  "
+                  <> er
+                  <> " = insertvalue "
+                  <> er_ty
+                  <> " undef, i8 "
+                  <> rc
+                  <> ", 0",
               )
             let #(v, b) = fresh(b)
             let b =
@@ -1291,7 +1296,9 @@ fn suspend_set(module: ir.Module) -> Dict(String, Bool) {
 
 /// Parameter types of every function, keyed by name. Used to decide whether a
 /// `musttail` call has matching caller/callee prototypes.
-fn function_signatures(functions: List(ir.Function)) -> Dict(String, List(Type)) {
+fn function_signatures(
+  functions: List(ir.Function),
+) -> Dict(String, List(Type)) {
   list.fold(functions, dict.new(), fn(acc, function) {
     let ir.Function(name, params, _, _, locals) = function
     let by_name = locals_map(locals)
@@ -1354,7 +1361,9 @@ fn emit_function(
   let sret = abi.ret_needs_sret(ret, recursive)
   let params_s = case sret {
     True ->
-      "ptr sret(" <> ret_s <> ") %__out"
+      "ptr sret("
+      <> ret_s
+      <> ") %__out"
       <> case args {
         [] -> ""
         _ -> ", " <> string.join(args, ", ")
@@ -1417,10 +1426,12 @@ fn frame_info(function: ir.Function, _recursive) -> FrameInfo {
   let ir.Function(name, _, ret, blocks, locals) = function
   let uniq = unique_locals(locals)
   let fields =
-    dict.from_list(list.index_map(uniq, fn(local, index) {
-      let ir.Local(n, _, _) = local
-      #(n, index)
-    }))
+    dict.from_list(
+      list.index_map(uniq, fn(local, index) {
+        let ir.Local(n, _, _) = local
+        #(n, index)
+      }),
+    )
   let state = list.length(uniq)
   let fut = state + 1
   let result = case is_nil_type(ret) {
@@ -1483,7 +1494,9 @@ fn emit_frame_drop(function, recursive, fields_of, lits) -> String {
         _ -> acc
       }
     })
-  let owned = case frame.has_suspend(function) || frame.has_tail_machine(function) {
+  let owned = case
+    frame.has_suspend(function) || frame.has_tail_machine(function)
+  {
     True -> {
       // The machine wrapper / `OpMachineStart` places the arguments in the
       // frame (there is no `OpFrameSet` for them), so the frame owns them.
@@ -1515,9 +1528,11 @@ fn emit_frame_drop(function, recursive, fields_of, lits) -> String {
   let teardown = "fd_" <> safe(name) <> "_teardown"
   let rel = "fd_" <> safe(name) <> "_rel"
   let b = new_builder()
-  let b = emit_line(b, "define void @" <> frame_drop_sym(fr_ty) <> "(i8* %env) {")
+  let b =
+    emit_line(b, "define void @" <> frame_drop_sym(fr_ty) <> "(i8* %env) {")
   let b = emit_line(b, "  %isnull = icmp eq i8* %env, null")
-  let b = emit_line(b, "  br i1 %isnull, label %" <> done <> ", label %" <> body)
+  let b =
+    emit_line(b, "  br i1 %isnull, label %" <> done <> ", label %" <> body)
   let b = emit_line(b, "\n" <> body <> ":")
   let #(hp, b) = fresh(b)
   let #(hh, b) = fresh(b)
@@ -1556,7 +1571,10 @@ fn emit_frame_drop(function, recursive, fields_of, lits) -> String {
       let ty_s = llvm_ty(ty, recursive)
       let #(fv, b) = fresh(b)
       let b =
-        emit_line(b, "  " <> fv <> " = load " <> ty_s <> ", " <> ty_s <> "* " <> gp)
+        emit_line(
+          b,
+          "  " <> fv <> " = load " <> ty_s <> ", " <> ty_s <> "* " <> gp,
+        )
       rc_expr(lits, recursive, fields_of, "drop", ty, ty_s, fv, "frame", b)
     })
   // Release a captured environment (retained when the frame was allocated by
@@ -1638,10 +1656,16 @@ fn frame_type_decl(function: ir.Function, recursive) -> String {
 /// Reads an awaited value from a pending future into `dest` and releases the
 /// future. `Gleamc_uv_await_*` drives the loop to completion; the scheduler has
 /// already waited, so it returns immediately.
-fn emit_await_read(ctx: Ctx, dest: String, fut_v: String, b: Builder) -> Builder {
+fn emit_await_read(
+  ctx: Ctx,
+  dest: String,
+  fut_v: String,
+  b: Builder,
+) -> Builder {
   let dest_ty = local_type(ctx.by_name, dest)
   let b = case is_nil_type(dest_ty) {
-    True -> emit_line(b, "  call void @Gleamc_uv_await_nil(i8* " <> fut_v <> ")")
+    True ->
+      emit_line(b, "  call void @Gleamc_uv_await_nil(i8* " <> fut_v <> ")")
     False ->
       case dest_ty {
         TNamed("BitArray") -> {
@@ -1659,12 +1683,19 @@ fn emit_await_read(ctx: Ctx, dest: String, fut_v: String, b: Builder) -> Builder
         }
         _ -> {
           let b =
-            emit_line(b, "  call void @Gleamc_uv_await_nil(i8* " <> fut_v <> ")")
+            emit_line(
+              b,
+              "  call void @Gleamc_uv_await_nil(i8* " <> fut_v <> ")",
+            )
           let #(val, b) = fresh(b)
           let b =
             emit_line(
               b,
-              "  " <> val <> " = call i64 @Gleamc_uv_result(i8* " <> fut_v <> ")",
+              "  "
+                <> val
+                <> " = call i64 @Gleamc_uv_result(i8* "
+                <> fut_v
+                <> ")",
             )
           store_local(ctx, dest, "i64", val, b)
         }
@@ -1676,7 +1707,12 @@ fn emit_await_read(ctx: Ctx, dest: String, fut_v: String, b: Builder) -> Builder
 /// Boxed await (`process_ffi.receive` / `task_ffi.await`): the future carries a box
 /// (`value_p`); move the payload into `dest`, free the (now empty) box, then
 /// release the future. Works for any destination representation.
-fn emit_await_box(ctx: Ctx, dest: String, fut_v: String, b: Builder) -> Builder {
+fn emit_await_box(
+  ctx: Ctx,
+  dest: String,
+  fut_v: String,
+  b: Builder,
+) -> Builder {
   let dest_ty = local_type(ctx.by_name, dest)
   let #(box, b) = fresh(b)
   let b =
@@ -1717,7 +1753,15 @@ fn emit_machine_blocks(
   blocks: List(ir.Block),
   b: Builder,
 ) {
-  let FrameInfo(fr_ty, _reg, _fields, state_idx, fut_idx, _result_idx, block_index) = info
+  let FrameInfo(
+    fr_ty,
+    _reg,
+    _fields,
+    state_idx,
+    fut_idx,
+    _result_idx,
+    block_index,
+  ) = info
   case blocks {
     [] -> #(b, Nil)
     [block, ..rest] -> {
@@ -1778,7 +1822,12 @@ fn emit_machine_blocks(
   }
 }
 
-fn emit_machine_term(ctx: Ctx, info: FrameInfo, term: ir.Terminator, b: Builder) {
+fn emit_machine_term(
+  ctx: Ctx,
+  info: FrameInfo,
+  term: ir.Terminator,
+  b: Builder,
+) {
   let FrameInfo(fr_ty, _reg, _fields, _state, _fut, result_idx, _) = info
   let ret_ty = llvm_ty(ctx.ret, ctx.recursive)
   case term {
@@ -1828,13 +1877,14 @@ fn emit_machine_term(ctx: Ctx, info: FrameInfo, term: ir.Terminator, b: Builder)
                 <> ") "
                 <> tmp
                 <> case arg_list {
-                  "" -> ""
-                  _ -> ", " <> arg_list
-                }
+                "" -> ""
+                _ -> ", " <> arg_list
+              }
                 <> ")",
             )
           let #(r, b) = fresh(b)
-          let b = emit_line(b, "  " <> r <> " = load " <> ret_s <> ", ptr " <> tmp)
+          let b =
+            emit_line(b, "  " <> r <> " = load " <> ret_s <> ", ptr " <> tmp)
           emit_machine_finish(ctx, info, r, b)
         }
         False -> {
@@ -1842,7 +1892,15 @@ fn emit_machine_term(ctx: Ctx, info: FrameInfo, term: ir.Terminator, b: Builder)
           let b =
             emit_line(
               b,
-              "  " <> r <> " = call " <> ret_ty <> " @Gleamc_" <> fun <> "(" <> arg_list <> ")",
+              "  "
+                <> r
+                <> " = call "
+                <> ret_ty
+                <> " @Gleamc_"
+                <> fun
+                <> "("
+                <> arg_list
+                <> ")",
             )
           emit_machine_finish(ctx, info, r, b)
         }
@@ -1872,13 +1930,14 @@ fn emit_machine_term(ctx: Ctx, info: FrameInfo, term: ir.Terminator, b: Builder)
                 <> ", i8* "
                 <> env
                 <> case arg_list {
-                  "" -> ""
-                  _ -> ", " <> arg_list
-                }
+                "" -> ""
+                _ -> ", " <> arg_list
+              }
                 <> ")",
             )
           let #(r, b) = fresh(b)
-          let b = emit_line(b, "  " <> r <> " = load " <> ret_s <> ", ptr " <> tmp)
+          let b =
+            emit_line(b, "  " <> r <> " = load " <> ret_s <> ", ptr " <> tmp)
           emit_machine_finish(ctx, info, r, b)
         }
         False -> {
@@ -1890,7 +1949,15 @@ fn emit_machine_term(ctx: Ctx, info: FrameInfo, term: ir.Terminator, b: Builder)
           let b =
             emit_line(
               b,
-              "  " <> r <> " = call " <> ret_ty <> " " <> code <> "(" <> callargs <> ")",
+              "  "
+                <> r
+                <> " = call "
+                <> ret_ty
+                <> " "
+                <> code
+                <> "("
+                <> callargs
+                <> ")",
             )
           emit_machine_finish(ctx, info, r, b)
         }
@@ -1904,14 +1971,22 @@ fn emit_machine_term(ctx: Ctx, info: FrameInfo, term: ir.Terminator, b: Builder)
 }
 
 /// Stores a step's result in the frame (unless nil) and returns "done".
-fn emit_machine_finish(ctx: Ctx, info: FrameInfo, value: String, b: Builder) -> Builder {
+fn emit_machine_finish(
+  ctx: Ctx,
+  info: FrameInfo,
+  value: String,
+  b: Builder,
+) -> Builder {
   let FrameInfo(fr_ty, _reg, _fields, _state, _fut, result_idx, _) = info
   let ret_ty = llvm_ty(ctx.ret, ctx.recursive)
   let b = case is_nil_type(ctx.ret) {
     True -> b
     False -> {
       let #(rp, b) = frame_gep("%__fr", fr_ty, result_idx, b)
-      emit_line(b, "  store " <> ret_ty <> " " <> value <> ", " <> ret_ty <> "* " <> rp)
+      emit_line(
+        b,
+        "  store " <> ret_ty <> " " <> value <> ", " <> ret_ty <> "* " <> rp,
+      )
     }
   }
   emit_line(b, "  ret i1 true")
@@ -1988,7 +2063,10 @@ fn emit_machine_tail(
                 Error(_) -> 0
               }
               let #(ptr, b) = frame_gep(cfrp, cfr_ty, slot, b)
-              emit_line(b, "  store " <> ty <> " " <> v <> ", " <> ty <> "* " <> ptr)
+              emit_line(
+                b,
+                "  store " <> ty <> " " <> v <> ", " <> ty <> "* " <> ptr,
+              )
             }
             Error(_) -> b
           }
@@ -1997,11 +2075,18 @@ fn emit_machine_tail(
       let FrameInfo(fr_ty, _reg, _fields, _state, _fut, _result, _) = info
       let #(caller_frp, b) = fresh(b)
       let b =
-        emit_line(b, "  " <> caller_frp <> " = bitcast " <> fr_ty <> "* %__fr to i8*")
+        emit_line(
+          b,
+          "  " <> caller_frp <> " = bitcast " <> fr_ty <> "* %__fr to i8*",
+        )
       let b =
         emit_line(
           b,
-          "  call void @" <> frame_drop_sym(fr_ty) <> "(i8* " <> caller_frp <> ")",
+          "  call void @"
+            <> frame_drop_sym(fr_ty)
+            <> "(i8* "
+            <> caller_frp
+            <> ")",
         )
       let #(futp, b) = frame_gep(cfrp, cfr_ty, cfut, b)
       let copy = case is_nil_type(cret) {
@@ -2079,7 +2164,15 @@ fn emit_machine_function(
       )
     })
   let info = frame_info(function, recursive)
-  let FrameInfo(fr_ty, _fr_reg, _fields, state_idx, _fut_idx, _result_idx, _block_index) = info
+  let FrameInfo(
+    fr_ty,
+    _fr_reg,
+    _fields,
+    state_idx,
+    _fut_idx,
+    _result_idx,
+    _block_index,
+  ) = info
   let ctx =
     Ctx(
       recursive: recursive,
@@ -2114,7 +2207,10 @@ fn emit_machine_function(
     })
   let b = new_builder()
   let b =
-    emit_line(b, "define i1 @Gleamc_" <> name <> "_step(" <> fr_ty <> "* %__fr) {")
+    emit_line(
+      b,
+      "define i1 @Gleamc_" <> name <> "_step(" <> fr_ty <> "* %__fr) {",
+    )
   let b = emit_frame_locals(ctx, fr_ty, locals, b)
   let #(sp, b) = frame_gep("%__fr", fr_ty, state_idx, b)
   let #(sv, b) = fresh(b)
@@ -2142,7 +2238,11 @@ fn emit_machine_function(
   step <> "\n" <> copy <> "\n" <> wrapper
 }
 
-fn emit_machine_wrapper(function: ir.Function, info: FrameInfo, recursive: Dict(String, Bool)) -> String {
+fn emit_machine_wrapper(
+  function: ir.Function,
+  info: FrameInfo,
+  recursive: Dict(String, Bool),
+) -> String {
   let ir.Function(name, params, ret, _, locals) = function
   let FrameInfo(fr_ty, _reg, fields, state_idx, fut_idx, _result_idx, _) = info
   let by_name = locals_map(locals)
@@ -2169,15 +2269,15 @@ fn emit_machine_wrapper(function: ir.Function, info: FrameInfo, recursive: Dict(
     emit_line(
       b,
       "define "
-      <> case sret {
+        <> case sret {
         True -> "void"
         False -> ret_ty
       }
-      <> " @Gleamc_"
-      <> name
-      <> "("
-      <> sig_args
-      <> ") {",
+        <> " @Gleamc_"
+        <> name
+        <> "("
+        <> sig_args
+        <> ") {",
     )
   let b =
     emit_line(
@@ -2202,7 +2302,14 @@ fn emit_machine_wrapper(function: ir.Function, info: FrameInfo, recursive: Dict(
       let #(ptr, b) = frame_gep("%__fr", fr_ty, index, b)
       emit_line(
         b,
-        "  store " <> pty <> " %arg." <> safe(param) <> ", " <> pty <> "* " <> ptr,
+        "  store "
+          <> pty
+          <> " %arg."
+          <> safe(param)
+          <> ", "
+          <> pty
+          <> "* "
+          <> ptr,
       )
     })
   // A capturing machine owns a reference to its environment for the life of the
@@ -2270,7 +2377,10 @@ fn emit_machine_wrapper(function: ir.Function, info: FrameInfo, recursive: Dict(
   let b = emit_line(b, "  call void @gleamc_run_until(i8* " <> donef <> ")")
   // The root does not await its own completion future.
   let b =
-    emit_line(b, "  call void @Gleamc_rc_release(i8* " <> donef <> ", i8* null)")
+    emit_line(
+      b,
+      "  call void @Gleamc_rc_release(i8* " <> donef <> ", i8* null)",
+    )
   let b = case sret {
     True -> emit_line(b, "  ret void")
     False ->
@@ -2279,7 +2389,10 @@ fn emit_machine_wrapper(function: ir.Function, info: FrameInfo, recursive: Dict(
         False -> {
           let #(rv, b) = fresh(b)
           let b =
-            emit_line(b, "  " <> rv <> " = load " <> ret_ty <> ", " <> ret_ty <> "* %__out")
+            emit_line(
+              b,
+              "  " <> rv <> " = load " <> ret_ty <> ", " <> ret_ty <> "* %__out",
+            )
           emit_line(b, "  ret " <> ret_ty <> " " <> rv)
         }
       }
@@ -2289,7 +2402,11 @@ fn emit_machine_wrapper(function: ir.Function, info: FrameInfo, recursive: Dict(
 
 /// Copies a machine's result out of its frame into a caller slot. The driver
 /// calls it when the machine finishes, before releasing the frame.
-fn emit_copy_result(function: ir.Function, recursive: Dict(String, Bool), lits) -> String {
+fn emit_copy_result(
+  function: ir.Function,
+  recursive: Dict(String, Bool),
+  lits,
+) -> String {
   let ir.Function(_, _, ret, _, _) = function
   let info = frame_info(function, recursive)
   let FrameInfo(fr_ty, _reg, _fields, _state, _fut, result_idx, _) = info
@@ -2309,13 +2426,32 @@ fn emit_copy_result(function: ir.Function, recursive: Dict(String, Bool), lits) 
     False -> {
       let #(rp, b) = frame_gep("%__fr", fr_ty, result_idx, b)
       let #(v, b) = fresh(b)
-      let b = emit_line(b, "  " <> v <> " = load " <> ret_ty <> ", " <> ret_ty <> "* " <> rp)
+      let b =
+        emit_line(
+          b,
+          "  " <> v <> " = load " <> ret_ty <> ", " <> ret_ty <> "* " <> rp,
+        )
       // The frame owns the result and drops it when released; take a reference
       // for the caller, whose copy is handed over as an owned value.
-      let b = rc_expr(lits, recursive, dict.new(), "retain", ret, ret_ty, v, "copy_result", b)
+      let b =
+        rc_expr(
+          lits,
+          recursive,
+          dict.new(),
+          "retain",
+          ret,
+          ret_ty,
+          v,
+          "copy_result",
+          b,
+        )
       let #(dp, b) = fresh(b)
-      let b = emit_line(b, "  " <> dp <> " = bitcast i8* %dst to " <> ret_ty <> "*")
-      emit_line(b, "  store " <> ret_ty <> " " <> v <> ", " <> ret_ty <> "* " <> dp)
+      let b =
+        emit_line(b, "  " <> dp <> " = bitcast i8* %dst to " <> ret_ty <> "*")
+      emit_line(
+        b,
+        "  store " <> ret_ty <> " " <> v <> ", " <> ret_ty <> "* " <> dp,
+      )
     }
   }
   let b = emit_line(b, "  ret void")
@@ -2340,7 +2476,8 @@ fn emit_frame_function(
 ) -> String {
   let ir.Function(name, params, ret, blocks, locals) = function
   let info = frame_info(function, recursive)
-  let FrameInfo(fr_ty, _fr_reg, fields, _state, _fut, _result, _block_index) = info
+  let FrameInfo(fr_ty, _fr_reg, fields, _state, _fut, _result, _block_index) =
+    info
   let by_name = locals_map(locals)
   let ret_ty = llvm_ty(ret, recursive)
   let ctx =
@@ -2374,7 +2511,9 @@ fn emit_frame_function(
   let sret = abi.ret_needs_sret(ret, recursive)
   let params_s = case sret {
     True ->
-      "ptr sret(" <> ret_ty <> ") %__out"
+      "ptr sret("
+      <> ret_ty
+      <> ") %__out"
       <> case args {
         [] -> ""
         _ -> ", " <> string.join(args, ", ")
@@ -2387,9 +2526,9 @@ fn emit_frame_function(
       b,
       "define "
         <> case sret {
-          True -> "void"
-          False -> ret_ty
-        }
+        True -> "void"
+        False -> ret_ty
+      }
         <> " @Gleamc_"
         <> name
         <> "("
@@ -2419,7 +2558,14 @@ fn emit_frame_function(
       let #(ptr, b) = frame_gep("%__fr", fr_ty, index, b)
       emit_line(
         b,
-        "  store " <> pty <> " %arg." <> safe(param) <> ", " <> pty <> "* " <> ptr,
+        "  store "
+          <> pty
+          <> " %arg."
+          <> safe(param)
+          <> ", "
+          <> pty
+          <> "* "
+          <> ptr,
       )
     })
   // Retain the captured environment (released by the frame drop).
@@ -2488,7 +2634,10 @@ fn seed_reg_params(ctx: Ctx, params: List(String), b: Builder) -> Builder {
   list.fold(params, b, fn(b, param) {
     case dict.has_key(ctx.reg_locals, param) {
       True ->
-        Builder(..b, values: dict.insert(b.values, param, "%arg." <> safe(param)))
+        Builder(
+          ..b,
+          values: dict.insert(b.values, param, "%arg." <> safe(param)),
+        )
       False -> b
     }
   })
@@ -2545,7 +2694,12 @@ fn emit_drops(ctx: Ctx, drops: List(ir.Op), b: Builder) -> Builder {
 /// `TailcallIndirect`). Operands are read first, then the trailing drops are
 /// emitted, then the transfer — so a `musttail` call is immediately followed by
 /// its `ret`.
-fn emit_exit_term(ctx: Ctx, term: ir.Terminator, drops: List(ir.Op), b: Builder) {
+fn emit_exit_term(
+  ctx: Ctx,
+  term: ir.Terminator,
+  drops: List(ir.Op),
+  b: Builder,
+) {
   case term {
     ir.Ret(value) -> {
       let ret_ty = llvm_ty(ctx.ret, ctx.recursive)
@@ -2590,9 +2744,9 @@ fn emit_exit_term(ctx: Ctx, term: ir.Terminator, drops: List(ir.Op), b: Builder)
                 <> ", i8* "
                 <> env
                 <> case arg_list {
-                  "" -> ""
-                  _ -> ", " <> arg_list
-                }
+                "" -> ""
+                _ -> ", " <> arg_list
+              }
                 <> ")",
             )
           let b = emit_drops(ctx, drops, b)
@@ -2607,7 +2761,15 @@ fn emit_exit_term(ctx: Ctx, term: ir.Terminator, drops: List(ir.Op), b: Builder)
           let b =
             emit_line(
               b,
-              "  " <> r <> " = call " <> ret_s <> " " <> code <> "(" <> callargs <> ")",
+              "  "
+                <> r
+                <> " = call "
+                <> ret_s
+                <> " "
+                <> code
+                <> "("
+                <> callargs
+                <> ")",
             )
           let b = emit_drops(ctx, drops, b)
           emit_line(b, "  ret " <> ret_s <> " " <> r)
@@ -2647,9 +2809,9 @@ fn emit_tail_call(
             <> ret_s
             <> ") %__out"
             <> case args {
-              "" -> ""
-              _ -> ", " <> args
-            }
+            "" -> ""
+            _ -> ", " <> args
+          }
             <> ")",
         )
       emit_line(b, "  ret void")
@@ -2659,7 +2821,16 @@ fn emit_tail_call(
       let b =
         emit_line(
           b,
-          "  " <> r <> " = " <> marker <> ret_s <> " " <> callee <> "(" <> args <> ")",
+          "  "
+            <> r
+            <> " = "
+            <> marker
+            <> ret_s
+            <> " "
+            <> callee
+            <> "("
+            <> args
+            <> ")",
         )
       emit_line(b, "  ret " <> ret_s <> " " <> r)
     }
@@ -2749,7 +2920,12 @@ fn frame_gep(
 
 /// In a machine `step`, locals are frame fields: pre-emit `%l.<name>` as a GEP
 /// so every existing `local_ptr(ctx, name)` keeps working unchanged.
-fn emit_frame_locals(ctx: Ctx, fr_ty: String, locals: List(ir.Local), b: Builder) {
+fn emit_frame_locals(
+  ctx: Ctx,
+  fr_ty: String,
+  locals: List(ir.Local),
+  b: Builder,
+) {
   list.fold(unique_locals(locals), b, fn(b, local) {
     let ir.Local(name, _, _) = local
     case ctx.frame {
@@ -2813,963 +2989,717 @@ fn emit_ops(ctx: Ctx, ops: List(ir.Op), b: Builder) {
   }
 }
 
-fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
+fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) -> #(Builder, Nil) {
   case op {
-    ir.OpConst(dest, value) -> {
-      let #(ty, val, b) = read_literal(ctx, value, b)
-      let b = store_local(ctx, dest, ty, val, b)
-      #(b, Nil)
-    }
-    ir.OpBinop(dest, op_name, left, right) -> {
-      let #(lty, lv, b) = read_val(ctx, left, b)
-      let #(_, rv, b) = read_val(ctx, right, b)
-      let oty = operand_type(ctx.by_name, left)
-      case
-        op_name == "==" || op_name == "!=", is_eq_special_ty(oty)
-      {
-        True, True -> {
-          let eq = eq_call_name(oty)
-          let #(c0, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  "
-                <> c0
-                <> " = call i1 @"
-                <> eq
-                <> "("
-                <> lty
-                <> " "
-                <> lv
-                <> ", "
-                <> lty
-                <> " "
-                <> rv
-                <> ")",
-            )
-          case op_name {
-            "==" -> {
-              let b = store_local(ctx, dest, "i1", c0, b)
-              #(b, Nil)
-            }
-            _ -> {
-              let #(c1, b) = fresh(b)
-              let b = emit_line(b, "  " <> c1 <> " = xor i1 " <> c0 <> ", true")
-              let b = store_local(ctx, dest, "i1", c1, b)
-              #(b, Nil)
-            }
-          }
+    ir.OpConst(dest, value) -> emit_op_const(ctx, dest, value, b)
+    ir.OpBinop(dest, op_name, left, right) ->
+      emit_op_binop(ctx, dest, op_name, left, right, b)
+    ir.OpUnop(dest, op_name, operand) ->
+      emit_op_unop(ctx, dest, op_name, operand, b)
+    ir.OpCall(dest, fun, args, ret_ty) ->
+      emit_op_call(ctx, dest, fun, args, ret_ty, b)
+    ir.OpMachineStart(fut, fun, args, result_dest) ->
+      emit_op_machine_start(ctx, fut, fun, args, result_dest, b)
+    ir.OpTaskStart(fut, fun, args, into_future) ->
+      emit_op_task_start(ctx, fut, fun, args, into_future, b)
+    ir.OpTaskStartClosure(fut, fun, closure, into_future) ->
+      emit_op_task_start_closure(ctx, fut, fun, closure, into_future, b)
+    ir.OpBuiltin(dest, builtin, args, ret_ty) ->
+      emit_op_builtin(ctx, dest, builtin, args, ret_ty, b)
+    ir.OpCopy(dest, src, ty) -> emit_op_copy(ctx, dest, src, ty, b)
+    ir.OpPhi(dest, incoming) -> emit_op_phi(ctx, dest, incoming, b)
+    ir.OpRetain(src, ty) -> emit_op_retain(ctx, src, ty, b)
+    ir.OpDrop(src, ty) -> emit_op_drop(ctx, src, ty, b)
+    ir.OpTuple(dest, elems, ty) -> emit_op_tuple(ctx, dest, elems, ty, b)
+    ir.OpTupleGet(dest, tuple, index, ty) ->
+      emit_op_tuple_get(ctx, dest, tuple, index, ty, b)
+    ir.OpCtor(dest, ctor, type_name, args, ty) ->
+      emit_op_ctor(ctx, dest, ctor, type_name, args, ty, b)
+    ir.OpTagIs(dest, subject, ctor, type_name) ->
+      emit_op_tag_is(ctx, dest, subject, ctor, type_name, b)
+    ir.OpField(dest, subject, ctor, index, ty) ->
+      emit_op_field(ctx, dest, subject, ctor, index, ty, b)
+    ir.OpClosure(dest, code, _, env_ty, fn_ty) ->
+      emit_op_closure(ctx, dest, code, env_ty, fn_ty, b)
+    ir.OpEnvGet(dest, env_ty, index, ty) ->
+      emit_op_env_get(ctx, dest, env_ty, index, ty, b)
+    ir.OpCallIndirect(dest, fval, args, ret_ty) ->
+      emit_op_call_indirect(ctx, dest, fval, args, ret_ty, b)
+    ir.OpBitArray(dest, elems, _) -> emit_op_bit_array(ctx, dest, elems, b)
+    ir.OpFrameNew(_, _) -> emit_op_frame_new(ctx, b)
+    ir.OpFrameGet(dest, _, index, ty) ->
+      emit_op_frame_get(ctx, dest, index, ty, b)
+    ir.OpFrameSet(_, index, value) -> emit_op_frame_set(ctx, index, value, b)
+  }
+}
+
+fn emit_op_const(
+  ctx: Ctx,
+  dest: String,
+  value: ir.Literal,
+  b: Builder,
+) -> #(Builder, Nil) {
+  let #(ty, val, b) = read_literal(ctx, value, b)
+  let b = store_local(ctx, dest, ty, val, b)
+  #(b, Nil)
+}
+
+fn emit_op_binop(
+  ctx: Ctx,
+  dest: String,
+  op_name: String,
+  left: ir.Operand,
+  right: ir.Operand,
+  b: Builder,
+) -> #(Builder, Nil) {
+  let #(lty, lv, b) = read_val(ctx, left, b)
+  let #(_, rv, b) = read_val(ctx, right, b)
+  let oty = operand_type(ctx.by_name, left)
+  case op_name == "==" || op_name == "!=", is_eq_special_ty(oty) {
+    True, True -> {
+      let eq = eq_call_name(oty)
+      let #(c0, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> c0
+            <> " = call i1 @"
+            <> eq
+            <> "("
+            <> lty
+            <> " "
+            <> lv
+            <> ", "
+            <> lty
+            <> " "
+            <> rv
+            <> ")",
+        )
+      case op_name {
+        "==" -> {
+          let b = store_local(ctx, dest, "i1", c0, b)
+          #(b, Nil)
         }
-        _, _ -> {
-          let #(rhs, res_ty) = binop_rhs(op_name, lty, lv, rv)
-          let #(tmp, b) = fresh(b)
-          let b = emit_line(b, "  " <> tmp <> " = " <> rhs)
-          let b = store_local(ctx, dest, res_ty, tmp, b)
+        _ -> {
+          let #(c1, b) = fresh(b)
+          let b = emit_line(b, "  " <> c1 <> " = xor i1 " <> c0 <> ", true")
+          let b = store_local(ctx, dest, "i1", c1, b)
           #(b, Nil)
         }
       }
     }
-    ir.OpUnop(dest, op_name, operand) -> {
-      let #(ty, v, b) = read_val(ctx, operand, b)
-      let #(rhs, res_ty) = unop_rhs(op_name, ty, v)
+    _, _ -> {
+      let #(rhs, res_ty) = binop_rhs(op_name, lty, lv, rv)
       let #(tmp, b) = fresh(b)
       let b = emit_line(b, "  " <> tmp <> " = " <> rhs)
       let b = store_local(ctx, dest, res_ty, tmp, b)
       #(b, Nil)
     }
-    ir.OpCall(dest, fun, args, ret_ty) -> {
-      let #(b, arg_list) = read_args(ctx, args, b)
-      let ret_s = llvm_ty(ret_ty, ctx.recursive)
-      case abi.ret_needs_sret(ret_ty, ctx.recursive) {
-        // The callee writes the aggregate into `dest`'s own slot.
-        True -> {
-          let #(destp, b) = local_addr(ctx, dest, b)
-          let b =
-            emit_line(
-              b,
-              "  call void @Gleamc_"
-                <> fun
-                <> "(ptr sret("
-                <> ret_s
-                <> ") "
-                <> destp
-                <> case arg_list {
-                  "" -> ""
-                  _ -> ", " <> arg_list
-                }
-                <> ")",
-            )
-          #(b, Nil)
-        }
-        False -> {
-          let #(tmp, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  "
-                <> tmp
-                <> " = call "
-                <> ret_s
-                <> " @Gleamc_"
-                <> fun
-                <> "("
-                <> arg_list
-                <> ")",
-            )
-          let b = store_local(ctx, dest, ret_s, tmp, b)
-          #(b, Nil)
-        }
-      }
-    }
-    ir.OpMachineStart(fut, fun, args, result_dest) -> {
-      case dict.get(ctx.machine_fns, fun) {
-        Error(_) -> #(b, Nil)
-        Ok(callee) -> {
-          let info = frame_info(callee, ctx.recursive)
-          let FrameInfo(fr_ty, _reg, fields, state_idx, fut_idx, _result_idx, _) = info
-          let ir.Function(_, cparams, cret, _, _) = callee
-          let #(raw, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  "
-                <> raw
-                <> " = call i8* @gleamc_alloc0(i64 ptrtoint ("
-                <> fr_ty
-                <> "* getelementptr ("
-                <> fr_ty
-                <> ", "
-                <> fr_ty
-                <> "* null, i32 1) to i64))",
-            )
-          let #(frp, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  " <> frp <> " = bitcast i8* " <> raw <> " to " <> fr_ty <> "*",
-            )
-          let #(sp, b) = frame_gep(frp, fr_ty, state_idx, b)
-          let b = emit_line(b, "  store i32 0, i32* " <> sp)
-          let #(fp, b) = frame_gep(frp, fr_ty, fut_idx, b)
-          let b = emit_line(b, "  store i8* null, i8** " <> fp)
-          let b =
-            list.fold(list.index_map(args, fn(a, i) { #(a, i) }), b, fn(b, pair) {
-              let #(arg, i) = pair
-              case list_nth(cparams, i) {
-                Ok(pname) -> {
-                  let #(ty, v, b) = read_val(ctx, arg, b)
-                  // The callee owns its arguments. Retain only when the caller
-                  // frame still owns the value (it releases it later); a moved
-                  // local already hands its reference to the callee.
-                  let aty = operand_type(ctx.by_name, arg)
-                  let b = case arg_needs_retain(ctx, arg) {
-                    True ->
-                      rc_expr(
-                        ctx.lits,
-                        ctx.recursive,
-                        dict.new(),
-                        "retain",
-                        aty,
-                        ty,
-                        v,
-                        "machine_start",
-                        b,
-                      )
-                    False -> b
-                  }
-                  let slot = case dict.get(fields, pname) {
-                    Ok(found) -> found
-                    Error(_) -> 0
-                  }
-                  let #(ptr, b) = frame_gep(frp, fr_ty, slot, b)
-                  emit_line(
-                    b,
-                    "  store " <> ty <> " " <> v <> ", " <> ty <> "* " <> ptr,
-                  )
-                }
-                Error(_) -> b
-              }
-            })
-          let #(futp, b) = frame_gep(frp, fr_ty, fut_idx, b)
-          let copy = case is_nil_type(cret) {
-            True -> "void (i8*, i8*)* null"
-            False ->
-              "void (i8*, i8*)* bitcast (void ("
-              <> fr_ty
-              <> "*, i8*)* @"
-              <> copy_sym(fr_ty)
-              <> " to void (i8*, i8*)*)"
-          }
-          let #(dst_arg, b) = case is_nil_type(cret) {
-            True -> #("i8* null", b)
-            False -> {
-              let #(dstp, b) = local_addr(ctx, result_dest, b)
-              #("i8* " <> dstp, b)
-            }
-          }
-          let step =
-            "i1 (i8*)* bitcast (i1 ("
-            <> fr_ty
-            <> "*)* @Gleamc_"
+  }
+}
+
+fn emit_op_unop(
+  ctx: Ctx,
+  dest: String,
+  op_name: String,
+  operand: ir.Operand,
+  b: Builder,
+) -> #(Builder, Nil) {
+  let #(ty, v, b) = read_val(ctx, operand, b)
+  let #(rhs, res_ty) = unop_rhs(op_name, ty, v)
+  let #(tmp, b) = fresh(b)
+  let b = emit_line(b, "  " <> tmp <> " = " <> rhs)
+  let b = store_local(ctx, dest, res_ty, tmp, b)
+  #(b, Nil)
+}
+
+fn emit_op_call(
+  ctx: Ctx,
+  dest: String,
+  fun: String,
+  args: List(ir.Operand),
+  ret_ty: Type,
+  b: Builder,
+) -> #(Builder, Nil) {
+  let #(b, arg_list) = read_args(ctx, args, b)
+  let ret_s = llvm_ty(ret_ty, ctx.recursive)
+  case abi.ret_needs_sret(ret_ty, ctx.recursive) {
+    // The callee writes the aggregate into `dest`'s own slot.
+    True -> {
+      let #(destp, b) = local_addr(ctx, dest, b)
+      let b =
+        emit_line(
+          b,
+          "  call void @Gleamc_"
             <> fun
-            <> "_step to i1 (i8*)*)"
-          let fd =
-            "void (i8*)* bitcast (void ("
-            <> fr_ty
-            <> "*)* @"
-            <> frame_drop_sym(fr_ty)
-            <> " to void (i8*)*)"
-          let #(donef, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  "
-                <> donef
-                <> " = call i8* @gleamc_task_start("
-                <> step
-                <> ", i8* "
-                <> raw
-                <> ", i8** "
-                <> futp
-                <> ", "
-                <> copy
-                <> ", "
-                <> dst_arg
-                <> ", "
-                <> fd
-                <> ")",
-            )
-          let b = store_local(ctx, fut, "i8*", donef, b)
-          #(b, Nil)
-        }
-      }
-    }
-    ir.OpTaskStart(fut, fun, args, into_future) -> {
-      case dict.get(ctx.machine_fns, fun) {
-        Error(_) -> #(b, Nil)
-        Ok(callee) -> {
-          let info = frame_info(callee, ctx.recursive)
-          let FrameInfo(fr_ty, _reg, fields, state_idx, fut_idx, _result_idx, _) = info
-          let ir.Function(_, cparams, cret, _, _) = callee
-          let #(raw, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  "
-                <> raw
-                <> " = call i8* @gleamc_alloc0(i64 ptrtoint ("
-                <> fr_ty
-                <> "* getelementptr ("
-                <> fr_ty
-                <> ", "
-                <> fr_ty
-                <> "* null, i32 1) to i64))",
-            )
-          let #(frp, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  " <> frp <> " = bitcast i8* " <> raw <> " to " <> fr_ty <> "*",
-            )
-          let #(sp, b) = frame_gep(frp, fr_ty, state_idx, b)
-          let b = emit_line(b, "  store i32 0, i32* " <> sp)
-          let #(fp, b) = frame_gep(frp, fr_ty, fut_idx, b)
-          let b = emit_line(b, "  store i8* null, i8** " <> fp)
-          let b =
-            list.fold(list.index_map(args, fn(a, i) { #(a, i) }), b, fn(b, pair) {
-              let #(arg, i) = pair
-              case list_nth(cparams, i) {
-                Ok(pname) -> {
-                  let #(ty, v, b) = read_val(ctx, arg, b)
-                  let aty = operand_type(ctx.by_name, arg)
-                  let b = case arg_needs_retain(ctx, arg) {
-                    True ->
-                      rc_expr(
-                        ctx.lits,
-                        ctx.recursive,
-                        dict.new(),
-                        "retain",
-                        aty,
-                        ty,
-                        v,
-                        "task_start",
-                        b,
-                      )
-                    False -> b
-                  }
-                  let slot = case dict.get(fields, pname) {
-                    Ok(found) -> found
-                    Error(_) -> 0
-                  }
-                  let #(ptr, b) = frame_gep(frp, fr_ty, slot, b)
-                  emit_line(
-                    b,
-                    "  store " <> ty <> " " <> v <> ", " <> ty <> "* " <> ptr,
-                  )
-                }
-                Error(_) -> b
-              }
-            })
-          let #(futp, b) = frame_gep(frp, fr_ty, fut_idx, b)
-          let copy = case is_nil_type(cret) {
-            True -> "void (i8*, i8*)* null"
-            False ->
-              "void (i8*, i8*)* bitcast (void ("
-              <> fr_ty
-              <> "*, i8*)* @"
-              <> copy_sym(fr_ty)
-              <> " to void (i8*, i8*)*)"
+            <> "(ptr sret("
+            <> ret_s
+            <> ") "
+            <> destp
+            <> case arg_list {
+            "" -> ""
+            _ -> ", " <> arg_list
           }
-          let step =
-            "i1 (i8*)* bitcast (i1 ("
-            <> fr_ty
-            <> "*)* @Gleamc_"
+            <> ")",
+        )
+      #(b, Nil)
+    }
+    False -> {
+      let #(tmp, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> tmp
+            <> " = call "
+            <> ret_s
+            <> " @Gleamc_"
             <> fun
-            <> "_step to i1 (i8*)*)"
-          let fd =
-            "void (i8*)* bitcast (void ("
-            <> fr_ty
-            <> "*)* @"
-            <> frame_drop_sym(fr_ty)
-            <> " to void (i8*)*)"
-          // `task.async` boxes the worker's result so `task_ffi.await` can move any
-          // type out; a nil result needs no box.
-          let #(box, b) = case is_nil_type(cret) {
-            True -> #("null", b)
-            False -> {
-              let #(bx, b) = fresh(b)
-              let b =
-                emit_line(
-                  b,
-                  "  "
-                    <> bx
-                    <> " = call i8* @gleamc_box_alloc(i64 "
-                    <> ty_size_expr(cret, ctx.recursive)
-                    <> ")",
-                )
-              #(bx, b)
-            }
-          }
-          let #(donef, b) = fresh(b)
-          let b = case into_future {
-            True ->
-              emit_line(
-                b,
-                "  "
-                  <> donef
-                  <> " = call i8* @gleamc_task_async("
-                  <> step
-                  <> ", i8* "
-                  <> raw
-                  <> ", i8** "
-                  <> futp
-                  <> ", "
-                  <> copy
-                  <> ", "
-                  <> fd
-                  <> ", i8* "
-                  <> box
-                  <> ")",
-              )
-            False ->
-              emit_line(
-                b,
-                "  "
-                  <> donef
-                  <> " = call i8* @gleamc_task_spawn("
-                  <> step
-                  <> ", i8* "
-                  <> raw
-                  <> ", i8** "
-                  <> futp
-                  <> ", "
-                  <> fd
-                  <> ")",
-              )
-          }
-          // `task.async` keeps the completion future as the `Task(a)` handle;
-          // `process.spawn` returns the stable `Pid` (the task's id).
-          let b = case into_future {
-            True -> store_local(ctx, fut, "i8*", donef, b)
-            False -> {
-              let #(id, b) = fresh(b)
-              let b =
-                emit_line(
-                  b,
-                  "  "
-                    <> id
-                    <> " = call i64 @gleamc_task_id(i8* "
-                    <> donef
-                    <> ")",
-                )
-              store_local(ctx, fut, "i64", id, b)
-            }
-          }
-          #(b, Nil)
-        }
-      }
+            <> "("
+            <> arg_list
+            <> ")",
+        )
+      let b = store_local(ctx, dest, ret_s, tmp, b)
+      #(b, Nil)
     }
-    ir.OpTaskStartClosure(fut, fun, closure, into_future) -> {
-      case dict.get(ctx.machine_fns, fun) {
-        Error(_) -> #(b, Nil)
-        Ok(callee) -> {
-          let info = frame_info(callee, ctx.recursive)
-          let FrameInfo(fr_ty, _reg, fields, state_idx, fut_idx, _result_idx, _) = info
-          let ir.Function(_, cparams, cret, _, _) = callee
-          // Read the closure value and take its environment (field 1).
-          let clo_ty = operand_type(ctx.by_name, closure)
-          let clo_s = llvm_ty(clo_ty, ctx.recursive)
-          let #(_, fv, b) = read_val(ctx, closure, b)
-          let #(env, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  " <> env <> " = extractvalue " <> clo_s <> " " <> fv <> ", 1",
-            )
-          // The task's frame owns a reference to the environment; the frame
-          // drop releases it.
-          let b = case frame.env_capture(callee) {
-            Ok(_) ->
-              emit_line(
-                b,
-                "  call void @Gleamc_rc_retain(i8* " <> env <> ", i8* null)",
-              )
-            Error(_) -> b
-          }
-          let #(raw, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  "
-                <> raw
-                <> " = call i8* @gleamc_alloc0(i64 ptrtoint ("
-                <> fr_ty
-                <> "* getelementptr ("
-                <> fr_ty
-                <> ", "
-                <> fr_ty
-                <> "* null, i32 1) to i64))",
-            )
-          let #(frp, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  " <> frp <> " = bitcast i8* " <> raw <> " to " <> fr_ty <> "*",
-            )
-          let #(sp, b) = frame_gep(frp, fr_ty, state_idx, b)
-          let b = emit_line(b, "  store i32 0, i32* " <> sp)
-          let #(fp, b) = frame_gep(frp, fr_ty, fut_idx, b)
-          let b = emit_line(b, "  store i8* null, i8** " <> fp)
-          // Store the environment into the callee's `__env` field (param 0).
-          let b = case cparams {
-            [first_param, ..] -> {
-              let slot = case dict.get(fields, first_param) {
+  }
+}
+
+fn emit_op_machine_start(
+  ctx: Ctx,
+  fut: String,
+  fun: String,
+  args: List(ir.Operand),
+  result_dest: String,
+  b: Builder,
+) -> #(Builder, Nil) {
+  case dict.get(ctx.machine_fns, fun) {
+    Error(_) -> #(b, Nil)
+    Ok(callee) -> {
+      let info = frame_info(callee, ctx.recursive)
+      let FrameInfo(fr_ty, _reg, fields, state_idx, fut_idx, _result_idx, _) =
+        info
+      let ir.Function(_, cparams, cret, _, _) = callee
+      let #(raw, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> raw
+            <> " = call i8* @gleamc_alloc0(i64 ptrtoint ("
+            <> fr_ty
+            <> "* getelementptr ("
+            <> fr_ty
+            <> ", "
+            <> fr_ty
+            <> "* null, i32 1) to i64))",
+        )
+      let #(frp, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> frp <> " = bitcast i8* " <> raw <> " to " <> fr_ty <> "*",
+        )
+      let #(sp, b) = frame_gep(frp, fr_ty, state_idx, b)
+      let b = emit_line(b, "  store i32 0, i32* " <> sp)
+      let #(fp, b) = frame_gep(frp, fr_ty, fut_idx, b)
+      let b = emit_line(b, "  store i8* null, i8** " <> fp)
+      let b =
+        list.fold(list.index_map(args, fn(a, i) { #(a, i) }), b, fn(b, pair) {
+          let #(arg, i) = pair
+          case list_nth(cparams, i) {
+            Ok(pname) -> {
+              let #(ty, v, b) = read_val(ctx, arg, b)
+              // The callee owns its arguments. Retain only when the caller
+              // frame still owns the value (it releases it later); a moved
+              // local already hands its reference to the callee.
+              let aty = operand_type(ctx.by_name, arg)
+              let b = case arg_needs_retain(ctx, arg) {
+                True ->
+                  rc_expr(
+                    ctx.lits,
+                    ctx.recursive,
+                    dict.new(),
+                    "retain",
+                    aty,
+                    ty,
+                    v,
+                    "machine_start",
+                    b,
+                  )
+                False -> b
+              }
+              let slot = case dict.get(fields, pname) {
                 Ok(found) -> found
                 Error(_) -> 0
               }
               let #(ptr, b) = frame_gep(frp, fr_ty, slot, b)
-              emit_line(b, "  store i8* " <> env <> ", i8** " <> ptr)
-            }
-            [] -> b
-          }
-          let #(futp, b) = frame_gep(frp, fr_ty, fut_idx, b)
-          let copy = case is_nil_type(cret) {
-            True -> "void (i8*, i8*)* null"
-            False ->
-              "void (i8*, i8*)* bitcast (void ("
-              <> fr_ty
-              <> "*, i8*)* @"
-              <> copy_sym(fr_ty)
-              <> " to void (i8*, i8*)*)"
-          }
-          let step =
-            "i1 (i8*)* bitcast (i1 ("
-            <> fr_ty
-            <> "*)* @Gleamc_"
-            <> fun
-            <> "_step to i1 (i8*)*)"
-          let fd =
-            "void (i8*)* bitcast (void ("
-            <> fr_ty
-            <> "*)* @"
-            <> frame_drop_sym(fr_ty)
-            <> " to void (i8*)*)"
-          let #(box, b) = case is_nil_type(cret) {
-            True -> #("null", b)
-            False -> {
-              let #(bx, b) = fresh(b)
-              let b =
-                emit_line(
-                  b,
-                  "  "
-                    <> bx
-                    <> " = call i8* @gleamc_box_alloc(i64 "
-                    <> ty_size_expr(cret, ctx.recursive)
-                    <> ")",
-                )
-              #(bx, b)
-            }
-          }
-          let #(donef, b) = fresh(b)
-          let b = case into_future {
-            True ->
               emit_line(
                 b,
-                "  "
-                  <> donef
-                  <> " = call i8* @gleamc_task_async("
-                  <> step
-                  <> ", i8* "
-                  <> raw
-                  <> ", i8** "
-                  <> futp
-                  <> ", "
-                  <> copy
-                  <> ", "
-                  <> fd
-                  <> ", i8* "
-                  <> box
-                  <> ")",
+                "  store " <> ty <> " " <> v <> ", " <> ty <> "* " <> ptr,
               )
-            False ->
-              emit_line(
-                b,
-                "  "
-                  <> donef
-                  <> " = call i8* @gleamc_task_spawn("
-                  <> step
-                  <> ", i8* "
-                  <> raw
-                  <> ", i8** "
-                  <> futp
-                  <> ", "
-                  <> fd
-                  <> ")",
-              )
-          }
-          // `task.async` keeps the completion future as the `Task(a)` handle;
-          // `process.spawn` returns the stable `Pid` (the task's id).
-          let b = case into_future {
-            True -> store_local(ctx, fut, "i8*", donef, b)
-            False -> {
-              let #(id, b) = fresh(b)
-              let b =
-                emit_line(
-                  b,
-                  "  "
-                    <> id
-                    <> " = call i64 @gleamc_task_id(i8* "
-                    <> donef
-                    <> ")",
-                )
-              store_local(ctx, fut, "i64", id, b)
             }
+            Error(_) -> b
           }
-          #(b, Nil)
+        })
+      let #(futp, b) = frame_gep(frp, fr_ty, fut_idx, b)
+      let copy = case is_nil_type(cret) {
+        True -> "void (i8*, i8*)* null"
+        False ->
+          "void (i8*, i8*)* bitcast (void ("
+          <> fr_ty
+          <> "*, i8*)* @"
+          <> copy_sym(fr_ty)
+          <> " to void (i8*, i8*)*)"
+      }
+      let #(dst_arg, b) = case is_nil_type(cret) {
+        True -> #("i8* null", b)
+        False -> {
+          let #(dstp, b) = local_addr(ctx, result_dest, b)
+          #("i8* " <> dstp, b)
         }
       }
+      let step =
+        "i1 (i8*)* bitcast (i1 ("
+        <> fr_ty
+        <> "*)* @Gleamc_"
+        <> fun
+        <> "_step to i1 (i8*)*)"
+      let fd =
+        "void (i8*)* bitcast (void ("
+        <> fr_ty
+        <> "*)* @"
+        <> frame_drop_sym(fr_ty)
+        <> " to void (i8*)*)"
+      let #(donef, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> donef
+            <> " = call i8* @gleamc_task_start("
+            <> step
+            <> ", i8* "
+            <> raw
+            <> ", i8** "
+            <> futp
+            <> ", "
+            <> copy
+            <> ", "
+            <> dst_arg
+            <> ", "
+            <> fd
+            <> ")",
+        )
+      let b = store_local(ctx, fut, "i8*", donef, b)
+      #(b, Nil)
     }
-    ir.OpBuiltin(dest, builtin, args, ret_ty) -> {
-      case builtin {
-        "gleamc.show" -> {
-          let first = first_arg(args)
-          let oty = operand_type(ctx.by_name, first)
-          let #(_, v, b) = read_val(ctx, first, b)
-          let #(r, b) = inspect_val(ctx.recursive, ctx.lits, oty, v, b)
-          let b = store_local(ctx, dest, "%GleamcString", r, b)
-          #(b, Nil)
-        }
-        "gleamc.hash" -> {
-          let first = first_arg(args)
-          let oty = operand_type(ctx.by_name, first)
-          let #(_, v, b) = read_val(ctx, first, b)
-          let #(r, b) = case oty {
-            TString -> {
-              let #(r, b) = fresh(b)
-              let b =
-                emit_line(
-                  b,
-                  "  "
-                    <> r
-                    <> " = call i64 @Gleamc_hash_string(%GleamcString "
-                    <> v
-                    <> ")",
-                )
-              #(r, b)
+  }
+}
+
+fn emit_op_task_start(
+  ctx: Ctx,
+  fut: String,
+  fun: String,
+  args: List(ir.Operand),
+  into_future: Bool,
+  b: Builder,
+) -> #(Builder, Nil) {
+  case dict.get(ctx.machine_fns, fun) {
+    Error(_) -> #(b, Nil)
+    Ok(callee) -> {
+      let info = frame_info(callee, ctx.recursive)
+      let FrameInfo(fr_ty, _reg, fields, state_idx, fut_idx, _result_idx, _) =
+        info
+      let ir.Function(_, cparams, cret, _, _) = callee
+      let #(raw, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> raw
+            <> " = call i8* @gleamc_alloc0(i64 ptrtoint ("
+            <> fr_ty
+            <> "* getelementptr ("
+            <> fr_ty
+            <> ", "
+            <> fr_ty
+            <> "* null, i32 1) to i64))",
+        )
+      let #(frp, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> frp <> " = bitcast i8* " <> raw <> " to " <> fr_ty <> "*",
+        )
+      let #(sp, b) = frame_gep(frp, fr_ty, state_idx, b)
+      let b = emit_line(b, "  store i32 0, i32* " <> sp)
+      let #(fp, b) = frame_gep(frp, fr_ty, fut_idx, b)
+      let b = emit_line(b, "  store i8* null, i8** " <> fp)
+      let b =
+        list.fold(list.index_map(args, fn(a, i) { #(a, i) }), b, fn(b, pair) {
+          let #(arg, i) = pair
+          case list_nth(cparams, i) {
+            Ok(pname) -> {
+              let #(ty, v, b) = read_val(ctx, arg, b)
+              let aty = operand_type(ctx.by_name, arg)
+              let b = case arg_needs_retain(ctx, arg) {
+                True ->
+                  rc_expr(
+                    ctx.lits,
+                    ctx.recursive,
+                    dict.new(),
+                    "retain",
+                    aty,
+                    ty,
+                    v,
+                    "task_start",
+                    b,
+                  )
+                False -> b
+              }
+              let slot = case dict.get(fields, pname) {
+                Ok(found) -> found
+                Error(_) -> 0
+              }
+              let #(ptr, b) = frame_gep(frp, fr_ty, slot, b)
+              emit_line(
+                b,
+                "  store " <> ty <> " " <> v <> ", " <> ty <> "* " <> ptr,
+              )
             }
-            ast.TInt -> {
-              let #(r, b) = fresh(b)
-              let b =
-                emit_line(b, "  " <> r <> " = call i64 @Gleamc_hash_i64(i64 " <> v <> ")")
-              #(r, b)
-            }
-            ast.TFloat -> {
-              let #(r, b) = fresh(b)
-              let b =
-                emit_line(
-                  b,
-                  "  " <> r <> " = call i64 @Gleamc_hash_f64(double " <> v <> ")",
-                )
-              #(r, b)
-            }
-            ast.TBool -> {
-              let #(z, b) = fresh(b)
-              let b = emit_line(b, "  " <> z <> " = zext i1 " <> v <> " to i64")
-              let #(r, b) = fresh(b)
-              let b =
-                emit_line(b, "  " <> r <> " = call i64 @Gleamc_hash_i64(i64 " <> z <> ")")
-              #(r, b)
-            }
-            _ -> {
-              // Structural keys (tuples, lists, custom types): hash the
-              // canonical `inspect` text. Equal values share a hash.
-              let #(s, b) = inspect_val(ctx.recursive, ctx.lits, oty, v, b)
-              let #(r, b) = fresh(b)
-              let b =
-                emit_line(
-                  b,
-                  "  "
-                    <> r
-                    <> " = call i64 @Gleamc_hash_string(%GleamcString "
-                    <> s
-                    <> ")",
-                )
-              #(r, b)
-            }
+            Error(_) -> b
           }
-          let b = store_local(ctx, dest, "i64", r, b)
-          #(b, Nil)
-        }
-        "process_ffi.send" -> {
-          // Box the message (ownership moves into the box) and hand the box to
-          // the mailbox; the receiver moves the payload out.
-          let #(subject_arg, msg_arg) = case args {
-            [s, m, ..] -> #(s, m)
-            _ -> #(ir.Lit(ir.LUnit), ir.Lit(ir.LUnit))
-          }
-          let #(_, subject, b) = read_val(ctx, subject_arg, b)
-          let #(ty, value, b) = read_val(ctx, msg_arg, b)
-          let #(box, b) = fresh(b)
+        })
+      let #(futp, b) = frame_gep(frp, fr_ty, fut_idx, b)
+      let copy = case is_nil_type(cret) {
+        True -> "void (i8*, i8*)* null"
+        False ->
+          "void (i8*, i8*)* bitcast (void ("
+          <> fr_ty
+          <> "*, i8*)* @"
+          <> copy_sym(fr_ty)
+          <> " to void (i8*, i8*)*)"
+      }
+      let step =
+        "i1 (i8*)* bitcast (i1 ("
+        <> fr_ty
+        <> "*)* @Gleamc_"
+        <> fun
+        <> "_step to i1 (i8*)*)"
+      let fd =
+        "void (i8*)* bitcast (void ("
+        <> fr_ty
+        <> "*)* @"
+        <> frame_drop_sym(fr_ty)
+        <> " to void (i8*)*)"
+      // `task.async` boxes the worker's result so `task_ffi.await` can move any
+      // type out; a nil result needs no box.
+      let #(box, b) = case is_nil_type(cret) {
+        True -> #("null", b)
+        False -> {
+          let #(bx, b) = fresh(b)
           let b =
             emit_line(
               b,
               "  "
-                <> box
+                <> bx
                 <> " = call i8* @gleamc_box_alloc(i64 "
-                <> ty_size_expr(operand_type(ctx.by_name, msg_arg), ctx.recursive)
+                <> ty_size_expr(cret, ctx.recursive)
                 <> ")",
             )
-          let #(slot, b) = fresh(b)
+          #(bx, b)
+        }
+      }
+      let #(donef, b) = fresh(b)
+      let b = case into_future {
+        True ->
+          emit_line(
+            b,
+            "  "
+              <> donef
+              <> " = call i8* @gleamc_task_async("
+              <> step
+              <> ", i8* "
+              <> raw
+              <> ", i8** "
+              <> futp
+              <> ", "
+              <> copy
+              <> ", "
+              <> fd
+              <> ", i8* "
+              <> box
+              <> ")",
+          )
+        False ->
+          emit_line(
+            b,
+            "  "
+              <> donef
+              <> " = call i8* @gleamc_task_spawn("
+              <> step
+              <> ", i8* "
+              <> raw
+              <> ", i8** "
+              <> futp
+              <> ", "
+              <> fd
+              <> ")",
+          )
+      }
+      // `task.async` keeps the completion future as the `Task(a)` handle;
+      // `process.spawn` returns the stable `Pid` (the task's id).
+      let b = case into_future {
+        True -> store_local(ctx, fut, "i8*", donef, b)
+        False -> {
+          let #(id, b) = fresh(b)
           let b =
             emit_line(
               b,
-              "  " <> slot <> " = bitcast i8* " <> box <> " to " <> ty <> "*",
+              "  " <> id <> " = call i64 @gleamc_task_id(i8* " <> donef <> ")",
             )
+          store_local(ctx, fut, "i64", id, b)
+        }
+      }
+      #(b, Nil)
+    }
+  }
+}
+
+fn emit_op_task_start_closure(
+  ctx: Ctx,
+  fut: String,
+  fun: String,
+  closure: ir.Operand,
+  into_future: Bool,
+  b: Builder,
+) -> #(Builder, Nil) {
+  case dict.get(ctx.machine_fns, fun) {
+    Error(_) -> #(b, Nil)
+    Ok(callee) -> {
+      let info = frame_info(callee, ctx.recursive)
+      let FrameInfo(fr_ty, _reg, fields, state_idx, fut_idx, _result_idx, _) =
+        info
+      let ir.Function(_, cparams, cret, _, _) = callee
+      // Read the closure value and take its environment (field 1).
+      let clo_ty = operand_type(ctx.by_name, closure)
+      let clo_s = llvm_ty(clo_ty, ctx.recursive)
+      let #(_, fv, b) = read_val(ctx, closure, b)
+      let #(env, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> env <> " = extractvalue " <> clo_s <> " " <> fv <> ", 1",
+        )
+      // The task's frame owns a reference to the environment; the frame
+      // drop releases it.
+      let b = case frame.env_capture(callee) {
+        Ok(_) ->
+          emit_line(
+            b,
+            "  call void @Gleamc_rc_retain(i8* " <> env <> ", i8* null)",
+          )
+        Error(_) -> b
+      }
+      let #(raw, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> raw
+            <> " = call i8* @gleamc_alloc0(i64 ptrtoint ("
+            <> fr_ty
+            <> "* getelementptr ("
+            <> fr_ty
+            <> ", "
+            <> fr_ty
+            <> "* null, i32 1) to i64))",
+        )
+      let #(frp, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> frp <> " = bitcast i8* " <> raw <> " to " <> fr_ty <> "*",
+        )
+      let #(sp, b) = frame_gep(frp, fr_ty, state_idx, b)
+      let b = emit_line(b, "  store i32 0, i32* " <> sp)
+      let #(fp, b) = frame_gep(frp, fr_ty, fut_idx, b)
+      let b = emit_line(b, "  store i8* null, i8** " <> fp)
+      // Store the environment into the callee's `__env` field (param 0).
+      let b = case cparams {
+        [first_param, ..] -> {
+          let slot = case dict.get(fields, first_param) {
+            Ok(found) -> found
+            Error(_) -> 0
+          }
+          let #(ptr, b) = frame_gep(frp, fr_ty, slot, b)
+          emit_line(b, "  store i8* " <> env <> ", i8** " <> ptr)
+        }
+        [] -> b
+      }
+      let #(futp, b) = frame_gep(frp, fr_ty, fut_idx, b)
+      let copy = case is_nil_type(cret) {
+        True -> "void (i8*, i8*)* null"
+        False ->
+          "void (i8*, i8*)* bitcast (void ("
+          <> fr_ty
+          <> "*, i8*)* @"
+          <> copy_sym(fr_ty)
+          <> " to void (i8*, i8*)*)"
+      }
+      let step =
+        "i1 (i8*)* bitcast (i1 ("
+        <> fr_ty
+        <> "*)* @Gleamc_"
+        <> fun
+        <> "_step to i1 (i8*)*)"
+      let fd =
+        "void (i8*)* bitcast (void ("
+        <> fr_ty
+        <> "*)* @"
+        <> frame_drop_sym(fr_ty)
+        <> " to void (i8*)*)"
+      let #(box, b) = case is_nil_type(cret) {
+        True -> #("null", b)
+        False -> {
+          let #(bx, b) = fresh(b)
           let b =
-            emit_line(b, "  store " <> ty <> " " <> value <> ", " <> ty <> "* " <> slot)
+            emit_line(
+              b,
+              "  "
+                <> bx
+                <> " = call i8* @gleamc_box_alloc(i64 "
+                <> ty_size_expr(cret, ctx.recursive)
+                <> ")",
+            )
+          #(bx, b)
+        }
+      }
+      let #(donef, b) = fresh(b)
+      let b = case into_future {
+        True ->
+          emit_line(
+            b,
+            "  "
+              <> donef
+              <> " = call i8* @gleamc_task_async("
+              <> step
+              <> ", i8* "
+              <> raw
+              <> ", i8** "
+              <> futp
+              <> ", "
+              <> copy
+              <> ", "
+              <> fd
+              <> ", i8* "
+              <> box
+              <> ")",
+          )
+        False ->
+          emit_line(
+            b,
+            "  "
+              <> donef
+              <> " = call i8* @gleamc_task_spawn("
+              <> step
+              <> ", i8* "
+              <> raw
+              <> ", i8** "
+              <> futp
+              <> ", "
+              <> fd
+              <> ")",
+          )
+      }
+      // `task.async` keeps the completion future as the `Task(a)` handle;
+      // `process.spawn` returns the stable `Pid` (the task's id).
+      let b = case into_future {
+        True -> store_local(ctx, fut, "i8*", donef, b)
+        False -> {
+          let #(id, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  " <> id <> " = call i64 @gleamc_task_id(i8* " <> donef <> ")",
+            )
+          store_local(ctx, fut, "i64", id, b)
+        }
+      }
+      #(b, Nil)
+    }
+  }
+}
+
+fn emit_op_builtin(
+  ctx: Ctx,
+  dest: String,
+  builtin: String,
+  args: List(ir.Operand),
+  ret_ty: Type,
+  b: Builder,
+) -> #(Builder, Nil) {
+  case builtin {
+    "gleamc.show" -> {
+      let first = first_arg(args)
+      let oty = operand_type(ctx.by_name, first)
+      let #(_, v, b) = read_val(ctx, first, b)
+      let #(r, b) = inspect_val(ctx.recursive, ctx.lits, oty, v, b)
+      let b = store_local(ctx, dest, "%GleamcString", r, b)
+      #(b, Nil)
+    }
+    "gleamc.hash" -> {
+      let first = first_arg(args)
+      let oty = operand_type(ctx.by_name, first)
+      let #(_, v, b) = read_val(ctx, first, b)
+      let #(r, b) = case oty {
+        TString -> {
           let #(r, b) = fresh(b)
           let b =
             emit_line(
               b,
               "  "
                 <> r
-                <> " = call i32 @Gleamc_process_ffi_send(i64 "
-                <> subject
-                <> ", i8* "
-                <> box
+                <> " = call i64 @Gleamc_hash_string(%GleamcString "
+                <> v
                 <> ")",
             )
-          let b = store_local(ctx, dest, "i32", r, b)
-          #(b, Nil)
+          #(r, b)
         }
-        "process_ffi.unreceive" -> {
-          let #(subject_arg, msg_arg) = case args {
-            [s, m, ..] -> #(s, m)
-            _ -> #(ir.Lit(ir.LUnit), ir.Lit(ir.LUnit))
-          }
-          let #(_, subject, b) = read_val(ctx, subject_arg, b)
-          let #(ty, value, b) = read_val(ctx, msg_arg, b)
-          let #(box, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  " <> box <> " = call i8* @gleamc_box_alloc(i64 "
-                <> ty_size_expr(operand_type(ctx.by_name, msg_arg), ctx.recursive) <> ")",
-            )
-          let #(slot, b) = fresh(b)
-          let b = emit_line(b, "  " <> slot <> " = bitcast i8* " <> box <> " to " <> ty <> "*")
-          let b = emit_line(b, "  store " <> ty <> " " <> value <> ", " <> ty <> "* " <> slot)
+        ast.TInt -> {
           let #(r, b) = fresh(b)
           let b =
             emit_line(
               b,
-              "  " <> r <> " = call i32 @Gleamc_process_ffi_unreceive(i64 "
-                <> subject <> ", i8* " <> box <> ")",
+              "  " <> r <> " = call i64 @Gleamc_hash_i64(i64 " <> v <> ")",
             )
-          let b = store_local(ctx, dest, "i32", r, b)
-          #(b, Nil)
+          #(r, b)
         }
-        "process_ffi.send_after" -> {
-          // Box the message and schedule a libuv timer that sends it.
-          let #(subject_arg, delay_arg, msg_arg) = case args {
-            [s, d, m, ..] -> #(s, d, m)
-            _ -> #(ir.Lit(ir.LUnit), ir.Lit(ir.LUnit), ir.Lit(ir.LUnit))
-          }
-          let #(_, subject, b) = read_val(ctx, subject_arg, b)
-          let #(_, delay, b) = read_val(ctx, delay_arg, b)
-          let #(ty, value, b) = read_val(ctx, msg_arg, b)
-          let #(box, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  "
-                <> box
-                <> " = call i8* @gleamc_box_alloc(i64 "
-                <> ty_size_expr(operand_type(ctx.by_name, msg_arg), ctx.recursive)
-                <> ")",
-            )
-          let #(slot, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  " <> slot <> " = bitcast i8* " <> box <> " to " <> ty <> "*",
-            )
-          let b =
-            emit_line(b, "  store " <> ty <> " " <> value <> ", " <> ty <> "* " <> slot)
+        ast.TFloat -> {
           let #(r, b) = fresh(b)
           let b =
             emit_line(
               b,
-              "  "
-                <> r
-                <> " = call i64 @Gleamc_process_ffi_send_after(i64 "
-                <> subject
-                <> ", i64 "
-                <> delay
-                <> ", i8* "
-                <> box
-                <> ")",
+              "  " <> r <> " = call i64 @Gleamc_hash_f64(double " <> v <> ")",
             )
-          let b = store_local(ctx, dest, "i64", r, b)
-          #(b, Nil)
+          #(r, b)
         }
-        "buffer.new" -> {
-          let elem = case buffer_elem(ret_ty) {
-            Ok(e) -> e
-            Error(_) -> ast.TNil
-          }
-          let #(_, n, b) = read_val(ctx, first_arg(args), b)
-          let sz = ty_size_expr(elem, ctx.recursive)
-          let #(h, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  "
-                <> h
-                <> " = call i8* @Gleamc_buffer_new(i64 "
-                <> n
-                <> ", i64 "
-                <> sz
-                <> ", "
-                <> buffer_glue_fp(elem, "drop")
-                <> ")",
-            )
-          let b = store_local(ctx, dest, "i8*", h, b)
-          #(b, Nil)
-        }
-        "buffer.len" -> {
-          let #(_, buf, b) = read_val(ctx, first_arg(args), b)
+        ast.TBool -> {
+          let #(z, b) = fresh(b)
+          let b = emit_line(b, "  " <> z <> " = zext i1 " <> v <> " to i64")
           let #(r, b) = fresh(b)
           let b =
             emit_line(
               b,
-              "  " <> r <> " = call i64 @Gleamc_buffer_len(i8* " <> buf <> ")",
+              "  " <> r <> " = call i64 @Gleamc_hash_i64(i64 " <> z <> ")",
             )
-          let b = store_local(ctx, dest, "i64", r, b)
-          #(b, Nil)
+          #(r, b)
         }
-        "buffer.get" -> {
-          let buf_arg = first_arg(args)
-          let #(_, buf, b) = read_val(ctx, buf_arg, b)
-          let elem = case buffer_elem(operand_type(ctx.by_name, buf_arg)) {
-            Ok(e) -> e
-            Error(_) -> ast.TNil
-          }
-          let elem_s = llvm_ty(elem, ctx.recursive)
-          let idx = case args {
-            [_, i, ..] -> i
-            _ -> ir.Lit(ir.LUnit)
-          }
-          let #(_, i, b) = read_val(ctx, idx, b)
-          let #(slot, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  "
-                <> slot
-                <> " = call i8* @Gleamc_buffer_slot(i8* "
-                <> buf
-                <> ", i64 "
-                <> i
-                <> ")",
-            )
-          let #(p, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  " <> p <> " = bitcast i8* " <> slot <> " to " <> elem_s <> "*",
-            )
-          let #(v, b) = fresh(b)
-          let b =
-            emit_line(b, "  " <> v <> " = load " <> elem_s <> ", " <> elem_s <> "* " <> p)
-          let b =
-            rc_expr(
-              ctx.lits,
-              ctx.recursive,
-              dict.new(),
-              "retain",
-              elem,
-              elem_s,
-              v,
-              "buffer",
-              b,
-            )
-          let b = store_local(ctx, dest, elem_s, v, b)
-          #(b, Nil)
-        }
-        "buffer.set" -> {
-          let buf_arg = first_arg(args)
-          let #(_, buf, b) = read_val(ctx, buf_arg, b)
-          let elem = case buffer_elem(operand_type(ctx.by_name, buf_arg)) {
-            Ok(e) -> e
-            Error(_) -> ast.TNil
-          }
-          let elem_s = llvm_ty(elem, ctx.recursive)
-          let idx = case args {
-            [_, i, ..] -> i
-            _ -> ir.Lit(ir.LUnit)
-          }
-          let value = case args {
-            [_, _, v, ..] -> v
-            _ -> ir.Lit(ir.LUnit)
-          }
-          let #(_, i, b) = read_val(ctx, idx, b)
-          let #(_, v, b) = read_val(ctx, value, b)
-          let sz = ty_size_expr(elem, ctx.recursive)
-          let #(nb, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  "
-                <> nb
-                <> " = call i8* @Gleamc_buffer_cow(i8* "
-                <> buf
-                <> ", i64 "
-                <> sz
-                <> ", "
-                <> buffer_glue_fp(elem, "retain")
-                <> ", "
-                <> buffer_glue_fp(elem, "drop")
-                <> ")",
-            )
-          let #(slot, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  "
-                <> slot
-                <> " = call i8* @Gleamc_buffer_slot(i8* "
-                <> nb
-                <> ", i64 "
-                <> i
-                <> ")",
-            )
-          let #(p, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  " <> p <> " = bitcast i8* " <> slot <> " to " <> elem_s <> "*",
-            )
-          let #(old, b) = fresh(b)
-          let b =
-            emit_line(b, "  " <> old <> " = load " <> elem_s <> ", " <> elem_s <> "* " <> p)
-          let b =
-            rc_expr(
-              ctx.lits,
-              ctx.recursive,
-              dict.new(),
-              "drop",
-              elem,
-              elem_s,
-              old,
-              "buffer",
-              b,
-            )
-          let b =
-            rc_expr(
-              ctx.lits,
-              ctx.recursive,
-              dict.new(),
-              "retain",
-              elem,
-              elem_s,
-              v,
-              "buffer",
-              b,
-            )
-          let b =
-            emit_line(
-              b,
-              "  store " <> elem_s <> " " <> v <> ", " <> elem_s <> "* " <> p,
-            )
-          let b = store_local(ctx, dest, "i8*", nb, b)
-          #(b, Nil)
-        }
-        "buffer.take" -> {
-          let buf_arg = first_arg(args)
-          let #(_, buf, b) = read_val(ctx, buf_arg, b)
-          let elem = case buffer_elem(operand_type(ctx.by_name, buf_arg)) {
-            Ok(e) -> e
-            Error(_) -> ast.TNil
-          }
-          let elem_s = llvm_ty(elem, ctx.recursive)
-          let idx = case args {
-            [_, i, ..] -> i
-            _ -> ir.Lit(ir.LUnit)
-          }
-          let #(_, i, b) = read_val(ctx, idx, b)
-          let #(outp, b) = local_addr(ctx, dest, b)
-          let #(outp_i8, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  "
-                <> outp_i8
-                <> " = bitcast "
-                <> elem_s
-                <> "* "
-                <> outp
-                <> " to i8*",
-            )
-          let b =
-            emit_line(
-              b,
-              "  call void @Gleamc_buffer_take(i8* "
-                <> buf
-                <> ", i64 "
-                <> i
-                <> ", "
-                <> buffer_glue_fp(elem, "retain")
-                <> ", i8* "
-                <> outp_i8
-                <> ")",
-            )
-          #(b, Nil)
-        }
-        "io.debug" -> {
-          let first = first_arg(args)
-          let oty = operand_type(ctx.by_name, first)
-          let #(_, v, b) = read_val(ctx, first, b)
+        _ -> {
+          // Structural keys (tuples, lists, custom types): hash the
+          // canonical `inspect` text. Equal values share a hash.
           let #(s, b) = inspect_val(ctx.recursive, ctx.lits, oty, v, b)
           let #(r, b) = fresh(b)
           let b =
@@ -3777,543 +3707,1011 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
               b,
               "  "
                 <> r
-                <> " = call i32 @Gleamc_io_debug(%GleamcString "
+                <> " = call i64 @Gleamc_hash_string(%GleamcString "
                 <> s
                 <> ")",
             )
-          let b = store_local(ctx, dest, "i32", r, b)
+          #(r, b)
+        }
+      }
+      let b = store_local(ctx, dest, "i64", r, b)
+      #(b, Nil)
+    }
+    "process_ffi.send" -> {
+      // Box the message (ownership moves into the box) and hand the box to
+      // the mailbox; the receiver moves the payload out.
+      let #(subject_arg, msg_arg) = case args {
+        [s, m, ..] -> #(s, m)
+        _ -> #(ir.Lit(ir.LUnit), ir.Lit(ir.LUnit))
+      }
+      let #(_, subject, b) = read_val(ctx, subject_arg, b)
+      let #(ty, value, b) = read_val(ctx, msg_arg, b)
+      let #(box, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> box
+            <> " = call i8* @gleamc_box_alloc(i64 "
+            <> ty_size_expr(operand_type(ctx.by_name, msg_arg), ctx.recursive)
+            <> ")",
+        )
+      let #(slot, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> slot <> " = bitcast i8* " <> box <> " to " <> ty <> "*",
+        )
+      let b =
+        emit_line(
+          b,
+          "  store " <> ty <> " " <> value <> ", " <> ty <> "* " <> slot,
+        )
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> r
+            <> " = call i32 @Gleamc_process_ffi_send(i64 "
+            <> subject
+            <> ", i8* "
+            <> box
+            <> ")",
+        )
+      let b = store_local(ctx, dest, "i32", r, b)
+      #(b, Nil)
+    }
+    "process_ffi.unreceive" -> {
+      let #(subject_arg, msg_arg) = case args {
+        [s, m, ..] -> #(s, m)
+        _ -> #(ir.Lit(ir.LUnit), ir.Lit(ir.LUnit))
+      }
+      let #(_, subject, b) = read_val(ctx, subject_arg, b)
+      let #(ty, value, b) = read_val(ctx, msg_arg, b)
+      let #(box, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> box
+            <> " = call i8* @gleamc_box_alloc(i64 "
+            <> ty_size_expr(operand_type(ctx.by_name, msg_arg), ctx.recursive)
+            <> ")",
+        )
+      let #(slot, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> slot <> " = bitcast i8* " <> box <> " to " <> ty <> "*",
+        )
+      let b =
+        emit_line(
+          b,
+          "  store " <> ty <> " " <> value <> ", " <> ty <> "* " <> slot,
+        )
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> r
+            <> " = call i32 @Gleamc_process_ffi_unreceive(i64 "
+            <> subject
+            <> ", i8* "
+            <> box
+            <> ")",
+        )
+      let b = store_local(ctx, dest, "i32", r, b)
+      #(b, Nil)
+    }
+    "process_ffi.send_after" -> {
+      // Box the message and schedule a libuv timer that sends it.
+      let #(subject_arg, delay_arg, msg_arg) = case args {
+        [s, d, m, ..] -> #(s, d, m)
+        _ -> #(ir.Lit(ir.LUnit), ir.Lit(ir.LUnit), ir.Lit(ir.LUnit))
+      }
+      let #(_, subject, b) = read_val(ctx, subject_arg, b)
+      let #(_, delay, b) = read_val(ctx, delay_arg, b)
+      let #(ty, value, b) = read_val(ctx, msg_arg, b)
+      let #(box, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> box
+            <> " = call i8* @gleamc_box_alloc(i64 "
+            <> ty_size_expr(operand_type(ctx.by_name, msg_arg), ctx.recursive)
+            <> ")",
+        )
+      let #(slot, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> slot <> " = bitcast i8* " <> box <> " to " <> ty <> "*",
+        )
+      let b =
+        emit_line(
+          b,
+          "  store " <> ty <> " " <> value <> ", " <> ty <> "* " <> slot,
+        )
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> r
+            <> " = call i64 @Gleamc_process_ffi_send_after(i64 "
+            <> subject
+            <> ", i64 "
+            <> delay
+            <> ", i8* "
+            <> box
+            <> ")",
+        )
+      let b = store_local(ctx, dest, "i64", r, b)
+      #(b, Nil)
+    }
+    "buffer.new" -> {
+      let elem = case buffer_elem(ret_ty) {
+        Ok(e) -> e
+        Error(_) -> ast.TNil
+      }
+      let #(_, n, b) = read_val(ctx, first_arg(args), b)
+      let sz = ty_size_expr(elem, ctx.recursive)
+      let #(h, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> h
+            <> " = call i8* @Gleamc_buffer_new(i64 "
+            <> n
+            <> ", i64 "
+            <> sz
+            <> ", "
+            <> buffer_glue_fp(elem, "drop")
+            <> ")",
+        )
+      let b = store_local(ctx, dest, "i8*", h, b)
+      #(b, Nil)
+    }
+    "buffer.len" -> {
+      let #(_, buf, b) = read_val(ctx, first_arg(args), b)
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> r <> " = call i64 @Gleamc_buffer_len(i8* " <> buf <> ")",
+        )
+      let b = store_local(ctx, dest, "i64", r, b)
+      #(b, Nil)
+    }
+    "buffer.get" -> {
+      let buf_arg = first_arg(args)
+      let #(_, buf, b) = read_val(ctx, buf_arg, b)
+      let elem = case buffer_elem(operand_type(ctx.by_name, buf_arg)) {
+        Ok(e) -> e
+        Error(_) -> ast.TNil
+      }
+      let elem_s = llvm_ty(elem, ctx.recursive)
+      let idx = case args {
+        [_, i, ..] -> i
+        _ -> ir.Lit(ir.LUnit)
+      }
+      let #(_, i, b) = read_val(ctx, idx, b)
+      let #(slot, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> slot
+            <> " = call i8* @Gleamc_buffer_slot(i8* "
+            <> buf
+            <> ", i64 "
+            <> i
+            <> ")",
+        )
+      let #(p, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> p <> " = bitcast i8* " <> slot <> " to " <> elem_s <> "*",
+        )
+      let #(v, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> v <> " = load " <> elem_s <> ", " <> elem_s <> "* " <> p,
+        )
+      let b =
+        rc_expr(
+          ctx.lits,
+          ctx.recursive,
+          dict.new(),
+          "retain",
+          elem,
+          elem_s,
+          v,
+          "buffer",
+          b,
+        )
+      let b = store_local(ctx, dest, elem_s, v, b)
+      #(b, Nil)
+    }
+    "buffer.set" -> {
+      let buf_arg = first_arg(args)
+      let #(_, buf, b) = read_val(ctx, buf_arg, b)
+      let elem = case buffer_elem(operand_type(ctx.by_name, buf_arg)) {
+        Ok(e) -> e
+        Error(_) -> ast.TNil
+      }
+      let elem_s = llvm_ty(elem, ctx.recursive)
+      let idx = case args {
+        [_, i, ..] -> i
+        _ -> ir.Lit(ir.LUnit)
+      }
+      let value = case args {
+        [_, _, v, ..] -> v
+        _ -> ir.Lit(ir.LUnit)
+      }
+      let #(_, i, b) = read_val(ctx, idx, b)
+      let #(_, v, b) = read_val(ctx, value, b)
+      let sz = ty_size_expr(elem, ctx.recursive)
+      let #(nb, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> nb
+            <> " = call i8* @Gleamc_buffer_cow(i8* "
+            <> buf
+            <> ", i64 "
+            <> sz
+            <> ", "
+            <> buffer_glue_fp(elem, "retain")
+            <> ", "
+            <> buffer_glue_fp(elem, "drop")
+            <> ")",
+        )
+      let #(slot, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> slot
+            <> " = call i8* @Gleamc_buffer_slot(i8* "
+            <> nb
+            <> ", i64 "
+            <> i
+            <> ")",
+        )
+      let #(p, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> p <> " = bitcast i8* " <> slot <> " to " <> elem_s <> "*",
+        )
+      let #(old, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> old <> " = load " <> elem_s <> ", " <> elem_s <> "* " <> p,
+        )
+      let b =
+        rc_expr(
+          ctx.lits,
+          ctx.recursive,
+          dict.new(),
+          "drop",
+          elem,
+          elem_s,
+          old,
+          "buffer",
+          b,
+        )
+      let b =
+        rc_expr(
+          ctx.lits,
+          ctx.recursive,
+          dict.new(),
+          "retain",
+          elem,
+          elem_s,
+          v,
+          "buffer",
+          b,
+        )
+      let b =
+        emit_line(
+          b,
+          "  store " <> elem_s <> " " <> v <> ", " <> elem_s <> "* " <> p,
+        )
+      let b = store_local(ctx, dest, "i8*", nb, b)
+      #(b, Nil)
+    }
+    "buffer.take" -> {
+      let buf_arg = first_arg(args)
+      let #(_, buf, b) = read_val(ctx, buf_arg, b)
+      let elem = case buffer_elem(operand_type(ctx.by_name, buf_arg)) {
+        Ok(e) -> e
+        Error(_) -> ast.TNil
+      }
+      let elem_s = llvm_ty(elem, ctx.recursive)
+      let idx = case args {
+        [_, i, ..] -> i
+        _ -> ir.Lit(ir.LUnit)
+      }
+      let #(_, i, b) = read_val(ctx, idx, b)
+      let #(outp, b) = local_addr(ctx, dest, b)
+      let #(outp_i8, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> outp_i8
+            <> " = bitcast "
+            <> elem_s
+            <> "* "
+            <> outp
+            <> " to i8*",
+        )
+      let b =
+        emit_line(
+          b,
+          "  call void @Gleamc_buffer_take(i8* "
+            <> buf
+            <> ", i64 "
+            <> i
+            <> ", "
+            <> buffer_glue_fp(elem, "retain")
+            <> ", i8* "
+            <> outp_i8
+            <> ")",
+        )
+      #(b, Nil)
+    }
+    "io.debug" -> {
+      let first = first_arg(args)
+      let oty = operand_type(ctx.by_name, first)
+      let #(_, v, b) = read_val(ctx, first, b)
+      let #(s, b) = inspect_val(ctx.recursive, ctx.lits, oty, v, b)
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> r <> " = call i32 @Gleamc_io_debug(%GleamcString " <> s <> ")",
+        )
+      let b = store_local(ctx, dest, "i32", r, b)
+      #(b, Nil)
+    }
+    "gleamc.key_compare" -> {
+      let first = first_arg(args)
+      let oty = operand_type(ctx.by_name, first)
+      let #(ty_s, lv, b) = read_val(ctx, first, b)
+      let second = case args {
+        [_, s, ..] -> s
+        _ -> ir.Lit(ir.LUnit)
+      }
+      let #(_, rv, b) = read_val(ctx, second, b)
+      let #(c32, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> c32
+            <> " = call i32 @Gleamc_Cmp_"
+            <> mangle_glue(oty)
+            <> "("
+            <> ty_s
+            <> " "
+            <> lv
+            <> ", "
+            <> ty_s
+            <> " "
+            <> rv
+            <> ")",
+        )
+      let ret_s = llvm_ty(ret_ty, ctx.recursive)
+      case ret_s {
+        "i32" -> {
+          let b = store_local(ctx, dest, "i32", c32, b)
           #(b, Nil)
         }
-        "gleamc.key_compare" -> {
-          let first = first_arg(args)
-          let oty = operand_type(ctx.by_name, first)
-          let #(ty_s, lv, b) = read_val(ctx, first, b)
-          let second = case args {
-            [_, s, ..] -> s
-            _ -> ir.Lit(ir.LUnit)
-          }
-          let #(_, rv, b) = read_val(ctx, second, b)
-          let #(c32, b) = fresh(b)
+        _ -> {
+          let #(r, b) = fresh(b)
+          let b =
+            emit_line(b, "  " <> r <> " = sext i32 " <> c32 <> " to " <> ret_s)
+          let b = store_local(ctx, dest, ret_s, r, b)
+          #(b, Nil)
+        }
+      }
+    }
+    "panic" -> {
+      let first = first_arg(args)
+      let #(_, v, b) = read_val(ctx, first, b)
+      let b =
+        emit_line(b, "  call void @Gleamc_panic(%GleamcString " <> v <> ")")
+      let ty_s = llvm_ty(ret_ty, ctx.recursive)
+      let b = store_local(ctx, dest, ty_s, "undef", b)
+      #(b, Nil)
+    }
+    _ -> emit_builtin_call(ctx, dest, builtin, args, ret_ty, b)
+  }
+}
+
+fn emit_op_copy(
+  ctx: Ctx,
+  dest: String,
+  src: ir.Operand,
+  ty: Type,
+  b: Builder,
+) -> #(Builder, Nil) {
+  let ty_s = llvm_ty(ty, ctx.recursive)
+  let #(_, v, b) = read_val(ctx, src, b)
+  let b = store_local(ctx, dest, ty_s, v, b)
+  #(b, Nil)
+}
+
+fn emit_op_phi(
+  ctx: Ctx,
+  dest: String,
+  incoming: List(#(ir.Operand, String)),
+  b: Builder,
+) -> #(Builder, Nil) {
+  let ty_s = llvm_ty(local_type(ctx.by_name, dest), ctx.recursive)
+  // Read each incoming value in the join block (its definition dominates)
+  // and form the LLVM `phi` with one `[value, %pred]` per predecessor.
+  let #(rev, b) =
+    list.fold(incoming, #([], b), fn(acc, pair) {
+      let #(rev, b) = acc
+      let #(operand, label) = pair
+      let #(_, value, b) = read_val(ctx, operand, b)
+      #(["[" <> value <> ", %" <> block_name(ctx, label) <> "]", ..rev], b)
+    })
+  let #(reg, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  "
+        <> reg
+        <> " = phi "
+        <> ty_s
+        <> " "
+        <> string.join(list.reverse(rev), ", "),
+    )
+  #(Builder(..b, values: dict.insert(b.values, dest, reg)), Nil)
+}
+
+fn emit_op_retain(
+  ctx: Ctx,
+  src: String,
+  ty: Type,
+  b: Builder,
+) -> #(Builder, Nil) {
+  case src == frame.frame_local {
+    // The frame handle lives in the machine frame; retaining it for a
+    // capturing closure bumps the frame cell itself.
+    True ->
+      case ctx.frame {
+        Some(FrameInfo(fr_ty, fr_reg, _, _, _, _, _)) -> {
+          let #(base, b) = frame_base(fr_reg, fr_ty, b)
+          let #(p, b) = fresh(b)
           let b =
             emit_line(
               b,
-              "  "
-                <> c32
-                <> " = call i32 @Gleamc_Cmp_"
-                <> mangle_glue(oty)
-                <> "("
-                <> ty_s
-                <> " "
-                <> lv
-                <> ", "
-                <> ty_s
-                <> " "
-                <> rv
-                <> ")",
+              "  " <> p <> " = bitcast " <> fr_ty <> "* " <> base <> " to i8*",
             )
-          let ret_s = llvm_ty(ret_ty, ctx.recursive)
-          case ret_s {
-            "i32" -> {
-              let b = store_local(ctx, dest, "i32", c32, b)
-              #(b, Nil)
-            }
-            _ -> {
-              let #(r, b) = fresh(b)
-              let b =
-                emit_line(
-                  b,
-                  "  " <> r <> " = sext i32 " <> c32 <> " to " <> ret_s,
-                )
-              let b = store_local(ctx, dest, ret_s, r, b)
-              #(b, Nil)
-            }
-          }
+          #(
+            emit_line(
+              b,
+              "  call void @Gleamc_rc_retain(i8* " <> p <> ", i8* null)",
+            ),
+            Nil,
+          )
         }
-        "panic" -> {
-          let first = first_arg(args)
-          let #(_, v, b) = read_val(ctx, first, b)
-          let b =
-            emit_line(b, "  call void @Gleamc_panic(%GleamcString " <> v <> ")")
-          let ty_s = llvm_ty(ret_ty, ctx.recursive)
-          let b = store_local(ctx, dest, ty_s, "undef", b)
-          #(b, Nil)
-        }
-        _ -> emit_builtin_call(ctx, dest, builtin, args, ret_ty, b)
+        None -> #(b, Nil)
       }
+    False -> {
+      let #(ty_s, v, b) = read_val(ctx, ir.Var(src), b)
+      #(
+        rc_expr(
+          ctx.lits,
+          ctx.recursive,
+          records_ctors(ctx),
+          "retain",
+          ty,
+          ty_s,
+          v,
+          ctx.fn_name <> ":" <> src,
+          b,
+        ),
+        Nil,
+      )
     }
-    ir.OpCopy(dest, src, ty) -> {
-      let ty_s = llvm_ty(ty, ctx.recursive)
-      let #(_, v, b) = read_val(ctx, src, b)
-      let b = store_local(ctx, dest, ty_s, v, b)
-      #(b, Nil)
+  }
+}
+
+fn emit_op_drop(
+  ctx: Ctx,
+  src: String,
+  ty: Type,
+  b: Builder,
+) -> #(Builder, Nil) {
+  case src == frame.frame_local {
+    // The frame's own reference. Emitted as an op (not at `Ret`) so a
+    // `musttail` tail call can release the frame before the call, leaving
+    // no instruction between the call and its `ret`.
+    True ->
+      case ctx.frame {
+        Some(FrameInfo(fr_ty, _, _, _, _, _, _)) -> #(
+          emit_line(
+            b,
+            "  call void @" <> frame_drop_sym(fr_ty) <> "(i8* %__frp)",
+          ),
+          Nil,
+        )
+        None -> #(b, Nil)
+      }
+    False -> {
+      let #(ty_s, v, b) = read_val(ctx, ir.Var(src), b)
+      #(
+        rc_expr(
+          ctx.lits,
+          ctx.recursive,
+          records_ctors(ctx),
+          "drop",
+          ty,
+          ty_s,
+          v,
+          ctx.fn_name <> ":" <> src,
+          b,
+        ),
+        Nil,
+      )
     }
-    ir.OpPhi(dest, incoming) -> {
-      let ty_s = llvm_ty(local_type(ctx.by_name, dest), ctx.recursive)
-      // Read each incoming value in the join block (its definition dominates)
-      // and form the LLVM `phi` with one `[value, %pred]` per predecessor.
-      let #(rev, b) =
-        list.fold(incoming, #([], b), fn(acc, pair) {
-          let #(rev, b) = acc
-          let #(operand, label) = pair
-          let #(_, value, b) = read_val(ctx, operand, b)
-          #(["[" <> value <> ", %" <> block_name(ctx, label) <> "]", ..rev], b)
-        })
-      let #(reg, b) = fresh(b)
+  }
+}
+
+fn emit_op_tuple(
+  ctx: Ctx,
+  dest: String,
+  elems: List(ir.Operand),
+  ty: Type,
+  b: Builder,
+) -> #(Builder, Nil) {
+  let ty_s = llvm_ty(ty, ctx.recursive)
+  let #(b, fields) = read_typed_args(ctx, elems, b)
+  let #(val, b) = build_struct(b, ty_s, fields)
+  let b = store_local(ctx, dest, ty_s, val, b)
+  #(b, Nil)
+}
+
+fn emit_op_tuple_get(
+  ctx: Ctx,
+  dest: String,
+  tuple: ir.Operand,
+  index: Int,
+  ty: Type,
+  b: Builder,
+) -> #(Builder, Nil) {
+  let #(ty_s, v, b) = read_val(ctx, tuple, b)
+  let #(tmp, b) = extract_value(ty_s, v, [index], b)
+  let b = store_local(ctx, dest, llvm_ty(ty, ctx.recursive), tmp, b)
+  #(b, Nil)
+}
+
+fn emit_op_ctor(
+  ctx: Ctx,
+  dest: String,
+  ctor: String,
+  type_name: String,
+  args: List(ir.Operand),
+  ty: Type,
+  b: Builder,
+) -> #(Builder, Nil) {
+  let ty_s = llvm_ty(ty, ctx.recursive)
+  let index = variant_index(ctx, ctor, type_name)
+  let #(b, fields) = read_typed_args(ctx, args, b)
+  let #(base, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  "
+        <> base
+        <> " = insertvalue %"
+        <> type_name
+        <> " undef, i8 "
+        <> int.to_string(index)
+        <> ", 0",
+    )
+  let #(val, b) =
+    insert_fields("%" <> type_name, base, fields, [index + 1], 0, b)
+  case is_recursive(ctx.recursive, type_name) {
+    True -> {
+      let #(sz, b) = sizeof_reg(type_name, b)
+      let #(p, b) = fresh(b)
       let b =
         emit_line(
           b,
           "  "
-            <> reg
-            <> " = phi "
-            <> ty_s
-            <> " "
-            <> string.join(list.reverse(rev), ", "),
+            <> p
+            <> " = call i8* @gleamc_alloc_site(i64 "
+            <> sz
+            <> ", "
+            <> cstring_arg(ctx.lits, "alloc:" <> type_name)
+            <> ")",
         )
-      #(Builder(..b, values: dict.insert(b.values, dest, reg)), Nil)
+      let #(tp, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> tp <> " = bitcast i8* " <> p <> " to %" <> type_name <> "*",
+        )
+      let b =
+        emit_line(
+          b,
+          "  store %"
+            <> type_name
+            <> " "
+            <> val
+            <> ", %"
+            <> type_name
+            <> "* "
+            <> tp,
+        )
+      let b = store_local(ctx, dest, ty_s, tp, b)
+      #(b, Nil)
     }
-    ir.OpRetain(src, ty) -> {
-      case src == frame.frame_local {
-        // The frame handle lives in the machine frame; retaining it for a
-        // capturing closure bumps the frame cell itself.
-        True ->
-          case ctx.frame {
-            Some(FrameInfo(fr_ty, fr_reg, _, _, _, _, _)) -> {
-              let #(base, b) = frame_base(fr_reg, fr_ty, b)
-              let #(p, b) = fresh(b)
-              let b =
-                emit_line(
-                  b,
-                  "  " <> p <> " = bitcast " <> fr_ty <> "* " <> base <> " to i8*",
-                )
-              #(
-                emit_line(
-                  b,
-                  "  call void @Gleamc_rc_retain(i8* " <> p <> ", i8* null)",
-                ),
-                Nil,
-              )
-            }
-            None -> #(b, Nil)
-          }
-        False -> {
-          let #(ty_s, v, b) = read_val(ctx, ir.Var(src), b)
-          #(
-            rc_expr(
-              ctx.lits,
-              ctx.recursive,
-              records_ctors(ctx),
-              "retain",
-              ty,
-              ty_s,
-              v,
-              ctx.fn_name <> ":" <> src,
-              b,
-            ),
-            Nil,
-          )
-        }
-      }
-    }
-    ir.OpDrop(src, ty) -> {
-      case src == frame.frame_local {
-        // The frame's own reference. Emitted as an op (not at `Ret`) so a
-        // `musttail` tail call can release the frame before the call, leaving
-        // no instruction between the call and its `ret`.
-        True ->
-          case ctx.frame {
-            Some(FrameInfo(fr_ty, _, _, _, _, _, _)) ->
-              #(
-                emit_line(
-                  b,
-                  "  call void @" <> frame_drop_sym(fr_ty) <> "(i8* %__frp)",
-                ),
-                Nil,
-              )
-            None -> #(b, Nil)
-          }
-        False -> {
-          let #(ty_s, v, b) = read_val(ctx, ir.Var(src), b)
-          #(
-            rc_expr(
-              ctx.lits,
-              ctx.recursive,
-              records_ctors(ctx),
-              "drop",
-              ty,
-              ty_s,
-              v,
-              ctx.fn_name <> ":" <> src,
-              b,
-            ),
-            Nil,
-          )
-        }
-      }
-    }
-    ir.OpTuple(dest, elems, ty) -> {
-      let ty_s = llvm_ty(ty, ctx.recursive)
-      let #(b, fields) = read_typed_args(ctx, elems, b)
-      let #(val, b) = build_struct(b, ty_s, fields)
+    False -> {
       let b = store_local(ctx, dest, ty_s, val, b)
       #(b, Nil)
     }
-    ir.OpTupleGet(dest, tuple, index, ty) -> {
-      let #(ty_s, v, b) = read_val(ctx, tuple, b)
-      let #(tmp, b) = extract_value(ty_s, v, [index], b)
-      let b = store_local(ctx, dest, llvm_ty(ty, ctx.recursive), tmp, b)
+  }
+}
+
+fn emit_op_tag_is(
+  ctx: Ctx,
+  dest: String,
+  subject: ir.Operand,
+  ctor: String,
+  type_name: String,
+  b: Builder,
+) -> #(Builder, Nil) {
+  let #(sty, sv, b) = subject_struct(ctx, subject, b)
+  let #(tag, b) = extract_value(sty, sv, [0], b)
+  let index = variant_index(ctx, ctor, type_name)
+  let #(tmp, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  " <> tmp <> " = icmp eq i8 " <> tag <> ", " <> int.to_string(index),
+    )
+  let b = store_local(ctx, dest, "i1", tmp, b)
+  #(b, Nil)
+}
+
+fn emit_op_field(
+  ctx: Ctx,
+  dest: String,
+  subject: ir.Operand,
+  ctor: String,
+  index: Int,
+  ty: Type,
+  b: Builder,
+) -> #(Builder, Nil) {
+  let type_name = case operand_type(ctx.by_name, subject) {
+    TNamed(name) -> name
+    _ -> ""
+  }
+  let #(sty, sv, b) = subject_struct(ctx, subject, b)
+  let group = variant_index(ctx, ctor, type_name) + 1
+  let #(tmp, b) = extract_value(sty, sv, [group, index], b)
+  let b = store_local(ctx, dest, llvm_ty(ty, ctx.recursive), tmp, b)
+  #(b, Nil)
+}
+
+fn emit_op_closure(
+  ctx: Ctx,
+  dest: String,
+  code: String,
+  env_ty: String,
+  fn_ty: Type,
+  b: Builder,
+) -> #(Builder, Nil) {
+  let fn_s = llvm_ty(fn_ty, ctx.recursive)
+  let cty = code_ty(fn_ty, ctx.recursive)
+  // A closure that captures the defining frame references it directly (the
+  // frame is the environment); no environment cell is allocated, and the
+  // frame's release is a plain rc release, so there is no `env_drop`.
+  let frame_bound = string.starts_with(env_ty, "__frame_")
+  let #(env_reg, env_drop, b) = case frame_bound {
+    True ->
+      case ctx.frame {
+        Some(FrameInfo(fr_ty, fr_reg, _, _, _, _, _)) -> {
+          let #(base, b) = frame_base(fr_reg, fr_ty, b)
+          let #(frp, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  " <> frp <> " = bitcast " <> fr_ty <> "* " <> base <> " to i8*",
+            )
+          // Dropping the closure runs the frame's teardown.
+          #(frp, "@" <> env_ty <> "_drop", b)
+        }
+        None -> #("null", "null", b)
+      }
+    // No captures: a bare function value with no environment.
+    False -> #("null", "null", b)
+  }
+  let #(c0, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  "
+        <> c0
+        <> " = insertvalue "
+        <> fn_s
+        <> " undef, "
+        <> cty
+        <> " @"
+        <> code
+        <> ", 0",
+    )
+  let #(c1, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  "
+        <> c1
+        <> " = insertvalue "
+        <> fn_s
+        <> " "
+        <> c0
+        <> ", i8* "
+        <> env_reg
+        <> ", 1",
+    )
+  let #(c2, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  "
+        <> c2
+        <> " = insertvalue "
+        <> fn_s
+        <> " "
+        <> c1
+        <> ", void (i8*)* "
+        <> env_drop
+        <> ", 2",
+    )
+  let b = store_local(ctx, dest, fn_s, c2, b)
+  #(b, Nil)
+}
+
+fn emit_op_env_get(
+  ctx: Ctx,
+  dest: String,
+  env_ty: String,
+  index: Int,
+  ty: Type,
+  b: Builder,
+) -> #(Builder, Nil) {
+  let ty_s = llvm_ty(ty, ctx.recursive)
+  let #(envp, b) = local_addr(ctx, "__env", b)
+  let #(envraw, b) = fresh(b)
+  let b = emit_line(b, "  " <> envraw <> " = load i8*, i8** " <> envp)
+  let #(ep, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  " <> ep <> " = bitcast i8* " <> envraw <> " to %" <> env_ty <> "*",
+    )
+  let #(fp, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  "
+        <> fp
+        <> " = getelementptr %"
+        <> env_ty
+        <> ", %"
+        <> env_ty
+        <> "* "
+        <> ep
+        <> ", i32 0, i32 "
+        <> int.to_string(index),
+    )
+  let #(v, b) = fresh(b)
+  let b =
+    emit_line(b, "  " <> v <> " = load " <> ty_s <> ", " <> ty_s <> "* " <> fp)
+  let b = store_local(ctx, dest, ty_s, v, b)
+  #(b, Nil)
+}
+
+fn emit_op_call_indirect(
+  ctx: Ctx,
+  dest: String,
+  fval: ir.Operand,
+  args: List(ir.Operand),
+  ret_ty: Type,
+  b: Builder,
+) -> #(Builder, Nil) {
+  let fn_ty = operand_type(ctx.by_name, fval)
+  let fn_s = llvm_ty(fn_ty, ctx.recursive)
+  let #(_, fv, b) = read_val(ctx, fval, b)
+  let #(code, b) = extract_value(fn_s, fv, [0], b)
+  let #(env, b) = extract_value(fn_s, fv, [1], b)
+  let #(b, arg_list) = read_args(ctx, args, b)
+  let ret_s = llvm_ty(ret_ty, ctx.recursive)
+  case abi.ret_needs_sret(ret_ty, ctx.recursive) {
+    True -> {
+      let #(destp, b) = local_addr(ctx, dest, b)
+      let b =
+        emit_line(
+          b,
+          "  call void "
+            <> code
+            <> "(ptr sret("
+            <> ret_s
+            <> ") "
+            <> destp
+            <> ", i8* "
+            <> env
+            <> case arg_list {
+            "" -> ""
+            _ -> ", " <> arg_list
+          }
+            <> ")",
+        )
       #(b, Nil)
     }
-    ir.OpCtor(dest, ctor, type_name, args, ty) -> {
-      let ty_s = llvm_ty(ty, ctx.recursive)
-      let index = variant_index(ctx, ctor, type_name)
-      let #(b, fields) = read_typed_args(ctx, args, b)
-      let #(base, b) = fresh(b)
+    False -> {
+      let callargs = case arg_list {
+        "" -> "i8* " <> env
+        _ -> "i8* " <> env <> ", " <> arg_list
+      }
+      let #(tmp, b) = fresh(b)
       let b =
         emit_line(
           b,
           "  "
-            <> base
-            <> " = insertvalue %"
-            <> type_name
-            <> " undef, i8 "
-            <> int.to_string(index)
-            <> ", 0",
+            <> tmp
+            <> " = call "
+            <> ret_s
+            <> " "
+            <> code
+            <> "("
+            <> callargs
+            <> ")",
         )
-      let #(val, b) =
-        insert_fields("%" <> type_name, base, fields, [index + 1], 0, b)
-      case is_recursive(ctx.recursive, type_name) {
-        True -> {
-          let #(sz, b) = sizeof_reg(type_name, b)
+      let b = store_local(ctx, dest, ret_s, tmp, b)
+      #(b, Nil)
+    }
+  }
+}
+
+fn emit_op_bit_array(
+  ctx: Ctx,
+  dest: String,
+  elems: List(ir.Operand),
+  b: Builder,
+) -> #(Builder, Nil) {
+  let n = list.length(elems)
+  let b = case elems {
+    [] -> {
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> r <> " = call %GleamcBitArray @Gleamc_bit_array_new(i64 0)",
+        )
+      store_local(ctx, dest, "%GleamcBitArray", r, b)
+    }
+    _ -> {
+      let arr_ty = "[" <> int.to_string(n) <> " x i64]"
+      let #(arr, b) = fresh(b)
+      let b = emit_line(b, "  " <> arr <> " = alloca " <> arr_ty)
+      let b =
+        list.index_fold(elems, b, fn(b, elem, index) {
+          let #(_, v, b) = read_val(ctx, elem, b)
           let #(p, b) = fresh(b)
           let b =
             emit_line(
               b,
               "  "
                 <> p
-                <> " = call i8* @gleamc_alloc_site(i64 "
-                <> sz
-                <> ", "
-                <> cstring_arg(ctx.lits, "alloc:" <> type_name)
-                <> ")",
-            )
-          let #(tp, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  "
-                <> tp
-                <> " = bitcast i8* "
-                <> p
-                <> " to %"
-                <> type_name
-                <> "*",
-            )
-          let b =
-            emit_line(
-              b,
-              "  store %"
-                <> type_name
-                <> " "
-                <> val
-                <> ", %"
-                <> type_name
-                <> "* "
-                <> tp,
-            )
-          let b = store_local(ctx, dest, ty_s, tp, b)
-          #(b, Nil)
-        }
-        False -> {
-          let b = store_local(ctx, dest, ty_s, val, b)
-          #(b, Nil)
-        }
-      }
-    }
-    ir.OpTagIs(dest, subject, ctor, type_name) -> {
-      let #(sty, sv, b) = subject_struct(ctx, subject, b)
-      let #(tag, b) = extract_value(sty, sv, [0], b)
-      let index = variant_index(ctx, ctor, type_name)
-      let #(tmp, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  " <> tmp <> " = icmp eq i8 " <> tag <> ", " <> int.to_string(index),
-        )
-      let b = store_local(ctx, dest, "i1", tmp, b)
-      #(b, Nil)
-    }
-    ir.OpField(dest, subject, ctor, index, ty) -> {
-      let type_name = case operand_type(ctx.by_name, subject) {
-        TNamed(name) -> name
-        _ -> ""
-      }
-      let #(sty, sv, b) = subject_struct(ctx, subject, b)
-      let group = variant_index(ctx, ctor, type_name) + 1
-      let #(tmp, b) = extract_value(sty, sv, [group, index], b)
-      let b = store_local(ctx, dest, llvm_ty(ty, ctx.recursive), tmp, b)
-      #(b, Nil)
-    }
-    ir.OpClosure(dest, code, _captures, env_ty, fn_ty) -> {
-      let fn_s = llvm_ty(fn_ty, ctx.recursive)
-      let cty = code_ty(fn_ty, ctx.recursive)
-      // A closure that captures the defining frame references it directly (the
-      // frame is the environment); no environment cell is allocated, and the
-      // frame's release is a plain rc release, so there is no `env_drop`.
-      let frame_bound = string.starts_with(env_ty, "__frame_")
-      let #(env_reg, env_drop, b) = case frame_bound {
-        True ->
-          case ctx.frame {
-            Some(FrameInfo(fr_ty, fr_reg, _, _, _, _, _)) -> {
-              let #(base, b) = frame_base(fr_reg, fr_ty, b)
-              let #(frp, b) = fresh(b)
-              let b =
-                emit_line(
-                  b,
-                  "  " <> frp <> " = bitcast " <> fr_ty <> "* " <> base <> " to i8*",
-                )
-              // Dropping the closure runs the frame's teardown.
-              #(frp, "@" <> env_ty <> "_drop", b)
-            }
-            None -> #("null", "null", b)
-          }
-        // No captures: a bare function value with no environment.
-        False -> #("null", "null", b)
-      }
-      let #(c0, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  "
-            <> c0
-            <> " = insertvalue "
-            <> fn_s
-            <> " undef, "
-            <> cty
-            <> " @"
-            <> code
-            <> ", 0",
-        )
-      let #(c1, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  "
-            <> c1
-            <> " = insertvalue "
-            <> fn_s
-            <> " "
-            <> c0
-            <> ", i8* "
-            <> env_reg
-            <> ", 1",
-        )
-      let #(c2, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  "
-            <> c2
-            <> " = insertvalue "
-            <> fn_s
-            <> " "
-            <> c1
-            <> ", void (i8*)* "
-            <> env_drop
-            <> ", 2",
-        )
-      let b = store_local(ctx, dest, fn_s, c2, b)
-      #(b, Nil)
-    }
-    ir.OpEnvGet(dest, env_ty, index, ty) -> {
-      let ty_s = llvm_ty(ty, ctx.recursive)
-      let #(envp, b) = local_addr(ctx, "__env", b)
-      let #(envraw, b) = fresh(b)
-      let b = emit_line(b, "  " <> envraw <> " = load i8*, i8** " <> envp)
-      let #(ep, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  " <> ep <> " = bitcast i8* " <> envraw <> " to %" <> env_ty <> "*",
-        )
-      let #(fp, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  "
-            <> fp
-            <> " = getelementptr %"
-            <> env_ty
-            <> ", %"
-            <> env_ty
-            <> "* "
-            <> ep
-            <> ", i32 0, i32 "
-            <> int.to_string(index),
-        )
-      let #(v, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  " <> v <> " = load " <> ty_s <> ", " <> ty_s <> "* " <> fp,
-        )
-      let b = store_local(ctx, dest, ty_s, v, b)
-      #(b, Nil)
-    }
-    ir.OpCallIndirect(dest, fval, args, ret_ty) -> {
-      let fn_ty = operand_type(ctx.by_name, fval)
-      let fn_s = llvm_ty(fn_ty, ctx.recursive)
-      let #(_, fv, b) = read_val(ctx, fval, b)
-      let #(code, b) = extract_value(fn_s, fv, [0], b)
-      let #(env, b) = extract_value(fn_s, fv, [1], b)
-      let #(b, arg_list) = read_args(ctx, args, b)
-      let ret_s = llvm_ty(ret_ty, ctx.recursive)
-      case abi.ret_needs_sret(ret_ty, ctx.recursive) {
-        True -> {
-          let #(destp, b) = local_addr(ctx, dest, b)
-          let b =
-            emit_line(
-              b,
-              "  call void "
-                <> code
-                <> "(ptr sret("
-                <> ret_s
-                <> ") "
-                <> destp
-                <> ", i8* "
-                <> env
-                <> case arg_list {
-                  "" -> ""
-                  _ -> ", " <> arg_list
-                }
-                <> ")",
-            )
-          #(b, Nil)
-        }
-        False -> {
-          let callargs = case arg_list {
-            "" -> "i8* " <> env
-            _ -> "i8* " <> env <> ", " <> arg_list
-          }
-          let #(tmp, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  "
-                <> tmp
-                <> " = call "
-                <> ret_s
-                <> " "
-                <> code
-                <> "("
-                <> callargs
-                <> ")",
-            )
-          let b = store_local(ctx, dest, ret_s, tmp, b)
-          #(b, Nil)
-        }
-      }
-    }
-    ir.OpBitArray(dest, elems, _ty) -> {
-      let n = list.length(elems)
-      let b = case elems {
-        [] -> {
-          let #(r, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  "
-                <> r
-                <> " = call %GleamcBitArray @Gleamc_bit_array_new(i64 0)",
-            )
-          store_local(ctx, dest, "%GleamcBitArray", r, b)
-        }
-        _ -> {
-          let arr_ty = "[" <> int.to_string(n) <> " x i64]"
-          let #(arr, b) = fresh(b)
-          let b = emit_line(b, "  " <> arr <> " = alloca " <> arr_ty)
-          let b =
-            list.index_fold(elems, b, fn(b, elem, index) {
-              let #(_, v, b) = read_val(ctx, elem, b)
-              let #(p, b) = fresh(b)
-              let b =
-                emit_line(
-                  b,
-                  "  "
-                    <> p
-                    <> " = getelementptr "
-                    <> arr_ty
-                    <> ", "
-                    <> arr_ty
-                    <> "* "
-                    <> arr
-                    <> ", i32 0, i32 "
-                    <> int.to_string(index),
-                )
-              emit_line(b, "  store i64 " <> v <> ", i64* " <> p)
-            })
-          let #(ptr, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  "
-                <> ptr
                 <> " = getelementptr "
                 <> arr_ty
                 <> ", "
                 <> arr_ty
                 <> "* "
                 <> arr
-                <> ", i32 0, i32 0",
+                <> ", i32 0, i32 "
+                <> int.to_string(index),
             )
-          let #(r, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  "
-                <> r
-                <> " = call %GleamcBitArray @Gleamc_bit_array_from_bytes(i64* "
-                <> ptr
-                <> ", i64 "
-                <> int.to_string(n)
-                <> ")",
-            )
-          store_local(ctx, dest, "%GleamcBitArray", r, b)
-        }
-      }
+          emit_line(b, "  store i64 " <> v <> ", i64* " <> p)
+        })
+      let #(ptr, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> ptr
+            <> " = getelementptr "
+            <> arr_ty
+            <> ", "
+            <> arr_ty
+            <> "* "
+            <> arr
+            <> ", i32 0, i32 0",
+        )
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> r
+            <> " = call %GleamcBitArray @Gleamc_bit_array_from_bytes(i64* "
+            <> ptr
+            <> ", i64 "
+            <> int.to_string(n)
+            <> ")",
+        )
+      store_local(ctx, dest, "%GleamcBitArray", r, b)
+    }
+  }
+  #(b, Nil)
+}
+
+fn emit_op_frame_new(_ctx: Ctx, b: Builder) -> #(Builder, Nil) {
+  #(b, Nil)
+}
+
+fn emit_op_frame_get(
+  ctx: Ctx,
+  dest: String,
+  index: Int,
+  ty: Type,
+  b: Builder,
+) -> #(Builder, Nil) {
+  case ctx.frame {
+    Some(FrameInfo(fr_ty, fr_reg, _, _, _, _, _)) -> {
+      let ty_s = llvm_ty(ty, ctx.recursive)
+      let #(ptr, b) = frame_gep(fr_reg, fr_ty, index, b)
+      let #(v, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> v <> " = load " <> ty_s <> ", " <> ty_s <> "* " <> ptr,
+        )
+      let b = store_local(ctx, dest, ty_s, v, b)
       #(b, Nil)
     }
-    ir.OpFrameNew(_, _) -> #(b, Nil)
-    ir.OpFrameGet(dest, _frame, index, ty) ->
-      case ctx.frame {
-        Some(FrameInfo(fr_ty, fr_reg, _, _, _, _, _)) -> {
-          let ty_s = llvm_ty(ty, ctx.recursive)
-          let #(ptr, b) = frame_gep(fr_reg, fr_ty, index, b)
-          let #(v, b) = fresh(b)
-          let b =
-            emit_line(
-              b,
-              "  " <> v <> " = load " <> ty_s <> ", " <> ty_s <> "* " <> ptr,
-            )
-          let b = store_local(ctx, dest, ty_s, v, b)
-          #(b, Nil)
-        }
-        None -> #(b, Nil)
-      }
-    ir.OpFrameSet(_frame, index, value) ->
-      case ctx.frame {
-        Some(FrameInfo(fr_ty, fr_reg, _, _, _, _, _)) -> {
-          let #(ty_s, v, b) = read_val(ctx, value, b)
-          let #(ptr, b) = frame_gep(fr_reg, fr_ty, index, b)
-          #(
-            emit_line(
-              b,
-              "  store " <> ty_s <> " " <> v <> ", " <> ty_s <> "* " <> ptr,
-            ),
-            Nil,
-          )
-        }
-        None -> #(b, Nil)
-      }
+    None -> #(b, Nil)
+  }
+}
+
+fn emit_op_frame_set(
+  ctx: Ctx,
+  index: Int,
+  value: ir.Operand,
+  b: Builder,
+) -> #(Builder, Nil) {
+  case ctx.frame {
+    Some(FrameInfo(fr_ty, fr_reg, _, _, _, _, _)) -> {
+      let #(ty_s, v, b) = read_val(ctx, value, b)
+      let #(ptr, b) = frame_gep(fr_reg, fr_ty, index, b)
+      #(
+        emit_line(
+          b,
+          "  store " <> ty_s <> " " <> v <> ", " <> ty_s <> "* " <> ptr,
+        ),
+        Nil,
+      )
+    }
+    None -> #(b, Nil)
   }
 }
 
@@ -4443,7 +4841,10 @@ fn store_local(
     True -> Builder(..b, values: dict.insert(b.values, dest, val))
     False -> {
       let #(ptr, b) = local_addr(ctx, dest, b)
-      emit_line(b, "  store " <> ty_s <> " " <> val <> ", " <> ty_s <> "* " <> ptr)
+      emit_line(
+        b,
+        "  store " <> ty_s <> " " <> val <> ", " <> ty_s <> "* " <> ptr,
+      )
     }
   }
 }
@@ -4793,10 +5194,34 @@ fn buffer_elems_in(ty: Type) -> List(Type) {
 
 /// `void(i8*)` wrappers that load one element from a slot and retain/drop it,
 /// so `Gleamc_buffer_cow`/`new` can be handed generic element glue.
-fn emit_buffer_glue(lits, recursive, custom_types, fields_of, elem: Type) -> String {
+fn emit_buffer_glue(
+  lits,
+  recursive,
+  custom_types,
+  fields_of,
+  elem: Type,
+) -> String {
   list.append(
-    [emit_buffer_slot_glue(lits, recursive, custom_types, fields_of, "retain", elem)],
-    [emit_buffer_slot_glue(lits, recursive, custom_types, fields_of, "drop", elem)],
+    [
+      emit_buffer_slot_glue(
+        lits,
+        recursive,
+        custom_types,
+        fields_of,
+        "retain",
+        elem,
+      ),
+    ],
+    [
+      emit_buffer_slot_glue(
+        lits,
+        recursive,
+        custom_types,
+        fields_of,
+        "drop",
+        elem,
+      ),
+    ],
   )
   |> string.join("\n\n")
 }
@@ -4814,15 +5239,11 @@ fn emit_buffer_slot_glue(
   let b = new_builder()
   let b = emit_line(b, "define void @" <> name <> "(i8* %slot) {")
   let #(p, b) = fresh(b)
-  let b =
-    emit_line(
-      b,
-      "  " <> p <> " = bitcast i8* %slot to " <> ty_s <> "*",
-    )
+  let b = emit_line(b, "  " <> p <> " = bitcast i8* %slot to " <> ty_s <> "*")
   let #(v, b) = fresh(b)
-  let b = emit_line(b, "  " <> v <> " = load " <> ty_s <> ", " <> ty_s <> "* " <> p)
   let b =
-    rc_expr(lits, recursive, fields_of, which, elem, ty_s, v, "buffer", b)
+    emit_line(b, "  " <> v <> " = load " <> ty_s <> ", " <> ty_s <> "* " <> p)
+  let b = rc_expr(lits, recursive, fields_of, which, elem, ty_s, v, "buffer", b)
   let b = emit_line(b, "  ret void")
   let b = emit_line(b, "}")
   string.join(list.reverse(b.lines), "\n") <> "\n"
@@ -4903,14 +5324,14 @@ fn emit_builtin_call(ctx: Ctx, dest, builtin, args, ret_ty, b) {
         emit_line(
           b,
           "  call void @"
-          <> name
-          <> "(ptr sret(%GleamcFileResult) "
-          <> destp
-          <> case arg_list {
+            <> name
+            <> "(ptr sret(%GleamcFileResult) "
+            <> destp
+            <> case arg_list {
             "" -> ""
             _ -> ", " <> arg_list
           }
-          <> ")",
+            <> ")",
         )
       #(b, Nil)
     }
@@ -4920,14 +5341,14 @@ fn emit_builtin_call(ctx: Ctx, dest, builtin, args, ret_ty, b) {
         emit_line(
           b,
           "  "
-          <> tmp
-          <> " = call "
-          <> ret_s
-          <> " @"
-          <> name
-          <> "("
-          <> arg_list
-          <> ")",
+            <> tmp
+            <> " = call "
+            <> ret_s
+            <> " @"
+            <> name
+            <> "("
+            <> arg_list
+            <> ")",
         )
       let b = store_local(ctx, dest, ret_s, tmp, b)
       #(b, Nil)
@@ -5020,8 +5441,7 @@ fn insert_fields(ty_s, base, fields, prefix: List(Int), index: Int, b) {
 fn code_ty(fn_ty: Type, recursive: Dict(String, Bool)) -> String {
   case fn_ty {
     ast.TFun(params, ret) -> {
-      let gleam_args =
-        list.map(params, fn(param) { llvm_ty(param, recursive) })
+      let gleam_args = list.map(params, fn(param) { llvm_ty(param, recursive) })
       case abi.ret_needs_sret(ret, recursive) {
         // The explicit out pointer comes first, then the closure environment.
         True ->
@@ -5157,7 +5577,9 @@ fn wrapper_def(function: ir.Function, code: String, recursive) -> String {
   let sret = abi.ret_needs_sret(ret, recursive)
   let params_decl = case sret {
     True ->
-      "ptr sret(" <> ret_s <> ") %out, i8* %env"
+      "ptr sret("
+      <> ret_s
+      <> ") %out, i8* %env"
       <> case decls {
         [] -> ""
         _ -> ", " <> string.join(decls, ", ")
@@ -5171,7 +5593,9 @@ fn wrapper_def(function: ir.Function, code: String, recursive) -> String {
   }
   let call_args = case sret {
     True ->
-      "ptr sret(" <> ret_s <> ") %out"
+      "ptr sret("
+      <> ret_s
+      <> ") %out"
       <> case args {
         "" -> ""
         _ -> ", " <> args
@@ -5179,7 +5603,8 @@ fn wrapper_def(function: ir.Function, code: String, recursive) -> String {
     False -> args
   }
   let lines = case sret {
-    True -> "  call void @Gleamc_" <> name <> "(" <> call_args <> ")\n  ret void"
+    True ->
+      "  call void @Gleamc_" <> name <> "(" <> call_args <> ")\n  ret void"
     False ->
       case ret_s {
         "i32" ->
@@ -5579,41 +6004,42 @@ fn eq_expr(recursive, ty, left, right, b) {
       let b = emit_line(b, "  " <> r <> " = and i1 " <> c0 <> ", " <> c1)
       #(r, b)
     }
-    _ -> case is_handle_like(ty) {
-      // `Subject(a)` / `Task(a)` are opaque handles: compare the raw word.
-      True -> {
-        let ty_s = llvm_ty(ty, recursive)
-        let #(r, b) = fresh(b)
-        let b =
-          emit_line(
-            b,
-            "  " <> r <> " = icmp eq " <> ty_s <> " " <> left <> ", " <> right,
-          )
-        #(r, b)
+    _ ->
+      case is_handle_like(ty) {
+        // `Subject(a)` / `Task(a)` are opaque handles: compare the raw word.
+        True -> {
+          let ty_s = llvm_ty(ty, recursive)
+          let #(r, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  " <> r <> " = icmp eq " <> ty_s <> " " <> left <> ", " <> right,
+            )
+          #(r, b)
+        }
+        False -> {
+          let ty_s = llvm_ty(ty, recursive)
+          let #(r, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> r
+                <> " = call i1 @"
+                <> eq_name_ty(ty)
+                <> "("
+                <> ty_s
+                <> " "
+                <> left
+                <> ", "
+                <> ty_s
+                <> " "
+                <> right
+                <> ")",
+            )
+          #(r, b)
+        }
       }
-      False -> {
-        let ty_s = llvm_ty(ty, recursive)
-        let #(r, b) = fresh(b)
-        let b =
-          emit_line(
-            b,
-            "  "
-              <> r
-              <> " = call i1 @"
-              <> eq_name_ty(ty)
-              <> "("
-              <> ty_s
-              <> " "
-              <> left
-              <> ", "
-              <> ty_s
-              <> " "
-              <> right
-              <> ")",
-          )
-        #(r, b)
-      }
-    }
   }
 }
 
@@ -5781,7 +6207,8 @@ fn show_body(recursive, custom_types, lits, ty, ty_s, b) {
         Error(_) ->
           case list_info(custom_types, type_name) {
             Ok(info) -> show_list(recursive, lits, type_name, info, b)
-            Error(_) -> show_adt(recursive, custom_types, lits, type_name, ty_s, b)
+            Error(_) ->
+              show_adt(recursive, custom_types, lits, type_name, ty_s, b)
           }
       }
     _ -> {
@@ -6182,9 +6609,17 @@ fn cmp_body(recursive, custom_types, ty, ty_s, b) {
           let #(gt, b) = fresh(b)
           let b = emit_line(b, "  " <> gt <> " = icmp ugt i8* %a, %b")
           let #(neg, b) = fresh(b)
-          let b = emit_line(b, "  " <> neg <> " = select i1 " <> lt <> ", i32 -1, i32 0")
+          let b =
+            emit_line(
+              b,
+              "  " <> neg <> " = select i1 " <> lt <> ", i32 -1, i32 0",
+            )
           let #(r, b) = fresh(b)
-          let b = emit_line(b, "  " <> r <> " = select i1 " <> gt <> ", i32 1, i32 " <> neg)
+          let b =
+            emit_line(
+              b,
+              "  " <> r <> " = select i1 " <> gt <> ", i32 1, i32 " <> neg,
+            )
           #(emit_line(b, "  ret i32 " <> r), Nil)
         }
         Error(_) -> cmp_named(recursive, custom_types, type_name, ty_s, b)
@@ -6326,32 +6761,33 @@ fn cmp_expr(recursive, _custom_types, ty, left, right, b) {
       #(r, b)
     }
     ast.TNil | TNamed("Nil") | ast.TFun(_, _) -> #("0", b)
-    _ -> case is_handle_like(ty) {
-      // Opaque handles compare by their raw word.
-      True -> int_cmp_i(b, llvm_ty(ty, recursive), "sgt", "slt", left, right)
-      False -> {
-        let ty_s = llvm_ty(ty, recursive)
-        let #(r, b) = fresh(b)
-        let b =
-          emit_line(
-            b,
-            "  "
-              <> r
-              <> " = call i32 @Gleamc_Cmp_"
-              <> mangle_glue(ty)
-              <> "("
-              <> ty_s
-              <> " "
-              <> left
-              <> ", "
-              <> ty_s
-              <> " "
-              <> right
-              <> ")",
-          )
-        #(r, b)
+    _ ->
+      case is_handle_like(ty) {
+        // Opaque handles compare by their raw word.
+        True -> int_cmp_i(b, llvm_ty(ty, recursive), "sgt", "slt", left, right)
+        False -> {
+          let ty_s = llvm_ty(ty, recursive)
+          let #(r, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> r
+                <> " = call i32 @Gleamc_Cmp_"
+                <> mangle_glue(ty)
+                <> "("
+                <> ty_s
+                <> " "
+                <> left
+                <> ", "
+                <> ty_s
+                <> " "
+                <> right
+                <> ")",
+            )
+          #(r, b)
+        }
       }
-    }
   }
 }
 
@@ -6706,7 +7142,10 @@ fn list_tail_field(variants, type_name) -> Option(#(Int, Int)) {
           let #(_, fields) = variant
           case fields {
             [head_ty, tail_ty] ->
-              case self_type(tail_ty, type_name), self_type(head_ty, type_name) {
+              case
+                self_type(tail_ty, type_name),
+                self_type(head_ty, type_name)
+              {
                 True, False -> Some(#(index, 1))
                 _, _ -> None
               }
@@ -6767,7 +7206,10 @@ fn emit_rc_glue(
               // A singly-linked list (a variant with a self tail) drops
               // iteratively, so a long list costs constant stack.
               case
-                list_tail_field(variant_fields_of(custom_types, type_name), type_name)
+                list_tail_field(
+                  variant_fields_of(custom_types, type_name),
+                  type_name,
+                )
               {
                 Some(#(cons, tail)) ->
                   rc_glue_list(
@@ -7087,7 +7529,11 @@ fn rc_glue_list(
           True -> {
             let #(cur, b) =
               extract_value(struct_ty, "%av", [index + 1, tail], b)
-            let b = emit_line(b, "  store " <> ty_s <> " " <> cur <> ", " <> ty_s <> "* %sp")
+            let b =
+              emit_line(
+                b,
+                "  store " <> ty_s <> " " <> cur <> ", " <> ty_s <> "* %sp",
+              )
             emit_line(b, "  br label %loop")
           }
           False -> emit_line(b, "  br label %ldone")
@@ -7098,7 +7544,9 @@ fn rc_glue_list(
   let b =
     emit_line(
       b,
-      "  call void @Gleamc_rc_release(i8* %vp, " <> cstring_arg(lits, name) <> ")",
+      "  call void @Gleamc_rc_release(i8* %vp, "
+        <> cstring_arg(lits, name)
+        <> ")",
     )
   let b = emit_line(b, "  br label %ldone")
   let b = emit_line(b, "\nldone:")
