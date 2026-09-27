@@ -259,7 +259,7 @@ library under both the official toolchain and gleamc.
 ## Toolchain
 
 - `tcc` was dropped; development builds use
-  `clang -O0 -fuse-ld=mold`, release builds use `-O3 -march=native`.
+  `clang -O1 -fuse-ld=mold`, release builds use `-O3 -march=native`.
 - Diagnostics name the file and, for type errors, the enclosing function and
   its declaration line (e.g. `app.gleam: at line 12, in function `f`: ...`).
   There are no column-accurate spans or carets yet, and backend/monomorphisation

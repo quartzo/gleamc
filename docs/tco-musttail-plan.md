@@ -81,32 +81,37 @@ retargeted to the callee, so async tail recursion is constant-task.
 ## The `-O0` frame problem and the `-O1` baseline
 
 `musttail` keeps *tail recursion* in constant stack, but the native stack was
-still dominated by codegen: the backend emits one `alloca` per local, and `-O0`
-runs neither `mem2reg` nor register allocation, so every local stays in memory
-and a huge function such as `llvm.emit_op` (688 source lines) reserves ~100 KB
-of spill slots per activation. That is a `-O0` artifact, not a tail-call one.
+once dominated by codegen: the backend emitted one `alloca` per local, and `-O0`
+runs neither `mem2reg` nor register allocation, so every local stayed in memory
+and a huge function such as `llvm.emit_op` (688 source lines) reserved ~100 KB
+of spill slots per activation.
 
-The dev build now uses `clang -O1` (`toolchain.gleam`): the `-O1` pipeline runs
-`mem2reg` (allocas/join slots become SSA values and `phi` nodes) and the
-register allocator. `-O0` is deliberately avoided. This is the idiomatic LLVM
-stance — a naive frontend emits allocas and the optimizer builds SSA — and it
-took the full self-compile from ~32 MiB to under 8 MiB.
+That is fixed at the source now. The `ssa` pass (between `ownership` and the
+backend) emits SSA directly: a single-definition local whose definition dominates
+its uses becomes a register, and a `case` result joined from several arms becomes
+a `phi`. Only locals that genuinely need an address stay in a slot — an `sret`
+call result, `buffer.take`, and every local of a machine/frame function, which
+lives in its heap frame. On the self-compile this took the `alloca` count from
+~44k to ~4k.
+
+`clang -O1` remains the dev default (`toolchain.gleam`) for code quality: SROA,
+instcombine and the register allocator still improve the output. But the
+`mem2reg` dependency that made `-O0` unusable is gone, so `-O0` is now viable and
+is no longer deliberately avoided.
 
 ## Remaining
 
 - [ ] Split the giant `case` functions (`llvm.emit_op`, `frame.rewrite_op`,
       `ir.op_text`, `checker.infer_builtin`, `mono.specialise_type`,
-      `mono.mono_pattern`) so each has few live values; today the `-O1`
-      register allocator hides their size, but smaller functions help compile
-      time and `-O0`.
-- [ ] (Optional) stop emitting allocas for single-def locals in the backend so
-      `-O0` is not memory-bound even without `mem2reg`. Redundant now that
-      `-O1` is the baseline.
+      `mono.mono_pattern`) so each has few live values. The `-O1` register
+      allocator hides their size, but it does **not** hide their cost: on the
+      self-compile the codegen time is dominated by instruction selection and
+      register allocation on `llvm.emit_op` (116k lines of IR in one function).
 
 ## Validation
 
-- `gleam test`: 147/0 (the 6 removed `plan` tests aside).
-- `scripts/diff.sh`: 61/61.
+- `gleam test`: 165/165.
+- `scripts/diff.sh`: 62/62.
 - Constant-stack: direct, mutual and same-signature recursion at 1e6
   iterations, including `Result`-returning functions (explicit sret);
   `live blocks = 0` on the closure/frame reproducers.

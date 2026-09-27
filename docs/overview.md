@@ -43,8 +43,11 @@ source
   -> dce                 prune functions unreachable from the entry point
   -> checker             type-check the monomorphic AST
   -> lower               AST -> IR (basic blocks, tail calls)
+  -> spawn               rewrite process.spawn / task.async into task starts
+  -> async               make suspension explicit (machines)
+  -> frame               materialize heap frames
   -> ownership           infer borrow modes; insert retain/drop
-  -> cps                 split blocks at suspension points
+  -> ssa                 promote locals to registers / phi
   -> backend             LLVM IR (llvm.gleam)
 -> C / LLVM IR -> native binary
 ```
@@ -61,10 +64,13 @@ The stages that matter most for correctness are:
   is the memory-management pass: `ownership_plan.gleam` computes the
   retain/drop/move `Plan`, `ownership.gleam` applies it. See
   [memory.md](memory.md).
-- **`cps`** (`cps.gleam`) makes suspension explicit. See [machine.md](machine.md).
-- **`plan`** (`plan.gleam`) is a pure, deterministic planner that turns the
-  owned IR into the machine plan (frames, mutual groups, states). It does not
-  change the IR.
+- **`frame`** (`frame.gleam`) materializes the heap frame of a function whose
+  locals must survive a closure capture or a suspension. See
+  [machine.md](machine.md).
+- **`ssa`** (`ssa.gleam`) promotes single-definition locals to registers and
+  turns a `case` result joined from several arms into a `phi`, so the backend
+  emits SSA instead of one `alloca` per local. It runs after `ownership`, so the
+  retain/drop schedule is already fixed and is preserved.
 
 ## The IR
 

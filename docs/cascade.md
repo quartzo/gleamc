@@ -21,6 +21,7 @@ source
   lower               AST              -> IR           (basic blocks; tail calls)
   frame               IR               -> IR           (materialize heap frames)
   ownership           IR               -> IR           (borrow modes; retain/drop)
+  ssa                 IR               -> IR           (promote locals to registers/phi)
   backend             IR               -> LLVM IR
 ```
 
@@ -50,6 +51,7 @@ is the **applier**: it applies that plan and is the only place that builds
 `OpRetain`/`OpDrop`. Splitting them keeps the move/borrow analysis unit-testable
 without touching op insertion; it is **not** a new cascade phase (the layer's
 `IR -> IR` product is unchanged).
+| `ssa` | `ssa.gleam` | IR | IR | promote single-definition locals to registers; turn `case` joins into `OpPhi` | create tail calls; touch `OpRetain`/`OpDrop` |
 | `llvm` | `llvm.gleam` | IR | LLVM IR text | render IR, `musttail` tail calls, frames | invent retain/release or tail calls |
 
 ## The contract (invariants)
@@ -68,13 +70,16 @@ without touching op insertion; it is **not** a new cascade phase (the layer's
    backend consumes that list. `plan.gleam`, the mutual tail-call dispatchers
    and the heap return stack were removed; tail calls are `musttail` calls
    (`tco-musttail-plan.md`).
+5. **`ssa` is the only layer that marks a local `Reg` or builds `OpPhi`.** It
+   runs after `ownership`, so it sees the final retain/drop schedule and must
+   preserve it; it never creates or removes a retain/drop.
 
 ## Artifacts and how to inspect them
 
 | Artifact | How |
 |---|---|
 | AST (per layer) | not dumped |
-| IR after `ownership` | `gleam run -- <file> --ir` (writes `<file>.ir`) |
+| IR after `ssa` | `gleam run -- <file> --ir` (writes `<file>.ir`) |
 | LLVM IR | `gleam run -- <file>` (writes `<file>.ll`) |
 | Behaviour vs the reference | `scripts/diff.sh` over `diffs/*.gleam` |
 

@@ -1,10 +1,13 @@
 //// C toolchain driver: compiler selection, flags and invocation.
 ////
 //// Design decision: `clang -O1` in the dev loop (with `mold` for linking),
-//// `clang/gcc -O3 -march=native` on release. `-O0` is deliberately avoided:
-//// the backend emits one `alloca` per local and relies on `mem2reg` (part of
-//// the `-O1` pipeline) to turn them into SSA registers. Without it every local
-//// stays in memory and the generated functions' stack frames balloon.
+//// `clang/gcc -O3 -march=native` on release. The `ssa` pass already emits SSA
+//// registers and `phi`s for the promotable locals, so the frontend no longer
+//// relies on the optimizer's `mem2reg`; `-O1` is kept for code quality (SROA,
+//// instcombine, the register allocator) and not as a correctness requirement.
+//// `-O0` is now viable — only the locals that genuinely need an address stay in
+//// a slot (an `sret` result, `buffer.take`, frame/machine locals) — but it is
+//// not the default.
 
 import gleam/list
 import gleam/string
