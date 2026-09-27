@@ -122,10 +122,11 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   finishes). Timeouts are honoured: `receive(from:, within:)` and
   `task.try_await(t, timeout)` race the message/task against a libuv timer
   (`Gleamc_process_ffi_wait_any` / `Gleamc_task_ffi_await_timeout`), and
-  `task.await(t, timeout)` crashes on timeout like the original. Restrictions:
-  there is no `Pid` operation (`self`, `is_alive`, `spawn_unlinked`), no
-  `Selector`/`select*`, no `monitor`/`link`/names, no `send_after`/
-  `cancel_timer`, and `AwaitError` only has `Timeout` (no `Exit(Dynamic)`). A
+  `task.await(t, timeout)` crashes on timeout like the original. `Pid`
+  operations `self`, `is_alive`, `spawn_unlinked` and `task.pid` are provided
+  (`Pid` is a stable task id). Restrictions: no `Selector`/`select*`, no
+  `monitor`/`link`/names, no `kill`, no `send_after`/`cancel_timer`, and
+  `AwaitError` only has `Timeout` (no `Exit(Dynamic)`). A
   `Subject` handle is not refcount-dropped (one leak per subject) and boxes
   queued but never received leak; a timed-out task's boxed result also leaks.
   Draining a mailbox does not join the spawned senders. Capturing a

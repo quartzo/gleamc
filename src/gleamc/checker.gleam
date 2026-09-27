@@ -2168,6 +2168,24 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         _ -> Error(CheckError("process.spawn expects fn() -> Nil"))
       }
     }
+    "process", "spawn_unlinked" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [worker] ->
+          case tmono.type_of(worker) {
+            TFun([], TNil) ->
+              Ok(builtin_call(
+                "process",
+                "spawn_unlinked",
+                [tmono.type_of(worker)],
+                TNamed("Pid"),
+                typed_args,
+              ))
+            _ -> Error(CheckError("process.spawn_unlinked expects fn() -> Nil"))
+          }
+        _ -> Error(CheckError("process.spawn_unlinked expects fn() -> Nil"))
+      }
+    }
     "task", "async" -> {
       use typed_args <- result.try(infer_all(env, signatures, ctors, args))
       case typed_args {
@@ -2252,6 +2270,44 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
             Error(_) -> Error(CheckError("task_ffi.await expects a Task(a)"))
           }
         _ -> Error(CheckError("task_ffi.await expects a Task(a)"))
+      }
+    }
+    "process_ffi", "self" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [],
+        TNamed("Pid"),
+        "process_ffi.self",
+      )
+    "process_ffi", "is_alive" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("Pid")],
+        TBool,
+        "process_ffi.is_alive",
+      )
+    "task_ffi", "pid" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [task] ->
+          case task_elem_type(tmono.type_of(task)) {
+            Ok(_) ->
+              Ok(builtin_call(
+                "task_ffi",
+                "pid",
+                [tmono.type_of(task)],
+                TNamed("Pid"),
+                typed_args,
+              ))
+            Error(_) -> Error(CheckError("task_ffi.pid expects a Task(a)"))
+          }
+        _ -> Error(CheckError("task_ffi.pid expects a Task(a)"))
       }
     }
     _, _ ->

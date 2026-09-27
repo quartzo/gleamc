@@ -974,6 +974,22 @@ fn builtins() -> Dict(String, Scheme) {
     "task_ffi.await_timeout",
     Scheme([9111], Fun([Con("Task", [Var(9111)]), i], i)),
   )
+  |> dict.insert(
+    "process_ffi.self",
+    Scheme(none, Fun([], Con("Pid", []))),
+  )
+  |> dict.insert(
+    "process_ffi.is_alive",
+    Scheme(none, Fun([Con("Pid", [])], b)),
+  )
+  |> dict.insert(
+    "task_ffi.pid",
+    Scheme([9120], Fun([Con("Task", [Var(9120)])], Con("Pid", []))),
+  )
+  |> dict.insert(
+    "process.spawn_unlinked",
+    Scheme([9103], Fun([Fun([], n)], Con("Pid", []))),
+  )
 }
 
 /// The names of every builtin, used by `ffi_modes` coverage checks.

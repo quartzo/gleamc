@@ -399,6 +399,13 @@ GleamcFuture* Gleamc_process_ffi_wait_any(int64_t handle, int64_t ms);
  * 0 = timeout); the task's boxed result is left for a following await. */
 GleamcFuture* Gleamc_task_ffi_await_timeout(GleamcFuture* task, int64_t ms);
 
+/* Process identifiers: the id of the running task (`self`), whether a task is
+ * still alive, and the id behind a `Task(a)` handle. */
+int64_t gleamc_task_id(GleamcFuture* done);
+int64_t Gleamc_process_ffi_self(void);
+bool Gleamc_process_ffi_is_alive(int64_t pid);
+int64_t Gleamc_task_ffi_pid(GleamcFuture* task);
+
 /* Host async surface (Vesper docs 09/11/14): starts return a Future,
  * `await` (Gleamc_uv_await_*) drives the scheduler to completion. */
 GleamcFuture* Gleamc_uv_fs_open(GleamcString path, int64_t flags, int64_t mode);

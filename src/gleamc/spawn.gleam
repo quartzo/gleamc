@@ -51,7 +51,9 @@ fn rewrite_function(function) {
 fn rewrite_op(op, closures) {
   case op {
     ir.OpBuiltin(dest, builtin, [first], _ret)
-      if builtin == "process.spawn" || builtin == "task.async"
+      if builtin == "process.spawn"
+      || builtin == "process.spawn_unlinked"
+      || builtin == "task.async"
     -> {
       let into_future = builtin == "task.async"
       case first {

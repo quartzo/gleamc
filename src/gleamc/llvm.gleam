@@ -494,6 +494,7 @@ fn header(audit: Bool) -> String {
   <> "declare i64 @Gleamc_process_ffi_new_subject()\n"
   <> "declare i32 @Gleamc_process_ffi_send(i64, i8*)\n"
   <> "declare i8* @Gleamc_process_ffi_receive(i64)\n"
+  <> "declare i64 @gleamc_task_id(i8*)\n"
   <> "declare i8* @gleamc_task_start(i1 (i8*)*, i8*, i8**, void (i8*, i8*)*, i8*, void (i8*)*)\n"
   <> "declare i8* @gleamc_task_async(i1 (i8*)*, i8*, i8**, void (i8*, i8*)*, void (i8*)*, i8*)\n"
   <> "declare i8* @gleamc_task_spawn(i1 (i8*)*, i8*, i8**, void (i8*)*)\n"
@@ -667,8 +668,8 @@ fn llvm_ty(ty: Type, recursive: Dict(String, Bool)) -> String {
     TNamed("FileResult") -> "%GleamcFileResult"
     // Internal async handle (`GleamcFuture*`); never visible to Gleam.
     TNamed("Future") -> "i8*"
-    // A process identifier (the task's completion future).
-    TNamed("Pid") -> "i8*"
+    // A process identifier (a stable task id).
+    TNamed("Pid") -> "i64"
     // Async I/O handle (a file descriptor); opaque scalar.
     TNamed("Handle") -> "i64"
     ast.TNil -> "i32"
@@ -2844,7 +2845,24 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
                   <> ")",
               )
           }
-          let b = store_local(ctx, fut, "i8*", donef, b)
+          // `task.async` keeps the completion future as the `Task(a)` handle;
+          // `process.spawn` returns the stable `Pid` (the task's id).
+          let b = case into_future {
+            True -> store_local(ctx, fut, "i8*", donef, b)
+            False -> {
+              let #(id, b) = fresh(b)
+              let b =
+                emit_line(
+                  b,
+                  "  "
+                    <> id
+                    <> " = call i64 @gleamc_task_id(i8* "
+                    <> donef
+                    <> ")",
+                )
+              store_local(ctx, fut, "i64", id, b)
+            }
+          }
           #(b, Nil)
         }
       }
@@ -2987,7 +3005,24 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
                   <> ")",
               )
           }
-          let b = store_local(ctx, fut, "i8*", donef, b)
+          // `task.async` keeps the completion future as the `Task(a)` handle;
+          // `process.spawn` returns the stable `Pid` (the task's id).
+          let b = case into_future {
+            True -> store_local(ctx, fut, "i8*", donef, b)
+            False -> {
+              let #(id, b) = fresh(b)
+              let b =
+                emit_line(
+                  b,
+                  "  "
+                    <> id
+                    <> " = call i64 @gleamc_task_id(i8* "
+                    <> donef
+                    <> ")",
+                )
+              store_local(ctx, fut, "i64", id, b)
+            }
+          }
           #(b, Nil)
         }
       }

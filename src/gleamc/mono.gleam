@@ -1972,6 +1972,8 @@ fn builtin_expect_scheme(state: State, fun: Expr) -> Result(Scheme, Nil) {
     EField(EVar(module), name) ->
       case module, name {
         "process", "spawn" -> dict.get(state.globals, "process.spawn")
+        "process", "spawn_unlinked" ->
+          dict.get(state.globals, "process.spawn_unlinked")
         "task", "async" -> dict.get(state.globals, "task.async")
         _, _ -> Error(Nil)
       }

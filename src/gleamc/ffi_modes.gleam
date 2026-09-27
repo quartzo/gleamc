@@ -81,6 +81,10 @@ pub fn table() -> Dict(String, FfiSig) {
     FfiSig([Borrow, Borrow], OwnedResult),
   )
   |> dict.insert("process.spawn", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("process.spawn_unlinked", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("process_ffi.self", FfiSig([], OwnedResult))
+  |> dict.insert("process_ffi.is_alive", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("task_ffi.pid", FfiSig([Borrow], OwnedResult))
   |> dict.insert("task.async", FfiSig([Borrow], OwnedResult))
   |> dict.insert("task_ffi.await", FfiSig([Borrow], OwnedResult))
   |> dict.insert("int.to_string", FfiSig([Borrow], OwnedResult))

@@ -28,6 +28,16 @@ pub fn receive_forever(from: Subject(message)) -> message {
   process_ffi.receive(from)
 }
 
+/// Get the `Pid` of the current process.
+pub fn self() -> Pid {
+  process_ffi.self()
+}
+
+/// Check whether the process for a given `Pid` is alive.
+pub fn is_alive(a: Pid) -> Bool {
+  process_ffi.is_alive(a)
+}
+
 /// Suspend the current process for the given number of milliseconds.
 pub fn sleep(a: Int) -> Nil {
   time.timer(a)

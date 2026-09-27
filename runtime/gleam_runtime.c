@@ -1044,10 +1044,16 @@ typedef struct {
     /* Fire-and-forget (`process.spawn`): the driver owns the completion
      * future and releases it when the task finishes. */
     bool detached;
+    /* Stable process identifier (`Pid`); never reused. */
+    int64_t id;
 } GleamcTask2;
 
 static GleamcTask2 gleamc_tasks2[GLEAMC_TASKS_MAX];
 static int gleamc_tasks2_n = 0;
+/* Monotonic `Pid` allocator and the id of the task currently being stepped
+ * (`process.self()`). */
+static int64_t gleamc_next_task_id = 1;
+static int64_t gleamc_current_task_id = 0;
 /* Nesting depth of the driver: > 0 means a synchronous call from inside a
  * machine is driving the loop for its own completion future. Nested runs never
  * compact the task table (they must not move a running task). */
@@ -1110,7 +1116,33 @@ static GleamcFuture* gleamc_task_push(bool (*step)(void*), void* frame,
     t->finished = false;
     t->running = false;
     t->detached = detached;
+    t->id = gleamc_next_task_id++;
     return done;
+}
+
+/* The stable id of the task whose completion future is `done` (-1 if gone). */
+int64_t gleamc_task_id(GleamcFuture* done) {
+    if (done == NULL) return -1;
+    for (int i = 0; i < gleamc_tasks2_n; i++) {
+        if (gleamc_tasks2[i].done == done) return gleamc_tasks2[i].id;
+    }
+    return -1;
+}
+
+int64_t Gleamc_process_ffi_self(void) {
+    return gleamc_current_task_id;
+}
+
+bool Gleamc_process_ffi_is_alive(int64_t pid) {
+    for (int i = 0; i < gleamc_tasks2_n; i++) {
+        if (gleamc_tasks2[i].id == pid && !gleamc_tasks2[i].finished)
+            return true;
+    }
+    return false;
+}
+
+int64_t Gleamc_task_ffi_pid(GleamcFuture* task) {
+    return gleamc_task_id(task);
 }
 
 GleamcFuture* gleamc_task_start(bool (*step)(void*), void* frame,
@@ -1391,7 +1423,10 @@ void gleamc_run_until(GleamcFuture* target) {
                 continue;
             }
             t->running = true;
+            int64_t saved_id = gleamc_current_task_id;
+            gleamc_current_task_id = t->id;
             int done = t->step(t->frame);
+            gleamc_current_task_id = saved_id;
             t->running = false;
             if (done) {
                 if (t->copy_result != NULL && t->result_dst != NULL)

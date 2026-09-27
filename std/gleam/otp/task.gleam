@@ -10,6 +10,11 @@ pub type AwaitError {
   Timeout
 }
 
+/// Get the `Pid` for a task.
+pub fn pid(task: Task(value)) -> Pid {
+  task_ffi.pid(task)
+}
+
 /// Wait endlessly for the value computed by a task.
 pub fn await_forever(task: Task(value)) -> value {
   task_ffi.await(task)
