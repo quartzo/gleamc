@@ -221,6 +221,12 @@ void* gleamc_alloc_site(size_t size, const char* site) {
     return p;
 }
 
+void* gleamc_alloc0_site(size_t size, const char* site) {
+    void* p = gleamc_alloc_site(size, site);
+    memset(p, 0, size);
+    return p;
+}
+
 void gleamc_release_slow(GleamcHdr* h) {
     if (h->refcount == GLEAMC_RC_STATIC) return;
     _gleamc_live--;
@@ -230,7 +236,7 @@ void gleamc_release_slow(GleamcHdr* h) {
 size_t gleamc_live_blocks(void) { return _gleamc_live; }
 
 GleamcString gleamc_string_lit(const char* data, size_t len) {
-    char* buf = (char*)gleamc_alloc(len + 1);
+    char* buf = (char*)gleamc_alloc_site(len + 1, "string");
     memcpy(buf, data, len);
     buf[len] = '\0';
     return (GleamcString){buf, len};
@@ -1001,7 +1007,7 @@ void gleamc_sleep_ms(int64_t ms) {
 }
 
 GleamcFuture* Gleamc_std_time_timer(int64_t ms) {
-    GleamcFuture* f = gleamc_alloc(sizeof(GleamcFuture));
+    GleamcFuture* f = gleamc_alloc_site(sizeof(GleamcFuture), "future:timer");
     f->deadline = (int64_t)gleamc_now_ms() + ms;
     f->done = false;
     f->has_error = false;
@@ -1114,7 +1120,7 @@ void gleamc_task_tail(bool (*step)(void*), void* frame,
 }
 
 static GleamcFuture* gleamc_future_new(void) {
-    GleamcFuture* f = (GleamcFuture*)gleamc_alloc(sizeof(GleamcFuture));
+    GleamcFuture* f = (GleamcFuture*)gleamc_alloc_site(sizeof(GleamcFuture), "future:new");
     f->deadline = 0;
     f->done = false;
     f->has_error = false;
@@ -1224,7 +1230,7 @@ GleamcFuture* gleamc_task_spawn(bool (*step)(void*), void* frame,
  * moves the value in; the receiver moves it out and frees the cell (no payload
  * drop: ownership was transferred). */
 void* gleamc_box_alloc(int64_t size) {
-    return gleamc_alloc(size > 0 ? (size_t)size : 1);
+    return gleamc_alloc_site(size > 0 ? (size_t)size : 1, "box");
 }
 
 void gleamc_box_free(void* box) {
@@ -1312,7 +1318,7 @@ static GleamcMailbox* gleamc_task_inbox(GleamcTask2* t, GleamcMailbox** slot) {
 }
 
 int64_t Gleamc_process_ffi_new_subject(void) {
-    GleamcMailbox* mb = (GleamcMailbox*)gleamc_alloc0(sizeof(GleamcMailbox));
+    GleamcMailbox* mb = (GleamcMailbox*)gleamc_alloc0_site(sizeof(GleamcMailbox), "mailbox");
     gleamc_task_register_subject(gleamc_task_by_id(gleamc_current_task_id), mb);
     return (int64_t)(intptr_t)mb;
 }
@@ -1367,7 +1373,7 @@ static void gleamc_mailbox_remove_notifier(GleamcMailbox* mb, GleamcFuture* f) {
 }
 
 static GleamcMailbox* gleamc_mailbox_new(void) {
-    return (GleamcMailbox*)gleamc_alloc0(sizeof(GleamcMailbox));
+    return (GleamcMailbox*)gleamc_alloc0_site(sizeof(GleamcMailbox), "mailbox");
 }
 
 /* Enqueue a box, handing it to a waiting `receive` or signalling a `wait_any`.
@@ -1433,7 +1439,7 @@ static void* gleamc_mailbox_take(GleamcMailbox* mb) {
 
 GleamcFuture* Gleamc_process_ffi_receive(int64_t handle) {
     GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)handle;
-    GleamcFuture* f = (GleamcFuture*)gleamc_alloc0(sizeof(GleamcFuture));
+    GleamcFuture* f = (GleamcFuture*)gleamc_alloc0_site(sizeof(GleamcFuture), "future:recv");
     if (mb != NULL && (mb->ndef > 0 || mb->nmsg > 0)) {
         f->value_p = gleamc_mailbox_take(mb);
         f->done = true;
@@ -1502,7 +1508,7 @@ static void gleamc_wait_timer_new(GleamcFuture* fut, GleamcMailbox* mb,
 
 GleamcFuture* Gleamc_process_ffi_wait_any(int64_t handle, int64_t ms) {
     GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)handle;
-    GleamcFuture* f = (GleamcFuture*)gleamc_alloc0(sizeof(GleamcFuture));
+    GleamcFuture* f = (GleamcFuture*)gleamc_alloc0_site(sizeof(GleamcFuture), "future:waitany");
     if (mb != NULL && mb->nmsg > 0) {
         f->value_i = 1;
         f->done = true;
@@ -1519,7 +1525,7 @@ GleamcFuture* Gleamc_process_ffi_wait_any(int64_t handle, int64_t ms) {
 }
 
 GleamcFuture* Gleamc_task_ffi_await_timeout(GleamcFuture* task, int64_t ms) {
-    GleamcFuture* w = (GleamcFuture*)gleamc_alloc0(sizeof(GleamcFuture));
+    GleamcFuture* w = (GleamcFuture*)gleamc_alloc0_site(sizeof(GleamcFuture), "future:await");
     if (task == NULL || task->done) {
         w->value_i = 1;
         w->done = true;
@@ -1644,7 +1650,7 @@ static void gleamc_selector_timer_cb(uv_timer_t* t) {
 }
 
 int64_t Gleamc_process_ffi_selector_new(void) {
-    GleamcSelector* sel = (GleamcSelector*)gleamc_alloc0(sizeof(GleamcSelector));
+    GleamcSelector* sel = (GleamcSelector*)gleamc_alloc0_site(sizeof(GleamcSelector), "selector");
     return (int64_t)(intptr_t)sel;
 }
 
@@ -1726,7 +1732,7 @@ int64_t Gleamc_process_ffi_selector_subject(int64_t handle, int64_t index) {
 
 GleamcFuture* Gleamc_process_ffi_selector_wait(int64_t handle, int64_t ms) {
     GleamcSelector* sel = (GleamcSelector*)(intptr_t)handle;
-    GleamcFuture* f = (GleamcFuture*)gleamc_alloc0(sizeof(GleamcFuture));
+    GleamcFuture* f = (GleamcFuture*)gleamc_alloc0_site(sizeof(GleamcFuture), "future:selector");
     if (sel == NULL) {
         f->value_i = 0;
         f->done = true;
@@ -2079,7 +2085,7 @@ int64_t Gleamc_process_ffi_subject_handle(int64_t handle) { return handle; }
 /* ------------------------------------------------------------------ */
 
 void* Gleamc_dynamic_new(int32_t tag, void* box) {
-    int64_t* d = (int64_t*)gleamc_alloc0(2 * sizeof(int64_t));
+    int64_t* d = (int64_t*)gleamc_alloc0_site(2 * sizeof(int64_t), "dynamic");
     d[0] = tag;
     d[1] = (int64_t)(intptr_t)box;
     return d;
@@ -2249,7 +2255,7 @@ void* gleamc_uv_timer_init(void* loop) {
 }
 
 GleamcFuture* gleamc_uv_timer_start(void* timer, int64_t ms) {
-    GleamcFuture* f = gleamc_alloc(sizeof(GleamcFuture));
+    GleamcFuture* f = gleamc_alloc_site(sizeof(GleamcFuture), "future");
     f->done = false; f->has_error = false;
     f->error_code = 0; f->value_i = 0; f->value_p = NULL;
     f->deadline = 0;  /* armed on libuv: the wake is by callback */
@@ -2277,7 +2283,7 @@ static void gleamc_timer_keep_cb(uv_timer_t* t) {
 
 GleamcFuture* Gleamc_time_timer_count(int64_t ms) {
     uv_timer_t* t = (uv_timer_t*)gleamc_uv_timer_init(gleamc_uv_loop());
-    GleamcFuture* f = gleamc_alloc(sizeof(GleamcFuture));
+    GleamcFuture* f = gleamc_alloc_site(sizeof(GleamcFuture), "future");
     f->done = false; f->has_error = false; f->error_code = 0;
     f->value_i = ms; f->value_p = NULL; f->deadline = 0; f->uv_armed = true;
     t->data = f;
@@ -2347,7 +2353,7 @@ static void gleamc_fs_cb(uv_fs_t* req) {
 
 GleamcFuture* gleamc_uv_fs_open(void* loop, const char* path,
                                 int32_t flags, int32_t mode) {
-    GleamcFuture* f = gleamc_alloc(sizeof(GleamcFuture));
+    GleamcFuture* f = gleamc_alloc_site(sizeof(GleamcFuture), "future");
     f->done = false; f->has_error = false;
     f->error_code = 0; f->value_i = 0; f->value_p = NULL;
     f->uv_armed = true;
@@ -2358,7 +2364,7 @@ GleamcFuture* gleamc_uv_fs_open(void* loop, const char* path,
 }
 
 GleamcFuture* gleamc_uv_fs_read(void* loop, void* fd, int64_t n) {
-    GleamcFuture* f = gleamc_alloc(sizeof(GleamcFuture));
+    GleamcFuture* f = gleamc_alloc_site(sizeof(GleamcFuture), "future");
     f->done = false; f->has_error = false;
     f->error_code = 0; f->value_i = 0; f->value_p = NULL;
     f->uv_armed = true;
@@ -2377,7 +2383,7 @@ GleamcFuture* gleamc_uv_fs_read(void* loop, void* fd, int64_t n) {
 /* File size (the uv_fs_open fd is an OS fd) — synchronous. */
 GleamcFuture* gleamc_uv_fs_fstat(void* loop, void* fd) {
     (void)loop;
-    GleamcFuture* f = gleamc_alloc(sizeof(GleamcFuture));
+    GleamcFuture* f = gleamc_alloc_site(sizeof(GleamcFuture), "future");
     f->done = false; f->has_error = false;
     f->error_code = 0; f->value_i = 0; f->value_p = NULL;
     f->uv_armed = false;
@@ -2392,7 +2398,7 @@ GleamcFuture* gleamc_uv_fs_fstat(void* loop, void* fd) {
 }
 
 GleamcFuture* gleamc_uv_fs_close(void* loop, void* fd) {
-    GleamcFuture* f = gleamc_alloc(sizeof(GleamcFuture));
+    GleamcFuture* f = gleamc_alloc_site(sizeof(GleamcFuture), "future");
     f->done = false; f->has_error = false;
     f->error_code = 0; f->value_i = 0; f->value_p = NULL;
     f->uv_armed = true;
@@ -3078,7 +3084,7 @@ static GleamcFuture* gleamc_future_err(GleamcFuture* f, int32_t code) {
 GleamcFuture* Gleamc_uv_fs_open(GleamcString path, int64_t flags, int64_t mode) {
     char* cpath = gleamc_to_cstr(path);
     if (cpath == NULL)
-        return gleamc_future_err(gleamc_alloc(sizeof(GleamcFuture)), 12);
+        return gleamc_future_err(gleamc_alloc_site(sizeof(GleamcFuture), "future"), 12);
     GleamcFuture* f = gleamc_uv_fs_open(gleamc_uv_loop(), cpath,
                                         (int32_t)flags, (int32_t)mode);
     free(cpath);
@@ -3098,7 +3104,7 @@ GleamcFuture* Gleamc_uv_fs_close(int64_t fd) {
 }
 
 GleamcFuture* Gleamc_uv_fs_write(int64_t fd, GleamcBitArray data) {
-    GleamcFuture* f = gleamc_alloc(sizeof(GleamcFuture));
+    GleamcFuture* f = gleamc_alloc_site(sizeof(GleamcFuture), "future");
     f->done = false; f->has_error = false; f->error_code = 0;
     f->value_i = 0; f->uv_armed = true;
     size_t n = data.len;
@@ -3116,8 +3122,8 @@ GleamcFuture* Gleamc_uv_fs_write(int64_t fd, GleamcBitArray data) {
 GleamcFuture* Gleamc_uv_fs_unlink(GleamcString path) {
     char* cpath = gleamc_to_cstr(path);
     if (cpath == NULL)
-        return gleamc_future_err(gleamc_alloc(sizeof(GleamcFuture)), 12);
-    GleamcFuture* f = gleamc_alloc(sizeof(GleamcFuture));
+        return gleamc_future_err(gleamc_alloc_site(sizeof(GleamcFuture), "future"), 12);
+    GleamcFuture* f = gleamc_alloc_site(sizeof(GleamcFuture), "future");
     f->done = false; f->has_error = false; f->error_code = 0;
     f->value_i = 0; f->value_p = NULL; f->uv_armed = true;
     uv_fs_t* req = (uv_fs_t*)gleamc_alloc(uv_req_size(UV_FS));
@@ -3130,7 +3136,7 @@ GleamcFuture* Gleamc_uv_fs_unlink(GleamcString path) {
 /* Remaining async fs surface for `std/simplifile`: every op returns a
  * Future armed on the scheduler loop (no synchronous disk path). */
 static GleamcFuture* fs_new(void) {
-    GleamcFuture* f = gleamc_alloc(sizeof(GleamcFuture));
+    GleamcFuture* f = gleamc_alloc_site(sizeof(GleamcFuture), "future");
     f->done = false; f->has_error = false; f->error_code = 0;
     f->value_i = 0; f->value_p = NULL; f->deadline = 0; f->uv_armed = true;
     return f;

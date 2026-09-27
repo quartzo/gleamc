@@ -38,6 +38,7 @@ void* gleamc_alloc0(size_t size);
 
 /* Like `gleamc_alloc` but records a `site` tag for the refcount audit. */
 void* gleamc_alloc_site(size_t size, const char* site);
+void* gleamc_alloc0_site(size_t size, const char* site);
 
 /* Call-depth probe: the generated code bumps `@__gleamc_depth` directly and
  * calls this when `gleamc_depth_max` (GLEAMC_CALL_DEPTH, default 100) is
