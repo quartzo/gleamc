@@ -85,6 +85,25 @@ pub fn table() -> Dict(String, FfiSig) {
   |> dict.insert("process_ffi.self", FfiSig([], OwnedResult))
   |> dict.insert("process_ffi.is_alive", FfiSig([Borrow], OwnedResult))
   |> dict.insert("task_ffi.pid", FfiSig([Borrow], OwnedResult))
+  |> dict.insert(
+    "process_ffi.send_after",
+    FfiSig([Borrow, Borrow, Owned], OwnedResult),
+  )
+  |> dict.insert("process_ffi.cancel_timer", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("process_ffi.selector_new", FfiSig([], OwnedResult))
+  |> dict.insert(
+    "process_ffi.selector_add",
+    FfiSig([Borrow, Borrow], OwnedResult),
+  )
+  |> dict.insert(
+    "process_ffi.selector_wait",
+    FfiSig([Borrow, Borrow], OwnedResult),
+  )
+  |> dict.insert("process_ffi.selector_ready", FfiSig([Borrow], OwnedResult))
+  |> dict.insert(
+    "process_ffi.selector_subject",
+    FfiSig([Borrow, Borrow], OwnedResult),
+  )
   |> dict.insert("task.async", FfiSig([Borrow], OwnedResult))
   |> dict.insert("task_ffi.await", FfiSig([Borrow], OwnedResult))
   |> dict.insert("int.to_string", FfiSig([Borrow], OwnedResult))

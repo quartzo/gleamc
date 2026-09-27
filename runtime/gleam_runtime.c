@@ -1388,6 +1388,196 @@ GleamcFuture* Gleamc_task_ffi_await_timeout(GleamcFuture* task, int64_t ms) {
     return w;
 }
 
+/* ------------------------------------------------------------------ */
+/* Scheduled sends (`send_after` / `cancel_timer`).                     */
+/* ------------------------------------------------------------------ */
+
+/* Number of live libuv timers not attached to a task's pending future, so the
+ * driver knows to poll the loop (`send_after`). */
+static int gleamc_uv_pending = 0;
+
+typedef struct {
+    uv_timer_t timer;
+    int64_t subject;
+    void* box; /* owned until sent */
+    int64_t deadline;
+    bool done; /* fired or cancelled */
+} GleamcSendTimer;
+
+static void gleamc_send_timer_close_cb(uv_handle_t* h) {
+    free((GleamcSendTimer*)h->data);
+    if (gleamc_uv_pending > 0) gleamc_uv_pending--;
+}
+
+static void gleamc_send_timer_cb(uv_timer_t* t) {
+    GleamcSendTimer* st = (GleamcSendTimer*)t->data;
+    st->done = true;
+    Gleamc_process_ffi_send(st->subject, st->box); /* transfers the box */
+    st->box = NULL;
+    uv_close((uv_handle_t*)t, gleamc_send_timer_close_cb);
+}
+
+int64_t Gleamc_process_ffi_send_after(int64_t subject, int64_t delay, void* box) {
+    GleamcSendTimer* st = (GleamcSendTimer*)calloc(1, sizeof(GleamcSendTimer));
+    if (st == NULL) {
+        Gleamc_process_ffi_send(subject, box);
+        return 0;
+    }
+    st->subject = subject;
+    st->box = box;
+    st->done = false;
+    st->deadline = (int64_t)gleamc_now_ms() + (delay < 0 ? 0 : delay);
+    uv_timer_init((uv_loop_t*)gleamc_uv_loop(), &st->timer);
+    st->timer.data = st;
+    uv_timer_start(
+        &st->timer, gleamc_send_timer_cb, delay < 0 ? 0 : (uint64_t)delay, 0);
+    gleamc_uv_pending++;
+    return (int64_t)(intptr_t)st;
+}
+
+int64_t Gleamc_process_ffi_cancel_timer(int64_t handle) {
+    GleamcSendTimer* st = (GleamcSendTimer*)(intptr_t)handle;
+    if (st == NULL || st->done) return -1;
+    int64_t remaining = st->deadline - (int64_t)gleamc_now_ms();
+    if (remaining < 0) remaining = 0;
+    uv_timer_stop(&st->timer);
+    if (st->box != NULL) {
+        gleamc_box_free(st->box);
+        st->box = NULL;
+    }
+    st->done = true;
+    uv_close((uv_handle_t*)&st->timer, gleamc_send_timer_close_cb);
+    return remaining;
+}
+
+/* ------------------------------------------------------------------ */
+/* Selectors: wait for a message on any of several subjects.           */
+/*                                                                     */
+/* `selector_wait` registers one future as a notifier on every subject */
+/* (the boxes stay queued); the first `send` completes it, then        */
+/* `selector_ready` finds the queued subject and clears the remaining  */
+/* notifier entries. A timer covers the timeout.                       */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    GleamcHdr hdr;
+    int64_t* subjects;
+    int nsub, cap;
+    GleamcFuture* wait_fut;
+} GleamcSelector;
+
+static void gleamc_selector_clear_wait(GleamcSelector* sel) {
+    if (sel == NULL || sel->wait_fut == NULL) return;
+    GleamcFuture* f = sel->wait_fut;
+    for (int i = 0; i < sel->nsub; i++) {
+        GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)sel->subjects[i];
+        if (mb != NULL) gleamc_mailbox_remove_notifier(mb, f);
+    }
+    sel->wait_fut = NULL;
+}
+
+typedef struct {
+    uv_timer_t timer;
+    GleamcFuture* fut;
+    GleamcSelector* sel;
+} GleamcSelectorTimer;
+
+static void gleamc_selector_timer_close_cb(uv_handle_t* h) {
+    GleamcSelectorTimer* st = (GleamcSelectorTimer*)h->data;
+    gleamc_release(st->fut);
+    free(st);
+}
+
+static void gleamc_selector_timer_cb(uv_timer_t* t) {
+    GleamcSelectorTimer* st = (GleamcSelectorTimer*)t->data;
+    if (!st->fut->done) {
+        st->fut->value_i = 0;
+        st->fut->done = true;
+    }
+    gleamc_selector_clear_wait(st->sel);
+    uv_close((uv_handle_t*)t, gleamc_selector_timer_close_cb);
+}
+
+int64_t Gleamc_process_ffi_selector_new(void) {
+    GleamcSelector* sel = (GleamcSelector*)gleamc_alloc0(sizeof(GleamcSelector));
+    return (int64_t)(intptr_t)sel;
+}
+
+int64_t Gleamc_process_ffi_selector_add(int64_t handle, int64_t subject) {
+    GleamcSelector* sel = (GleamcSelector*)(intptr_t)handle;
+    if (sel == NULL) return handle;
+    if (sel->nsub == sel->cap) {
+        int cap = sel->cap == 0 ? 4 : sel->cap * 2;
+        int64_t* grown =
+            (int64_t*)realloc(sel->subjects, (size_t)cap * sizeof(int64_t));
+        if (grown == NULL) return handle;
+        sel->subjects = grown;
+        sel->cap = cap;
+    }
+    sel->subjects[sel->nsub++] = subject;
+    return handle;
+}
+
+int64_t Gleamc_process_ffi_selector_subject(int64_t handle, int64_t index) {
+    GleamcSelector* sel = (GleamcSelector*)(intptr_t)handle;
+    if (sel == NULL || index < 0 || index >= sel->nsub) return 0;
+    return sel->subjects[index];
+}
+
+GleamcFuture* Gleamc_process_ffi_selector_wait(int64_t handle, int64_t ms) {
+    GleamcSelector* sel = (GleamcSelector*)(intptr_t)handle;
+    GleamcFuture* f = (GleamcFuture*)gleamc_alloc0(sizeof(GleamcFuture));
+    if (sel == NULL) {
+        f->value_i = 0;
+        f->done = true;
+        return f;
+    }
+    for (int i = 0; i < sel->nsub; i++) {
+        GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)sel->subjects[i];
+        if (mb != NULL && mb->nmsg > 0) {
+            f->value_i = 1;
+            f->done = true;
+            return f;
+        }
+    }
+    sel->wait_fut = f;
+    for (int i = 0; i < sel->nsub; i++) {
+        GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)sel->subjects[i];
+        if (mb != NULL) gleamc_mailbox_add_notifier(mb, f);
+    }
+    if (ms >= 0) {
+        GleamcSelectorTimer* st =
+            (GleamcSelectorTimer*)calloc(1, sizeof(GleamcSelectorTimer));
+        if (st != NULL) {
+            st->fut = f;
+            st->sel = sel;
+            gleamc_retain(f);
+            uv_timer_init((uv_loop_t*)gleamc_uv_loop(), &st->timer);
+            st->timer.data = st;
+            uv_timer_start(&st->timer, gleamc_selector_timer_cb, (uint64_t)ms, 0);
+            f->uv_armed = true;
+        }
+    }
+    return f;
+}
+
+/* The index of the subject with a queued message, or -1 on timeout. Also
+ * clears the selector's pending wait and notifier entries. */
+int64_t Gleamc_process_ffi_selector_ready(int64_t handle) {
+    GleamcSelector* sel = (GleamcSelector*)(intptr_t)handle;
+    if (sel == NULL) return -1;
+    int64_t index = -1;
+    for (int i = 0; i < sel->nsub; i++) {
+        GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)sel->subjects[i];
+        if (mb != NULL && mb->nmsg > 0) {
+            index = i;
+            break;
+        }
+    }
+    gleamc_selector_clear_wait(sel);
+    return index;
+}
+
 void gleamc_run_until(GleamcFuture* target) {
     void* loop = gleamc_uv_loop();
     int nested = gleamc_run_depth++;
@@ -1480,7 +1670,7 @@ void gleamc_run_until(GleamcFuture* target) {
         }
         if (target != NULL && target->done) break;
         if (progressed) continue;
-        if (have_uv) {
+        if (have_uv || gleamc_uv_pending > 0) {
             uv_run((uv_loop_t*)loop, UV_RUN_ONCE);
         } else if (next_deadline > 0) {
             int64_t now = (int64_t)gleamc_now_ms();

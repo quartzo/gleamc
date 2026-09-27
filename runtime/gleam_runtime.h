@@ -406,6 +406,18 @@ int64_t Gleamc_process_ffi_self(void);
 bool Gleamc_process_ffi_is_alive(int64_t pid);
 int64_t Gleamc_task_ffi_pid(GleamcFuture* task);
 
+/* Scheduled sends: `send_after` returns an opaque `Timer` handle; `cancel`
+ * returns the remaining milliseconds, or -1 if it already fired. */
+int64_t Gleamc_process_ffi_send_after(int64_t subject, int64_t delay, void* box);
+int64_t Gleamc_process_ffi_cancel_timer(int64_t handle);
+
+/* Selectors: wait for a message on any of several subjects. */
+int64_t Gleamc_process_ffi_selector_new(void);
+int64_t Gleamc_process_ffi_selector_add(int64_t handle, int64_t subject);
+int64_t Gleamc_process_ffi_selector_subject(int64_t handle, int64_t index);
+GleamcFuture* Gleamc_process_ffi_selector_wait(int64_t handle, int64_t ms);
+int64_t Gleamc_process_ffi_selector_ready(int64_t handle);
+
 /* Host async surface (Vesper docs 09/11/14): starts return a Future,
  * `await` (Gleamc_uv_await_*) drives the scheduler to completion. */
 GleamcFuture* Gleamc_uv_fs_open(GleamcString path, int64_t flags, int64_t mode);

@@ -990,6 +990,46 @@ fn builtins() -> Dict(String, Scheme) {
     "process.spawn_unlinked",
     Scheme([9103], Fun([Fun([], n)], Con("Pid", []))),
   )
+  |> dict.insert(
+    "process_ffi.send_after",
+    Scheme(
+      [9130],
+      Fun([Con("Subject", [Var(9130)]), i, Var(9130)], Con("Timer", [])),
+    ),
+  )
+  |> dict.insert(
+    "process_ffi.cancel_timer",
+    Scheme(none, Fun([Con("Timer", [])], i)),
+  )
+  |> dict.insert(
+    "process_ffi.selector_new",
+    Scheme([9140], Fun([], Con("Selector", [Var(9140)]))),
+  )
+  |> dict.insert(
+    "process_ffi.selector_add",
+    Scheme(
+      [9141],
+      Fun(
+        [Con("Selector", [Var(9141)]), Con("Subject", [Var(9141)])],
+        Con("Selector", [Var(9141)]),
+      ),
+    ),
+  )
+  |> dict.insert(
+    "process_ffi.selector_wait",
+    Scheme([9142], Fun([Con("Selector", [Var(9142)]), i], i)),
+  )
+  |> dict.insert(
+    "process_ffi.selector_ready",
+    Scheme([9143], Fun([Con("Selector", [Var(9143)])], i)),
+  )
+  |> dict.insert(
+    "process_ffi.selector_subject",
+    Scheme(
+      [9144],
+      Fun([Con("Selector", [Var(9144)]), i], Con("Subject", [Var(9144)])),
+    ),
+  )
 }
 
 /// The names of every builtin, used by `ffi_modes` coverage checks.

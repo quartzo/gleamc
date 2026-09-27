@@ -38,6 +38,68 @@ pub fn is_alive(a: Pid) -> Bool {
   process_ffi.is_alive(a)
 }
 
+/// Create a new `Selector`, which can wait for a message on several subjects
+/// at once.
+pub fn new_selector() -> Selector(payload) {
+  process_ffi.selector_new()
+}
+
+/// Add a `Subject` to a `Selector`.
+pub fn select(
+  selector: Selector(payload),
+  for: Subject(payload),
+) -> Selector(payload) {
+  process_ffi.selector_add(selector, for)
+}
+
+/// Receive a message from any of the `Selector`'s subjects, within `within`
+/// milliseconds.
+pub fn selector_receive(
+  from: Selector(payload),
+  within: Int,
+) -> Result(payload, Nil) {
+  let _ = process_ffi.selector_wait(from, within)
+  let index = process_ffi.selector_ready(from)
+  case index < 0 {
+    True -> Error(Nil)
+    False ->
+      Ok(receive_forever(from: process_ffi.selector_subject(from, index)))
+  }
+}
+
+/// Receive a message from any of the `Selector`'s subjects, waiting forever.
+pub fn selector_receive_forever(from: Selector(payload)) -> payload {
+  let _ = process_ffi.selector_wait(from, -1)
+  let index = process_ffi.selector_ready(from)
+  case index < 0 {
+    True -> selector_receive_forever(from)
+    False -> receive_forever(from: process_ffi.selector_subject(from, index))
+  }
+}
+
+/// How a timer cancellation ended.
+pub type Cancelled {
+  /// The timer could not be found; it has likely already triggered.
+  TimerNotFound
+  /// The timer was cancelled with `time_remaining` milliseconds left.
+  Cancelled(time_remaining: Int)
+}
+
+/// Schedule `message` to be sent to `subject` after `delay` milliseconds, and
+/// return a `Timer` that can be cancelled.
+pub fn send_after(subject: Subject(msg), delay: Int, message: msg) -> Timer {
+  process_ffi.send_after(subject, delay, message)
+}
+
+/// Cancel a timer, reporting how long was left if it had not fired.
+pub fn cancel_timer(timer: Timer) -> Cancelled {
+  let remaining = process_ffi.cancel_timer(timer)
+  case remaining < 0 {
+    True -> TimerNotFound
+    False -> Cancelled(remaining)
+  }
+}
+
 /// Suspend the current process for the given number of milliseconds.
 pub fn sleep(a: Int) -> Nil {
   time.timer(a)

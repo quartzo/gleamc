@@ -18,8 +18,8 @@ import gleamc/ast.{
   ELambda, ENil, EPanic, EString, ETuple, EUnop, EUpdate, EVar, Function, Let,
   Module, PAs, PBitArray, PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString,
   PTuple, PVar, PWildcard, Stmt, TApp, TBool, TFloat, TFun, TInt, TNamed, TNil,
-  TString, TTuple, TVar, Variant, buffer_elem_name, subject_elem_name,
-  task_elem_name, type_of_mangled,
+  TString, TTuple, TVar, Variant, buffer_elem_name, selector_elem_name,
+  subject_elem_name, task_elem_name, type_of_mangled,
 }
 import gleamc/tmono
 
@@ -522,6 +522,19 @@ pub fn task_elem_type(ty: Type) -> Result(Type, Nil) {
     TApp("Task", [elem]) -> Ok(elem)
     TNamed(name) ->
       case task_elem_name(name) {
+        Ok(mangled) -> Ok(type_of_mangled(mangled))
+        Error(_) -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
+}
+
+/// The payload type of a `Selector`, in either representation.
+pub fn selector_elem_type(ty: Type) -> Result(Type, Nil) {
+  case ty {
+    TApp("Selector", [elem]) -> Ok(elem)
+    TNamed(name) ->
+      case selector_elem_name(name) {
         Ok(mangled) -> Ok(type_of_mangled(mangled))
         Error(_) -> Error(Nil)
       }
@@ -2292,6 +2305,176 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         TBool,
         "process_ffi.is_alive",
       )
+    "process_ffi", "send_after" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [subject, delay, message] ->
+          case subject_elem_type(tmono.type_of(subject)) {
+            Ok(elem) ->
+              case tmono.type_of(delay) == TInt && elem == tmono.type_of(message) {
+                True ->
+                  Ok(builtin_call(
+                    "process_ffi",
+                    "send_after",
+                    [tmono.type_of(subject), TInt, elem],
+                    TNamed("Timer"),
+                    typed_args,
+                  ))
+                False ->
+                  Error(CheckError(
+                    "process_ffi.send_after expects (Subject(a), Int, a)",
+                  ))
+              }
+            Error(_) ->
+              Error(CheckError(
+                "process_ffi.send_after expects (Subject(a), Int, a)",
+              ))
+          }
+        _ ->
+          Error(CheckError(
+            "process_ffi.send_after expects (Subject(a), Int, a)",
+          ))
+      }
+    }
+    "process_ffi", "cancel_timer" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("Timer")],
+        TInt,
+        "process_ffi.cancel_timer",
+      )
+    "process_ffi", "selector_new" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      Ok(builtin_call(
+        "process_ffi",
+        "selector_new",
+        [],
+        TApp("Selector", [TVar("__selector_elem")]),
+        typed_args,
+      ))
+    }
+    "process_ffi", "selector_add" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [selector, subject] ->
+          case selector_elem_type(tmono.type_of(selector)) {
+            Ok(elem) ->
+              case subject_elem_type(tmono.type_of(subject)) {
+                Ok(sub_elem) ->
+                  case elem == sub_elem {
+                    True ->
+                      Ok(builtin_call(
+                        "process_ffi",
+                        "selector_add",
+                        [tmono.type_of(selector), tmono.type_of(subject)],
+                        tmono.type_of(selector),
+                        typed_args,
+                      ))
+                    False ->
+                      Error(CheckError(
+                        "process_ffi.selector_add: subject type mismatch",
+                      ))
+                  }
+                Error(_) ->
+                  Error(CheckError(
+                    "process_ffi.selector_add expects (Selector(a), Subject(a))",
+                  ))
+              }
+            Error(_) ->
+              Error(CheckError(
+                "process_ffi.selector_add expects (Selector(a), Subject(a))",
+              ))
+          }
+        _ ->
+          Error(CheckError(
+            "process_ffi.selector_add expects (Selector(a), Subject(a))",
+          ))
+      }
+    }
+    "process_ffi", "selector_wait" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [selector, timeout] ->
+          case selector_elem_type(tmono.type_of(selector)) {
+            Ok(_) ->
+              case tmono.type_of(timeout) {
+                TInt ->
+                  Ok(builtin_call(
+                    "process_ffi",
+                    "selector_wait",
+                    [tmono.type_of(selector), TInt],
+                    TInt,
+                    typed_args,
+                  ))
+                _ ->
+                  Error(CheckError(
+                    "process_ffi.selector_wait expects (Selector(a), Int)",
+                  ))
+              }
+            Error(_) ->
+              Error(CheckError(
+                "process_ffi.selector_wait expects (Selector(a), Int)",
+              ))
+          }
+        _ ->
+          Error(CheckError(
+            "process_ffi.selector_wait expects (Selector(a), Int)",
+          ))
+      }
+    }
+    "process_ffi", "selector_ready" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [selector] ->
+          case selector_elem_type(tmono.type_of(selector)) {
+            Ok(_) ->
+              Ok(builtin_call(
+                "process_ffi",
+                "selector_ready",
+                [tmono.type_of(selector)],
+                TInt,
+                typed_args,
+              ))
+            Error(_) ->
+              Error(CheckError("process_ffi.selector_ready expects a Selector(a)"))
+          }
+        _ -> Error(CheckError("process_ffi.selector_ready expects a Selector(a)"))
+      }
+    }
+    "process_ffi", "selector_subject" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [selector, index] ->
+          case selector_elem_type(tmono.type_of(selector)) {
+            Ok(elem) ->
+              case tmono.type_of(index) {
+                TInt ->
+                  Ok(builtin_call(
+                    "process_ffi",
+                    "selector_subject",
+                    [tmono.type_of(selector), TInt],
+                    TApp("Subject", [elem]),
+                    typed_args,
+                  ))
+                _ ->
+                  Error(CheckError(
+                    "process_ffi.selector_subject expects (Selector(a), Int)",
+                  ))
+              }
+            Error(_) ->
+              Error(CheckError(
+                "process_ffi.selector_subject expects (Selector(a), Int)",
+              ))
+          }
+        _ ->
+          Error(CheckError(
+            "process_ffi.selector_subject expects (Selector(a), Int)",
+          ))
+      }
+    }
     "task_ffi", "pid" -> {
       use typed_args <- result.try(infer_all(env, signatures, ctors, args))
       case typed_args {

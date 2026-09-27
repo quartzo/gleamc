@@ -494,6 +494,8 @@ fn header(audit: Bool) -> String {
   <> "declare i64 @Gleamc_process_ffi_new_subject()\n"
   <> "declare i32 @Gleamc_process_ffi_send(i64, i8*)\n"
   <> "declare i8* @Gleamc_process_ffi_receive(i64)\n"
+  <> "declare i64 @Gleamc_process_ffi_send_after(i64, i64, i8*)\n"
+  <> "declare i64 @Gleamc_process_ffi_cancel_timer(i64)\n"
   <> "declare i64 @gleamc_task_id(i8*)\n"
   <> "declare i8* @gleamc_task_start(i1 (i8*)*, i8*, i8**, void (i8*, i8*)*, i8*, void (i8*)*)\n"
   <> "declare i8* @gleamc_task_async(i1 (i8*)*, i8*, i8**, void (i8*, i8*)*, void (i8*)*, i8*)\n"
@@ -668,8 +670,11 @@ fn llvm_ty(ty: Type, recursive: Dict(String, Bool)) -> String {
     TNamed("FileResult") -> "%GleamcFileResult"
     // Internal async handle (`GleamcFuture*`); never visible to Gleam.
     TNamed("Future") -> "i8*"
-    // A process identifier (a stable task id).
+    // A process identifier (a stable task id), a scheduled-send timer and a
+    // selector handle.
     TNamed("Pid") -> "i64"
+    TNamed("Timer") -> "i64"
+    TNamed("Selector") -> "i64"
     // Async I/O handle (a file descriptor); opaque scalar.
     TNamed("Handle") -> "i64"
     ast.TNil -> "i32"
@@ -685,9 +690,14 @@ fn llvm_ty(ty: Type, recursive: Dict(String, Bool)) -> String {
             Ok(_), _ -> "i64"
             _, Ok(_) -> "i8*"
             _, Error(_) ->
-              case is_recursive(recursive, name) {
-                True -> "%" <> name <> "*"
-                False -> "%" <> name
+              case ast.selector_elem_name(name) {
+                // `Selector(a)` is a handle (i64).
+                Ok(_) -> "i64"
+                Error(_) ->
+                  case is_recursive(recursive, name) {
+                    True -> "%" <> name <> "*"
+                    False -> "%" <> name
+                  }
               }
           }
       }
@@ -697,6 +707,8 @@ fn llvm_ty(ty: Type, recursive: Dict(String, Bool)) -> String {
     // the completion future itself (`i8*`).
     ast.TApp("Subject", _) -> "i64"
     ast.TApp("Task", _) -> "i8*"
+    ast.TApp("Timer", _) -> "i64"
+    ast.TApp("Selector", _) -> "i64"
     ast.TApp(name, args) ->
       "%" <> name <> "_" <> string.join(list.map(args, mangle_type), "_")
     ast.TTuple(types) ->
@@ -3140,6 +3152,50 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) {
           let b = store_local(ctx, dest, "i32", r, b)
           #(b, Nil)
         }
+        "process_ffi.send_after" -> {
+          // Box the message and schedule a libuv timer that sends it.
+          let #(subject_arg, delay_arg, msg_arg) = case args {
+            [s, d, m, ..] -> #(s, d, m)
+            _ -> #(ir.Lit(ir.LUnit), ir.Lit(ir.LUnit), ir.Lit(ir.LUnit))
+          }
+          let #(_, subject, b) = read_val(ctx, subject_arg, b)
+          let #(_, delay, b) = read_val(ctx, delay_arg, b)
+          let #(ty, value, b) = read_val(ctx, msg_arg, b)
+          let #(box, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> box
+                <> " = call i8* @gleamc_box_alloc(i64 "
+                <> ty_size_expr(operand_type(ctx.by_name, msg_arg), ctx.recursive)
+                <> ")",
+            )
+          let #(slot, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  " <> slot <> " = bitcast i8* " <> box <> " to " <> ty <> "*",
+            )
+          let b =
+            emit_line(b, "  store " <> ty <> " " <> value <> ", " <> ty <> "* " <> slot)
+          let #(r, b) = fresh(b)
+          let b =
+            emit_line(
+              b,
+              "  "
+                <> r
+                <> " = call i64 @Gleamc_process_ffi_send_after(i64 "
+                <> subject
+                <> ", i64 "
+                <> delay
+                <> ", i8* "
+                <> box
+                <> ")",
+            )
+          let b = store_local(ctx, dest, "i64", r, b)
+          #(b, Nil)
+        }
         "buffer.new" -> {
           let elem = case buffer_elem(ret_ty) {
             Ok(e) -> e
@@ -4166,6 +4222,8 @@ fn runtime_declared(name: String) -> Bool {
     | "Gleamc_process_ffi_new_subject"
     | "Gleamc_process_ffi_send"
     | "Gleamc_process_ffi_receive"
+    | "Gleamc_process_ffi_send_after"
+    | "Gleamc_process_ffi_cancel_timer"
     | "Gleamc_buffer_new"
     | "Gleamc_buffer_len"
     | "Gleamc_buffer_slot"
@@ -4468,6 +4526,7 @@ fn special_builtin(name: String) -> Bool {
     "gleamc.show"
     | "gleamc.hash"
     | "process_ffi.send"
+    | "process_ffi.send_after"
     | "buffer.new"
     | "buffer.len"
     | "buffer.get"
@@ -5003,7 +5062,11 @@ fn compare_fields(
 fn is_handle_like(ty: Type) -> Bool {
   case ty {
     ast.TApp("Subject", _) | ast.TApp("Task", _) | ast.TApp("Pid", _) -> True
+    ast.TApp("Timer", _) -> True
+    ast.TApp("Selector", _) -> True
     TNamed("Pid") -> True
+    TNamed("Timer") -> True
+    TNamed("Selector") -> True
     TNamed(name) ->
       case ast.subject_elem_name(name), ast.task_elem_name(name) {
         Ok(_), _ -> True
