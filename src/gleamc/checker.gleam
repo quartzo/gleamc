@@ -2360,15 +2360,15 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         "process_ffi.cancel_timer",
       )
     "process_ffi", "selector_new" ->
-      check_builtin(env, signatures, ctors, args, [], TInt, "process_ffi.selector_new")
+      check_builtin(env, signatures, ctors, args, [], TNamed("SelectorHandle"), "process_ffi.selector_new")
     "process_ffi", "selector_add" -> {
       use typed_args <- result.try(infer_all(env, signatures, ctors, args))
       case typed_args {
         [selector, subject] ->
           case tmono.type_of(selector), subject_elem_type(tmono.type_of(subject)) {
-            TInt, Ok(_) ->
+            TNamed("SelectorHandle"), Ok(_) ->
               Ok(builtin_call(
-                "process_ffi", "selector_add", [TInt, tmono.type_of(subject)], TInt, typed_args,
+                "process_ffi", "selector_add", [TNamed("SelectorHandle"), tmono.type_of(subject)], TNamed("SelectorHandle"), typed_args,
               ))
             _, _ -> Error(CheckError("process_ffi.selector_add expects (Int, Subject(a))"))
           }
@@ -2380,9 +2380,9 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
       case typed_args {
         [selector, subject] ->
           case tmono.type_of(selector), subject_elem_type(tmono.type_of(subject)) {
-            TInt, Ok(_) ->
+            TNamed("SelectorHandle"), Ok(_) ->
               Ok(builtin_call(
-                "process_ffi", "selector_remove", [TInt, tmono.type_of(subject)], TInt, typed_args,
+                "process_ffi", "selector_remove", [TNamed("SelectorHandle"), tmono.type_of(subject)], TNamed("SelectorHandle"), typed_args,
               ))
             _, _ -> Error(CheckError("process_ffi.selector_remove expects (Int, Subject(a))"))
           }
@@ -2394,8 +2394,8 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
       case typed_args {
         [selector, timeout] ->
           case tmono.type_of(selector), tmono.type_of(timeout) {
-            TInt, TInt ->
-              Ok(builtin_call("process_ffi", "selector_wait", [TInt, TInt], TInt, typed_args))
+            TNamed("SelectorHandle"), TInt ->
+              Ok(builtin_call("process_ffi", "selector_wait", [TNamed("SelectorHandle"), TInt], TInt, typed_args))
             _, _ -> Error(CheckError("process_ffi.selector_wait expects (Int, Int)"))
           }
         _ -> Error(CheckError("process_ffi.selector_wait expects (Int, Int)"))
@@ -2496,8 +2496,8 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         signatures,
         ctors,
         args,
-        [TInt, TInt],
-        TInt,
+        [TNamed("SelectorHandle"), TNamed("SelectorHandle")],
+        TNamed("SelectorHandle"),
         "process_ffi.selector_merge",
       )
     "process_ffi", "selector_watch_owned" ->
@@ -2506,8 +2506,8 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         signatures,
         ctors,
         args,
-        [TInt],
-        TInt,
+        [TNamed("SelectorHandle")],
+        TNamed("SelectorHandle"),
         "process_ffi.selector_watch_owned",
       )
     "process_ffi", "selector_other_raw" ->
@@ -2516,7 +2516,7 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         signatures,
         ctors,
         args,
-        [TInt],
+        [TNamed("SelectorHandle")],
         TNamed("Dynamic"),
         "process_ffi.selector_other_raw",
       )

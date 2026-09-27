@@ -505,6 +505,8 @@ fn header(audit: Bool) -> String {
   <> "declare void @gleamc_box_free(i8*)\n"
   <> "declare void @Gleamc_subject_retain(i64)\n"
   <> "declare void @Gleamc_subject_release(i64)\n"
+  <> "declare void @Gleamc_selector_retain(i64)\n"
+  <> "declare void @Gleamc_selector_release(i64)\n"
   <> "declare i64 @Gleamc_process_ffi_new_subject()\n"
   <> "declare i32 @Gleamc_process_ffi_send(i64, i8*)\n"
   <> "declare i8* @Gleamc_process_ffi_receive(i64)\n"
@@ -709,6 +711,8 @@ fn llvm_ty(ty: Type, recursive: Dict(String, Bool)) -> String {
     TNamed("Timer") -> "i64"
     TNamed("Selector") -> "i64"
     TNamed("Name") -> "i64"
+    // A refcounted selector handle (`GleamcSelector*` as i64).
+    TNamed("SelectorHandle") -> "i64"
     // A boxed dynamic value (`GleamcDynamic*`).
     TNamed("Dynamic") -> "i8*"
     // Async I/O handle (a file descriptor); opaque scalar.
@@ -5272,6 +5276,14 @@ fn dynamic_rc(which: String, reg: String, b: Builder) -> Builder {
   emit_line(b, "  call void @" <> call <> "(i8* " <> reg <> ")")
 }
 
+fn selector_rc(which: String, reg: String, b: Builder) -> Builder {
+  let call = case which {
+    "retain" -> "Gleamc_selector_retain"
+    _ -> "Gleamc_selector_release"
+  }
+  emit_line(b, "  call void @" <> call <> "(i64 " <> reg <> ")")
+}
+
 /// `sizeof(ty)` as an i64 constant expression (inlined into a call argument:
 /// a standalone `ptrtoint` of a constant expression is rejected by newer LLVM).
 fn ty_size_expr(ty: Type, recursive) -> String {
@@ -6124,6 +6136,7 @@ fn is_handle_like(ty: Type) -> Bool {
     TNamed("Selector") -> True
     TNamed("Name") -> True
     TNamed("Dynamic") -> True
+    TNamed("SelectorHandle") -> True
     TNamed(name) ->
       case ast.subject_elem_name(name) {
         Ok(_) -> True
@@ -7336,6 +7349,8 @@ fn rc_expr(
     ast.TApp("Subject", _) -> subject_rc(which, reg, b)
     // `Dynamic` is a refcounted boxed value (`GleamcDynamic*`).
     TNamed("Dynamic") -> dynamic_rc(which, reg, b)
+    // A refcounted selector handle (`i64`).
+    TNamed("SelectorHandle") -> selector_rc(which, reg, b)
     TNamed(name) ->
       case ast.subject_elem_name(name) {
         Ok(_) -> subject_rc(which, reg, b)

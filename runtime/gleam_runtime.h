@@ -457,6 +457,8 @@ int64_t Gleamc_dynamic_ffi_classify(void* dynamic);
 void* Gleamc_dynamic_bits(void* dynamic);
 
 /* Selectors: wait for a message on any of several subjects. */
+void Gleamc_selector_retain(int64_t handle);
+void Gleamc_selector_release(int64_t handle);
 int64_t Gleamc_process_ffi_selector_new(void);
 int64_t Gleamc_process_ffi_selector_add(int64_t handle, int64_t subject);
 int64_t Gleamc_process_ffi_selector_remove(int64_t handle, int64_t subject);

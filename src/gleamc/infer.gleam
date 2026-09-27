@@ -778,6 +778,7 @@ fn builtins() -> Dict(String, Scheme) {
   let i = Con("Int", [])
   let f = Con("Float", [])
   let b = Con("Bool", [])
+  let sh = Con("SelectorHandle", [])
   dict.new()
   |> dict.insert("io.println", Scheme(none, Fun([s], n)))
   |> dict.insert("io.print", Scheme(none, Fun([s], n)))
@@ -1084,19 +1085,16 @@ fn builtins() -> Dict(String, Scheme) {
     "process_ffi.unlink",
     Scheme(none, Fun([Con("Pid", [])], n)),
   )
-  |> dict.insert(
-    "process_ffi.selector_new",
-    Scheme(none, Fun([], i)),
-  )
+  |> dict.insert("process_ffi.selector_new", Scheme(none, Fun([], sh)))
   |> dict.insert(
     "process_ffi.selector_add",
-    Scheme([9141], Fun([i, Con("Subject", [Var(9141)])], i)),
+    Scheme([9141], Fun([sh, Con("Subject", [Var(9141)])], sh)),
   )
   |> dict.insert(
     "process_ffi.selector_remove",
-    Scheme([9150], Fun([i, Con("Subject", [Var(9150)])], i)),
+    Scheme([9150], Fun([sh, Con("Subject", [Var(9150)])], sh)),
   )
-  |> dict.insert("process_ffi.selector_wait", Scheme(none, Fun([i, i], i)))
+  |> dict.insert("process_ffi.selector_wait", Scheme(none, Fun([sh, i], i)))
   |> dict.insert(
     "process_ffi.unreceive",
     Scheme([9170], Fun([Con("Subject", [Var(9170)]), Var(9170)], n)),
@@ -1125,11 +1123,11 @@ fn builtins() -> Dict(String, Scheme) {
     "process_ffi.name_of_int",
     Scheme([9183], Fun([i], Con("Name", [Var(9183)]))),
   )
-  |> dict.insert("process_ffi.selector_merge", Scheme(none, Fun([i, i], i)))
-  |> dict.insert("process_ffi.selector_watch_owned", Scheme(none, Fun([i], i)))
+  |> dict.insert("process_ffi.selector_merge", Scheme(none, Fun([sh, sh], sh)))
+  |> dict.insert("process_ffi.selector_watch_owned", Scheme(none, Fun([sh], sh)))
   |> dict.insert(
     "process_ffi.selector_other_raw",
-    Scheme(none, Fun([i], Con("Dynamic", []))),
+    Scheme(none, Fun([sh], Con("Dynamic", []))),
   )
   |> dict.insert(
     "process_ffi.send_exit",

@@ -69,7 +69,7 @@ type Handlers(payload) {
 /// non-destructively; a message no handler accepts is set aside and re-examined
 /// on the next wake.
 pub opaque type Selector(payload) {
-  Selector(handle: Int, handlers: Handlers(payload))
+  Selector(handle: SelectorHandle, handlers: Handlers(payload))
 }
 
 /// Create a new `Selector`, which can wait for a message on several subjects

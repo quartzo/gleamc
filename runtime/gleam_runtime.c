@@ -1671,52 +1671,79 @@ static void gleamc_selector_timer_cb(uv_timer_t* t) {
     uv_close((uv_handle_t*)t, gleamc_selector_timer_close_cb);
 }
 
+static void gleamc_selector_dtor(void* p) {
+    GleamcSelector* sel = (GleamcSelector*)p;
+    gleamc_selector_clear_wait(sel);
+    for (int i = 0; i < sel->nsub; i++)
+        Gleamc_subject_release(sel->subjects[i]);
+    free(sel->subjects);
+}
+
+void Gleamc_selector_retain(int64_t handle) {
+    GleamcSelector* sel = (GleamcSelector*)(intptr_t)handle;
+    if (sel != NULL) gleamc_retain(sel);
+}
+
+void Gleamc_selector_release(int64_t handle) {
+    gleamc_release_with((void*)(intptr_t)handle, gleamc_selector_dtor, "selector");
+}
+
 int64_t Gleamc_process_ffi_selector_new(void) {
     GleamcSelector* sel = (GleamcSelector*)gleamc_alloc0_site(sizeof(GleamcSelector), "selector");
     return (int64_t)(intptr_t)sel;
 }
 
-int64_t Gleamc_process_ffi_selector_add(int64_t handle, int64_t subject) {
-    GleamcSelector* sel = (GleamcSelector*)(intptr_t)handle;
-    if (sel == NULL) return handle;
+static void gleamc_selector_add_subject(GleamcSelector* sel, int64_t subject) {
+    if (sel == NULL) return;
     for (int i = 0; i < sel->nsub; i++) {
-        if (sel->subjects[i] == subject) return handle;
+        if (sel->subjects[i] == subject) return;
     }
     if (sel->nsub == sel->cap) {
         int cap = sel->cap == 0 ? 4 : sel->cap * 2;
         int64_t* grown =
             (int64_t*)realloc(sel->subjects, (size_t)cap * sizeof(int64_t));
-        if (grown == NULL) return handle;
+        if (grown == NULL) return;
         sel->subjects = grown;
         sel->cap = cap;
     }
     sel->subjects[sel->nsub++] = subject;
     Gleamc_subject_retain(subject);
+}
+
+/* The selector functions return the same handle; the caller receives a new
+ * owned reference, so the result is retained. */
+int64_t Gleamc_process_ffi_selector_add(int64_t handle, int64_t subject) {
+    gleamc_selector_add_subject((GleamcSelector*)(intptr_t)handle, subject);
+    Gleamc_selector_retain(handle);
     return handle;
 }
 
 int64_t Gleamc_process_ffi_selector_remove(int64_t handle, int64_t subject) {
     GleamcSelector* sel = (GleamcSelector*)(intptr_t)handle;
-    if (sel == NULL) return handle;
-    for (int i = 0; i < sel->nsub; i++) {
-        if (sel->subjects[i] == subject) {
-            for (int j = i + 1; j < sel->nsub; j++)
-                sel->subjects[j - 1] = sel->subjects[j];
-            sel->nsub--;
-            Gleamc_subject_release(subject);
-            break;
+    if (sel != NULL) {
+        for (int i = 0; i < sel->nsub; i++) {
+            if (sel->subjects[i] == subject) {
+                for (int j = i + 1; j < sel->nsub; j++)
+                    sel->subjects[j - 1] = sel->subjects[j];
+                sel->nsub--;
+                Gleamc_subject_release(subject);
+                break;
+            }
         }
     }
+    Gleamc_selector_retain(handle);
     return handle;
 }
 
-/* Copies `b`'s subjects into `a` (deduplicated) and returns `a`. */
+/* Copies `b`'s subjects into `a` (deduplicated) and returns `a` (retained). */
 int64_t Gleamc_process_ffi_selector_merge(int64_t a, int64_t b) {
     GleamcSelector* sa = (GleamcSelector*)(intptr_t)a;
     GleamcSelector* sb = (GleamcSelector*)(intptr_t)b;
-    if (sa == NULL || sb == NULL) return a;
-    for (int i = 0; i < sb->nsub; i++)
-        Gleamc_process_ffi_selector_add(a, sb->subjects[i]);
+    if (sb != NULL) {
+        for (int i = 0; i < sb->nsub; i++)
+            gleamc_selector_add_subject(sa, sb->subjects[i]);
+    }
+    Gleamc_selector_retain(a);
     return a;
 }
 
@@ -1724,9 +1751,12 @@ int64_t Gleamc_process_ffi_selector_merge(int64_t a, int64_t b) {
  * watches them (a process only receives messages sent to subjects it owns). */
 int64_t Gleamc_process_ffi_selector_watch_owned(int64_t handle) {
     GleamcTask2* me = gleamc_task_by_id(gleamc_current_task_id);
-    if (me == NULL) return handle;
-    for (int i = 0; i < me->nowned; i++)
-        Gleamc_process_ffi_selector_add(handle, (int64_t)(intptr_t)me->owned[i]);
+    GleamcSelector* sel = (GleamcSelector*)(intptr_t)handle;
+    if (me != NULL) {
+        for (int i = 0; i < me->nowned; i++)
+            gleamc_selector_add_subject(sel, (int64_t)(intptr_t)me->owned[i]);
+    }
+    Gleamc_selector_retain(handle);
     return handle;
 }
 
