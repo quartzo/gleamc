@@ -422,6 +422,8 @@ int64_t Gleamc_process_ffi_self(void);
 bool Gleamc_process_ffi_is_alive(int64_t pid);
 int64_t Gleamc_task_ffi_pid(GleamcFuture* task);
 bool Gleamc_task_ffi_crashed(GleamcFuture* task);
+void Gleamc_task_ffi_retain(GleamcFuture* task);
+void Gleamc_task_ffi_release(GleamcFuture* task);
 int64_t Gleamc_process_ffi_pid_of_int(int64_t pid);
 
 /* Scheduled sends: `send_after` returns an opaque `Timer` handle; `cancel`

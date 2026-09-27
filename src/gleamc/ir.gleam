@@ -109,6 +109,7 @@ pub type ResumeMode {
   Host
   Machine
   Boxed
+  BoxedBorrow
 }
 
 pub type Terminator {
@@ -659,6 +660,7 @@ fn resume_mode_text(mode: ResumeMode) -> String {
     Host -> "host"
     Machine -> "machine"
     Boxed -> "boxed"
+    BoxedBorrow -> "boxed_borrow"
   }
 }
 

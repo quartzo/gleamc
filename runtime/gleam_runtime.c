@@ -1209,6 +1209,22 @@ int64_t Gleamc_task_ffi_pid(GleamcFuture* task) {
     return gleamc_task_id(task);
 }
 
+static void gleamc_task_dtor(void* p) {
+    GleamcFuture* f = (GleamcFuture*)p;
+    if (f->value_p != NULL) {
+        gleamc_box_free(f->value_p);
+        f->value_p = NULL;
+    }
+}
+
+void Gleamc_task_ffi_retain(GleamcFuture* task) {
+    if (task != NULL) gleamc_retain(task);
+}
+
+void Gleamc_task_ffi_release(GleamcFuture* task) {
+    gleamc_release_with((void*)task, gleamc_task_dtor, "task");
+}
+
 bool Gleamc_task_ffi_crashed(GleamcFuture* task) {
     return task != NULL && task->crashed;
 }
@@ -1222,9 +1238,13 @@ GleamcFuture* gleamc_task_start(bool (*step)(void*), void* frame,
                                 void (*copy_result)(void*, void*),
                                 void* result_dst,
                                 void (*frame_drop)(void*)) {
-    return gleamc_task_push(
+    GleamcFuture* done = gleamc_task_push(
         step, frame, fut_slot, copy_result, result_dst, frame_drop, false
     );
+    /* The task holds one reference (dropped at finish); the caller holds
+     * another (dropped by the generated wrapper). */
+    gleamc_retain(done);
+    return done;
 }
 
 GleamcFuture* gleamc_task_async(bool (*step)(void*), void* frame,
@@ -1237,6 +1257,9 @@ GleamcFuture* gleamc_task_async(bool (*step)(void*), void* frame,
     /* The worker's `copy_result` writes its result into `box`; publish the box
      * on the completion future so `task.await` can move the value out. */
     done->value_p = box;
+    /* The task holds one reference (dropped at finish); the `Task(a)` handle
+     * holds another (dropped by the compiler). */
+    gleamc_retain(done);
     return done;
 }
 
@@ -1263,7 +1286,10 @@ static void gleamc_future_wait(GleamcFuture* f);
 
 void* Gleamc_uv_await_box(GleamcFuture* f) {
     gleamc_future_wait(f);
-    return f == NULL ? NULL : f->value_p;
+    if (f == NULL) return NULL;
+    void* box = f->value_p;
+    f->value_p = NULL;
+    return box;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2061,7 +2087,7 @@ static void gleamc_task_finish(GleamcTask2* t, int64_t reason, bool copy) {
     t->ocap = 0;
     if (t->frame_drop != NULL) t->frame_drop(t->frame);
     else gleamc_release(t->frame);
-    if (t->detached && t->done != NULL) gleamc_release(t->done);
+    if (t->done != NULL) gleamc_release(t->done);
     t->finished = true;
 }
 

@@ -68,6 +68,7 @@ fn has_host_suspend(function: ir.Function) -> Bool {
     case block.term {
       ir.Suspend(_, _, _, ir.Host) -> True
       ir.Suspend(_, _, _, ir.Boxed) -> True
+      ir.Suspend(_, _, _, ir.BoxedBorrow) -> True
       _ -> False
     }
   })

@@ -26,7 +26,12 @@ pub fn ret_needs_sret(ty: Type, recursive: Dict(String, Bool)) -> Bool {
     TNamed("BitArray") -> False
     TNamed("void*") | TNamed("Future") | TNamed("Handle") | TNamed("Dynamic") | TNamed("SelectorHandle") -> False
     ast.TFun(_, _) -> False
-    TNamed(name) -> !is_recursive(recursive, name)
+    ast.TApp("Task", _) -> False
+    TNamed(name) ->
+      case ast.task_elem_name(name) {
+        Ok(_) -> False
+        Error(_) -> !is_recursive(recursive, name)
+      }
     _ -> True
   }
 }

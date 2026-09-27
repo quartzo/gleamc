@@ -507,6 +507,8 @@ fn header(audit: Bool) -> String {
   <> "declare void @Gleamc_subject_release(i64)\n"
   <> "declare void @Gleamc_selector_retain(i64)\n"
   <> "declare void @Gleamc_selector_release(i64)\n"
+  <> "declare void @Gleamc_task_ffi_retain(i8*)\n"
+  <> "declare void @Gleamc_task_ffi_release(i8*)\n"
   <> "declare i64 @Gleamc_process_ffi_new_subject()\n"
   <> "declare i32 @Gleamc_process_ffi_send(i64, i8*)\n"
   <> "declare i8* @Gleamc_process_ffi_receive(i64)\n"
@@ -1739,6 +1741,7 @@ fn emit_await_box(
   ctx: Ctx,
   dest: String,
   fut_v: String,
+  release: Bool,
   b: Builder,
 ) -> Builder {
   let dest_ty = local_type(ctx.by_name, dest)
@@ -1768,7 +1771,10 @@ fn emit_await_box(
     }
   }
   let b = emit_line(b, "  call void @gleamc_box_free(i8* " <> box <> ")")
-  emit_line(b, "  call void @Gleamc_rc_release(i8* " <> fut_v <> ", i8* null)")
+  case release {
+    True -> emit_line(b, "  call void @Gleamc_rc_release(i8* " <> fut_v <> ", i8* null)")
+    False -> b
+  }
 }
 
 /// Emits the blocks of a machine `step`: a suspension stores the pending future
@@ -1809,7 +1815,8 @@ fn emit_machine_blocks(
                 "  call void @Gleamc_rc_release(i8* " <> fv <> ", i8* null)",
               )
             ir.Host -> emit_await_read(ctx, dest, fv, b)
-            ir.Boxed -> emit_await_box(ctx, dest, fv, b)
+            ir.Boxed -> emit_await_box(ctx, dest, fv, True, b)
+            ir.BoxedBorrow -> emit_await_box(ctx, dest, fv, False, b)
           }
           let #(fp2, b) = frame_gep("%__fr", fr_ty, fut_idx, b)
           emit_line(b, "  store i8* null, i8** " <> fp2)
@@ -5284,6 +5291,14 @@ fn selector_rc(which: String, reg: String, b: Builder) -> Builder {
   emit_line(b, "  call void @" <> call <> "(i64 " <> reg <> ")")
 }
 
+fn task_rc(which: String, reg: String, b: Builder) -> Builder {
+  let call = case which {
+    "retain" -> "Gleamc_task_ffi_retain"
+    _ -> "Gleamc_task_ffi_release"
+  }
+  emit_line(b, "  call void @" <> call <> "(i8* " <> reg <> ")")
+}
+
 /// `sizeof(ty)` as an i64 constant expression (inlined into a call argument:
 /// a standalone `ptrtoint` of a constant expression is rejected by newer LLVM).
 fn ty_size_expr(ty: Type, recursive) -> String {
@@ -7347,6 +7362,8 @@ fn rc_expr(
     ast.TApp("Buffer", _) -> buffer_rc(which, reg, b)
     // `Subject(a)` is a refcounted mailbox handle (i64 pointer).
     ast.TApp("Subject", _) -> subject_rc(which, reg, b)
+    // `Task(a)` is a refcounted completion-future handle (i8*).
+    ast.TApp("Task", _) -> task_rc(which, reg, b)
     // `Dynamic` is a refcounted boxed value (`GleamcDynamic*`).
     TNamed("Dynamic") -> dynamic_rc(which, reg, b)
     // A refcounted selector handle (`i64`).
@@ -7355,19 +7372,23 @@ fn rc_expr(
       case ast.subject_elem_name(name) {
         Ok(_) -> subject_rc(which, reg, b)
         Error(_) ->
-          case ast.buffer_elem_name(name) {
-            Ok(_) -> buffer_rc(which, reg, b)
+          case ast.task_elem_name(name) {
+            Ok(_) -> task_rc(which, reg, b)
             Error(_) ->
-              emit_line(
-                b,
-                "  call void @"
-                  <> rc_name(which, ty)
-                  <> "("
-                  <> ty_s
-                  <> " "
-                  <> reg
-                  <> ")",
-              )
+              case ast.buffer_elem_name(name) {
+                Ok(_) -> buffer_rc(which, reg, b)
+                Error(_) ->
+                  emit_line(
+                    b,
+                    "  call void @"
+                      <> rc_name(which, ty)
+                      <> "("
+                      <> ty_s
+                      <> " "
+                      <> reg
+                      <> ")",
+                  )
+              }
           }
       }
     ast.TTuple(_) -> {

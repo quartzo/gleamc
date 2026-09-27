@@ -912,7 +912,7 @@ fn lower_await(b, args, dest_ty) {
       use #(fut, b1) <- result.try(lower_expr(b, task_expr))
       let #(dest, b2) = fresh_local(b1, "awaited", dest_ty)
       let #(resume, b3) = new_label(b2, "await")
-      let b4 = end_block(b3, ir.Suspend(fut, dest, resume, ir.Boxed))
+      let b4 = end_block(b3, ir.Suspend(fut, dest, resume, ir.BoxedBorrow))
       let b5 = start_block(b4, resume)
       Ok(#(ir.Var(dest), b5))
     }

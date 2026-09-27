@@ -323,9 +323,9 @@ fn needs_drop_seen(ty, fields_of, recursive, seen) -> Bool {
     // `Buffer(a)` is a refcounted cell that must be released even when its
     // element type is trivial (e.g. `Buffer(Int)`).
     TApp("Buffer", _) -> True
-    // `Subject(a)` is a refcounted mailbox cell; `Task(a)` is a scalar handle.
+    // `Subject(a)`/`Task(a)` are refcounted handles.
     TApp("Subject", _) -> True
-    TApp("Task", _) -> False
+    TApp("Task", _) -> True
     TApp(_, args) ->
       list.any(args, fn(inner) {
         needs_drop_seen(inner, fields_of, recursive, seen)
@@ -336,9 +336,9 @@ fn needs_drop_seen(ty, fields_of, recursive, seen) -> Bool {
         Ok(_) -> True
         Error(_) ->
           case subject_elem_name(name), task_elem_name(name) {
-            // Monomorphised `Subject(a)` is refcounted; `Task(a)` is a scalar.
+            // Monomorphised `Subject(a)`/`Task(a)` are refcounted.
             Ok(_), _ -> True
-            _, Ok(_) -> False
+            _, Ok(_) -> True
             _, Error(_) ->
               case dict.get(recursive, name) {
                 Ok(True) -> True
@@ -1161,6 +1161,7 @@ fn transferred_set(term: ir.Terminator, handles, modes, ffi) {
       ))
     // The pending future is handed to the driver and released by the machine on
     // resume, so the flow does not drop it at the suspension.
+    ir.Suspend(_, _, _, ir.BoxedBorrow) -> dict.new()
     ir.Suspend(fut, _, _, _) -> sets_from(handle_names([fut], handles))
     _ -> dict.new()
   }

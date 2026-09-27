@@ -156,14 +156,15 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   `Subject(a)` handles are refcounted and their mailbox is freed when the last
   reference dies (queued boxes are freed too, but their payload references are
   abandoned — there is no per-message drop); subjects held by a live
-  `Selector` and task inboxes stay alive. `Selector` handles and `Dynamic`
-  values are refcounted (a `Dynamic` frees its box and runs a per-type drop
-  glue at refcount 0), so those no longer leak. Still leaking: a `Task(a)`'s
-  completion future (the handle is never released; a killed/timed-out task's
-  handle and a still-running task at exit both leak), timer futures, the
-  boxed result of a task that is never awaited, and boxes queued but never
-  received (their payloads are never dropped). Draining a mailbox does not
-  join the spawned senders.
+  `Selector` and task inboxes stay alive.   `Selector` handles, `Dynamic` values and
+  `Task(a)` handles are refcounted (a `Dynamic` frees its box and runs a
+  per-type drop glue at refcount 0; a `Task(a)`'s completion future is held by
+  both the task and the caller, so a killed/timed-out handle no longer leaks
+  and no longer dangles), so those no longer leak. Still leaking: timer
+  futures, the boxed result of a task that is never awaited, tasks still
+  running when the program exits, and boxes queued but never received (their
+  payloads are never dropped). Draining a mailbox does not join the spawned
+  senders.
 
 ## Standard library coverage
 
