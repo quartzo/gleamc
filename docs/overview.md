@@ -22,7 +22,9 @@ layer's responsibility and its artifact see [cascade.md](cascade.md); for the
 memory model see [memory.md](memory.md); for the tail-call and async machine see
 [machine.md](machine.md); for the in-progress change that makes the function
 frame the closure environment see [frame-environment.md](frame-environment.md);
-for the current feature gaps see [known-limitations.md](known-limitations.md).
+for the current feature gaps see [known-limitations.md](known-limitations.md);
+for the implemented language and APIs see [manual/](manual/README.md), and for
+the plan to close the remaining idiomatic gaps see [roadmap.md](roadmap.md).
 
 ## The cascade
 

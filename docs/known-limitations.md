@@ -8,6 +8,10 @@ The project is a work in progress. Everything listed under "Verified" passes
 today; everything under "Not implemented" is either rejected by the compiler or
 silently unavailable.
 
+- [manual/](manual/README.md) documents the language and APIs that **are**
+  implemented.
+- [roadmap.md](roadmap.md) plans the remaining idiomatic gaps.
+
 ## Verified today
 
 - `gleam test`: all unit/e2e tests pass, including refcount leak checks.
@@ -50,12 +54,10 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   argument matcher keys on the parameter name, so a labelled call only works
   when the parameter is named after the label (`fn f(label: T)`) — impossible
   for keyword-like labels such as `get_files(in directory)`.
-- `@external(...)` declarations and bit-array string segments
-  (`<<"...":utf8>>`) are not parsed.
-- Constructor fields in a `type` declaration must be named
-  (`Continue(value: a)`); positional fields (`Continue(a)`) are not parsed.
-  Construction and matching can still be positional.
+- Bit-array string segments (`<<"...":utf8>>`) are not parsed (only plain
+  8-bit integer elements are supported).
 - `let` bindings take no type annotation (`let x: T = ...`).
+- `panic as` / `todo as` accept only a string literal, not an expression.
 
 ## Type system
 
@@ -65,7 +67,6 @@ adding list support, and are now covered by `diffs/lists.gleam`:
 - User-defined type names are module-scoped (`module.Type` in annotations and
   references); primitives, builtins and the prelude types (`List`, `Result`,
   `Option`, `Order`, `BitArray`) stay global.
-- No `const` values.
 - Constructors are module-scoped, like the official compiler: a name may be
   reused across modules (canonicalised internally to `module.Ctor`) but must be
   unique within a module. Qualified references (`mod.Ctor`) and unqualified ones
@@ -151,8 +152,14 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   `select_other` is a catch-all over the subjects the process owns — a process
   receives only subjects it owns, so this is faithful — but a subject created
   *after* `select_other` is not watched (register it first). `select_record`
-  is not implemented: it matches foreign tuple-tagged messages, which a
-  pure-Gleam runtime has no notion of. `AwaitError` has `Timeout` and
+  is intentionally **not** implemented: it exists to match *foreign* Erlang
+  tuples `{tag_atom, fields...}` (and by design does **not** match messages sent
+  through a `Subject`). This runtime has exactly one message kind — a
+  subject-tagged boxed Gleam value, with no raw terms and no atoms — so there is
+  nothing for it to match; implementing it either as a never-matching handler or
+  by matching subject tuples would be pointless or wrong. Implementing it
+  faithfully would require adding Erlang/BEAM interop (atoms, raw terms, a
+  foreign send), which this native C backend has no use for. `AwaitError` has `Timeout` and
   `Exit(Dynamic)` (a task killed before producing a value; the reason is the
   `Killed` exit reason, wrapped as a `Dynamic`). A
   `Subject(a)` handles are refcounted and their mailbox is freed when the last
@@ -270,11 +277,13 @@ library under both the official toolchain and gleamc.
 
 - `src/gleamc/ffi.gleam` reads and writes files through `simplifile` (the
   published package under the official toolchain, `std/simplifile.gleam` under
-  gleamc), so the same source compiles under both. `run`, `which`, `get_env`
-  and `argv` still use `@external(erlang, "gleamc_ffi", ...)`, which gleamc
-  cannot parse, and need a portable replacement.
+  gleamc), so the same source compiles under both. Process/environment access
+  (`run`, `get_env`, `which`, `argv`, blob helpers) goes through the `host.*`
+  builtins — backed by `src/gleamc_ffi.erl` when bootstrapping on the BEAM and
+  by the C runtime's `Gleamc_host_*` when gleamc compiles itself.
 - `std/simplifile.gleam` must keep growing until it covers every call the
-  compiler makes.
+  compiler makes, and there is no CI target that builds gleamc with gleamc
+  itself yet.
 
 ## Toolchain
 
