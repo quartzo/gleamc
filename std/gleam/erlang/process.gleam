@@ -176,6 +176,13 @@ pub fn send_exit(to: Pid) -> Nil {
   process_ffi.send_exit(to)
 }
 
+/// Send an abnormal exit signal to a process, terminating a non-trapping one.
+/// The reason is not carried, so a trapping process sees `Killed`.
+pub fn send_abnormal_exit(pid: Pid, reason: a) -> Nil {
+  let _ = reason
+  process_ffi.send_abnormal_exit(pid)
+}
+
 /// Create a link between the current process and `pid`.
 pub fn link(pid: Pid) -> Bool {
   process_ffi.link(pid)

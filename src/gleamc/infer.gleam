@@ -1126,6 +1126,10 @@ fn builtins() -> Dict(String, Scheme) {
     "process_ffi.send_exit",
     Scheme(none, Fun([Con("Pid", [])], n)),
   )
+  |> dict.insert(
+    "process_ffi.send_abnormal_exit",
+    Scheme(none, Fun([Con("Pid", [])], n)),
+  )
 }
 
 /// The names of every builtin, used by `ffi_modes` coverage checks.

@@ -439,6 +439,7 @@ bool Gleamc_process_ffi_link(int64_t pid);
 int32_t Gleamc_process_ffi_unlink(int64_t pid);
 int32_t Gleamc_process_ffi_kill(int64_t pid);
 int32_t Gleamc_process_ffi_send_exit(int64_t pid);
+int32_t Gleamc_process_ffi_send_abnormal_exit(int64_t pid);
 
 /* Selectors: wait for a message on any of several subjects. */
 int64_t Gleamc_process_ffi_selector_new(void);

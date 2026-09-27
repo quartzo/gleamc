@@ -1945,6 +1945,25 @@ int32_t Gleamc_process_ffi_send_exit(int64_t pid) {
     return 0;
 }
 
+/* `exit(pid, Reason)` with a non-normal reason: a trapping target gets an
+ * `ExitMessage`, a non-trapping one is terminated. The reason itself is not
+ * carried (only `Normal`/`Killed` exist), so a trapped message reports
+ * `Killed`. */
+int32_t Gleamc_process_ffi_send_abnormal_exit(int64_t pid) {
+    GleamcTask2* t = gleamc_task_by_id(pid);
+    if (t == NULL || t->finished) return 0;
+    if (t->trap_exit && Gleamc_make_process_ExitMessage_ExitMessage != NULL) {
+        if (t->inbox_exit == NULL) t->inbox_exit = gleamc_mailbox_new();
+        void* box =
+            Gleamc_make_process_ExitMessage_ExitMessage(gleamc_current_task_id, 1);
+        gleamc_mailbox_send_box(t->inbox_exit, box);
+    } else {
+        t->kill_requested = true;
+        t->kill_reason = 1; /* Killed */
+    }
+    return 0;
+}
+
 int32_t Gleamc_process_ffi_unreceive(int64_t handle, void* box) {
     GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)handle;
     if (mb == NULL) { gleamc_box_free(box); return 0; }

@@ -2510,6 +2510,16 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         TNil,
         "process_ffi.send_exit",
       )
+    "process_ffi", "send_abnormal_exit" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("Pid")],
+        TNil,
+        "process_ffi.send_abnormal_exit",
+      )
     "task_ffi", "pid" -> {
       use typed_args <- result.try(infer_all(env, signatures, ctors, args))
       case typed_args {
