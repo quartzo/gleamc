@@ -1978,10 +1978,13 @@ int32_t Gleamc_process_ffi_demonitor(int64_t mid) {
     return 0;
 }
 
+/* The task holds one reference to its monitor/exit inbox for its whole
+ * lifetime; each `self_*_inbox` call returns another owned reference. */
 int64_t Gleamc_process_ffi_self_down_inbox(void) {
     GleamcTask2* me = gleamc_task_by_id(gleamc_current_task_id);
     if (me == NULL) return 0;
     gleamc_task_inbox(me, &me->inbox_down);
+    Gleamc_subject_retain((int64_t)(intptr_t)me->inbox_down);
     return (int64_t)(intptr_t)me->inbox_down;
 }
 
@@ -1989,6 +1992,7 @@ int64_t Gleamc_process_ffi_self_exit_inbox(void) {
     GleamcTask2* me = gleamc_task_by_id(gleamc_current_task_id);
     if (me == NULL) return 0;
     gleamc_task_inbox(me, &me->inbox_exit);
+    Gleamc_subject_retain((int64_t)(intptr_t)me->inbox_exit);
     return (int64_t)(intptr_t)me->inbox_exit;
 }
 
@@ -2085,6 +2089,23 @@ static void gleamc_task_finish(GleamcTask2* t, int64_t reason, bool copy) {
     t->owned = NULL;
     t->nowned = 0;
     t->ocap = 0;
+    free(t->monitors);
+    t->monitors = NULL;
+    t->nmon = 0;
+    t->moncap = 0;
+    free(t->links);
+    t->links = NULL;
+    t->nlink = 0;
+    t->linkcap = 0;
+    /* Drop the task's own reference to its monitor/exit inboxes. */
+    if (t->inbox_down != NULL) {
+        Gleamc_subject_release((int64_t)(intptr_t)t->inbox_down);
+        t->inbox_down = NULL;
+    }
+    if (t->inbox_exit != NULL) {
+        Gleamc_subject_release((int64_t)(intptr_t)t->inbox_exit);
+        t->inbox_exit = NULL;
+    }
     if (t->frame_drop != NULL) t->frame_drop(t->frame);
     else gleamc_release(t->frame);
     if (t->done != NULL) gleamc_release(t->done);
@@ -2219,6 +2240,53 @@ int64_t Gleamc_process_ffi_subject_name(int64_t handle) {
 }
 
 int64_t Gleamc_process_ffi_name_of_int(int64_t handle) { return handle; }
+
+/* Free a mailbox's queued boxes and its arrays (the cell itself is left to the
+ * subject's own refcount / the OS). Used only at shutdown. */
+static void gleamc_mailbox_drain(GleamcMailbox* mb) {
+    if (mb == NULL) return;
+    for (int i = 0; i < mb->nmsg; i++) gleamc_box_free(mb->msgs[i]);
+    for (int i = 0; i < mb->ndef; i++) gleamc_box_free(mb->deferred[i]);
+    free(mb->msgs);
+    free(mb->deferred);
+    free(mb->waiters);
+    free(mb->notifiers);
+    mb->msgs = NULL;
+    mb->deferred = NULL;
+    mb->waiters = NULL;
+    mb->notifiers = NULL;
+    mb->nmsg = mb->mcap = 0;
+    mb->ndef = mb->dcap = 0;
+    mb->nwait = mb->wcap = 0;
+    mb->nnotify = mb->ncap = 0;
+    /* Drop the cell's allocation reference (the arrays are already freed, so
+     * `Gleamc_subject_release`'s teardown is a no-op if another owner calls it). */
+    gleamc_release(mb);
+}
+
+/* Called from the generated `main` once `Gleamc_main` returns: terminate every
+ * still-pending task (drop its frame and completion future, drain its
+ * mailboxes) so a short-lived program releases what it left running. */
+void gleamc_shutdown(void) {
+    for (int i = 0; i < gleamc_tasks2_n; i++) {
+        GleamcTask2* t = &gleamc_tasks2[i];
+        if (t->finished) continue;
+        for (int j = 0; j < t->nowned; j++) gleamc_mailbox_drain(t->owned[j]);
+        free(t->owned);
+        t->owned = NULL;
+        t->nowned = 0;
+        free(t->monitors);
+        t->monitors = NULL;
+        t->nmon = 0;
+        free(t->links);
+        t->links = NULL;
+        t->nlink = 0;
+        if (t->frame_drop != NULL) t->frame_drop(t->frame);
+        else if (t->frame != NULL) gleamc_release(t->frame);
+        if (t->done != NULL) gleamc_release(t->done);
+    }
+    gleamc_tasks2_n = 0;
+}
 
 void gleamc_run_until(GleamcFuture* target) {
     void* loop = gleamc_uv_loop();

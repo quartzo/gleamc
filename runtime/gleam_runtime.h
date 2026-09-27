@@ -368,6 +368,8 @@ void gleamc_task_tail(bool (*step)(void*), void* frame,
  * NULL). Safe to call re-entrantly: a synchronous call into an async closure
  * drives only up to its own completion future. */
 void gleamc_run_until(GleamcFuture* target);
+/* Terminate pending tasks and free their resources, at program exit. */
+void gleamc_shutdown(void);
 
 /* Starts a task for `task.async`: the worker's result is copied into `box`
  * (an owned heap cell of the result's size) and `box` is published on the
