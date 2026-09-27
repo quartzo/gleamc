@@ -1945,19 +1945,19 @@ int32_t Gleamc_process_ffi_send_exit(int64_t pid) {
     return 0;
 }
 
-/* `exit(pid, Reason)` with a non-normal reason: a trapping target gets an
- * `ExitMessage`, a non-trapping one is terminated. The reason itself is not
- * carried (only `Normal`/`Killed` exist), so a trapped message reports
- * `Killed`. */
-int32_t Gleamc_process_ffi_send_abnormal_exit(int64_t pid) {
+/* Deliver a pre-built `ExitMessage` box to a trapping target's exit inbox; a
+ * non-trapping target is terminated. */
+int32_t Gleamc_process_ffi_send_exit_message(int64_t pid, void* box) {
     GleamcTask2* t = gleamc_task_by_id(pid);
-    if (t == NULL || t->finished) return 0;
-    if (t->trap_exit && Gleamc_make_process_ExitMessage_ExitMessage != NULL) {
+    if (t == NULL || t->finished) {
+        gleamc_box_free(box);
+        return 0;
+    }
+    if (t->trap_exit) {
         if (t->inbox_exit == NULL) t->inbox_exit = gleamc_mailbox_new();
-        void* box =
-            Gleamc_make_process_ExitMessage_ExitMessage(gleamc_current_task_id, 1);
         gleamc_mailbox_send_box(t->inbox_exit, box);
     } else {
+        gleamc_box_free(box);
         t->kill_requested = true;
         t->kill_reason = 1; /* Killed */
     }
@@ -1988,6 +1988,27 @@ int64_t Gleamc_process_ffi_mailbox_len(int64_t handle) {
 }
 
 int64_t Gleamc_process_ffi_subject_handle(int64_t handle) { return handle; }
+
+/* ------------------------------------------------------------------ */
+/* Dynamic values: a class tag plus a boxed payload.                   */
+/* ------------------------------------------------------------------ */
+
+void* Gleamc_dynamic_new(int32_t tag, void* box) {
+    int64_t* d = (int64_t*)gleamc_alloc0(2 * sizeof(int64_t));
+    d[0] = tag;
+    d[1] = (int64_t)(intptr_t)box;
+    return d;
+}
+
+int64_t Gleamc_dynamic_ffi_classify(void* dynamic) {
+    if (dynamic == NULL) return -1;
+    return ((int64_t*)dynamic)[0];
+}
+
+void* Gleamc_dynamic_bits(void* dynamic) {
+    if (dynamic == NULL) return NULL;
+    return (void*)(intptr_t)((int64_t*)dynamic)[1];
+}
 
 /* The owning task id of a subject, or the pid registered for a named subject,
  * or -1. */

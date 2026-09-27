@@ -142,10 +142,13 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   an `ExitMessage`. Names are supported (`new_name`, `register`, `unregister`,
   `named`, `named_subject`); a `Name(a)` is a subject handle, so
   `named_subject` returns it and `subject_name`/`subject_owner` look it up.
-  Restrictions: `ExitReason` only has `Normal`/`Killed` (no
-  `Abnormal(Dynamic)`) — `send_abnormal_exit` terminates a non-trapping target
-  but a trapping one sees `Killed` — `select_other`/`select_record` are not
-  implemented, and `AwaitError` only has `Timeout`. A
+  `ExitReason` has `Normal`, `Killed` and `Abnormal(Dynamic)`;
+  `send_abnormal_exit` now carries the reason. `gleam/dynamic` is a subset:
+  `from`, `unsafe_coerce`, `classify` and the `Int`/`Float`/`String`/`Bool`
+  accessors (no `list`/tuple reification or decoders).
+  `select_other`/`select_record` are not implemented — they match any message
+  in the process mailbox, but the runtime gives each `Subject` its own mailbox
+  rather than one per process — and `AwaitError` only has `Timeout`. A
   `Subject(a)` handles are refcounted and their mailbox is freed when the last
   reference dies (queued boxes are freed too, but their payload references are
   abandoned — there is no per-message drop); subjects held by a live

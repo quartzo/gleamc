@@ -509,7 +509,10 @@ fn header(audit: Bool) -> String {
   <> "declare i64 @Gleamc_process_ffi_name_of_int(i64)\n"
   <> "declare i64 @Gleamc_process_ffi_selector_merge(i64, i64)\n"
   <> "declare i32 @Gleamc_process_ffi_send_exit(i64)\n"
-  <> "declare i32 @Gleamc_process_ffi_send_abnormal_exit(i64)\n"
+  <> "declare i32 @Gleamc_process_ffi_send_exit_message(i64, i8*)\n"
+  <> "declare i8* @Gleamc_dynamic_new(i32, i8*)\n"
+  <> "declare i64 @Gleamc_dynamic_ffi_classify(i8*)\n"
+  <> "declare i8* @Gleamc_dynamic_bits(i8*)\n"
   <> "declare i64 @Gleamc_process_ffi_send_after(i64, i64, i8*)\n"
   <> "declare i64 @Gleamc_process_ffi_cancel_timer(i64)\n"
   <> "declare i64 @gleamc_task_id(i8*)\n"
@@ -693,6 +696,8 @@ fn llvm_ty(ty: Type, recursive: Dict(String, Bool)) -> String {
     TNamed("Timer") -> "i64"
     TNamed("Selector") -> "i64"
     TNamed("Name") -> "i64"
+    // A boxed dynamic value (`GleamcDynamic*`).
+    TNamed("Dynamic") -> "i8*"
     // Async I/O handle (a file descriptor); opaque scalar.
     TNamed("Handle") -> "i64"
     ast.TNil -> "i32"
@@ -3768,6 +3773,51 @@ fn emit_op_builtin(
       let b = store_local(ctx, dest, "i32", r, b)
       #(b, Nil)
     }
+    // `send_exit_message(pid, message)`: box the `ExitMessage` and deliver it
+    // to the target's exit inbox (or terminate it).
+    "process_ffi.send_exit_message" -> {
+      let #(pid_arg, msg_arg) = case args {
+        [p, m, ..] -> #(p, m)
+        _ -> #(ir.Lit(ir.LUnit), ir.Lit(ir.LUnit))
+      }
+      let #(_, pid, b) = read_val(ctx, pid_arg, b)
+      let #(ty, value, b) = read_val(ctx, msg_arg, b)
+      let #(box, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> box
+            <> " = call i8* @gleamc_box_alloc(i64 "
+            <> ty_size_expr(operand_type(ctx.by_name, msg_arg), ctx.recursive)
+            <> ")",
+        )
+      let #(slot, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  " <> slot <> " = bitcast i8* " <> box <> " to " <> ty <> "*",
+        )
+      let b =
+        emit_line(
+          b,
+          "  store " <> ty <> " " <> value <> ", " <> ty <> "* " <> slot,
+        )
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> r
+            <> " = call i32 @Gleamc_process_ffi_send_exit_message(i64 "
+            <> pid
+            <> ", i8* "
+            <> box
+            <> ")",
+        )
+      let b = store_local(ctx, dest, "i32", r, b)
+      #(b, Nil)
+    }
     "process_ffi.unreceive" -> {
       let #(subject_arg, msg_arg) = case args {
         [s, m, ..] -> #(s, m)
@@ -4140,6 +4190,64 @@ fn emit_op_builtin(
         emit_line(b, "  call void @Gleamc_panic(%GleamcString " <> v <> ")")
       let ty_s = llvm_ty(ret_ty, ctx.recursive)
       let b = store_local(ctx, dest, ty_s, "undef", b)
+      #(b, Nil)
+    }
+    // `dynamic.from(a)`: box the value and tag it with its class.
+    "dynamic_ffi.from" -> {
+      let first = first_arg(args)
+      let oty = operand_type(ctx.by_name, first)
+      let #(ty, value, b) = read_val(ctx, first, b)
+      let tag = dynamic_tag_of(oty)
+      let #(box, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> box
+            <> " = call i8* @gleamc_box_alloc(i64 "
+            <> ty_size_expr(oty, ctx.recursive)
+            <> ")",
+        )
+      let #(slot, b) = fresh(b)
+      let b =
+        emit_line(b, "  " <> slot <> " = bitcast i8* " <> box <> " to " <> ty <> "*")
+      let b =
+        emit_line(b, "  store " <> ty <> " " <> value <> ", " <> ty <> "* " <> slot)
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(
+          b,
+          "  "
+            <> r
+            <> " = call i8* @Gleamc_dynamic_new(i32 "
+            <> int.to_string(tag)
+            <> ", i8* "
+            <> box
+            <> ")",
+        )
+      let b = store_local(ctx, dest, "i8*", r, b)
+      #(b, Nil)
+    }
+    // `dynamic.unsafe_coerce` / `dynamic.int` / ...: load the (already
+    // class-checked) payload back out of the box.
+    "dynamic_ffi.unsafe_coerce"
+    | "dynamic_ffi.as_int"
+    | "dynamic_ffi.as_float"
+    | "dynamic_ffi.as_string"
+    | "dynamic_ffi.as_bool" -> {
+      let first = first_arg(args)
+      let #(_, d, b) = read_val(ctx, first, b)
+      let ret_s = llvm_ty(ret_ty, ctx.recursive)
+      let #(box, b) = fresh(b)
+      let b =
+        emit_line(b, "  " <> box <> " = call i8* @Gleamc_dynamic_bits(i8* " <> d <> ")")
+      let #(slot, b) = fresh(b)
+      let b =
+        emit_line(b, "  " <> slot <> " = bitcast i8* " <> box <> " to " <> ret_s <> "*")
+      let #(r, b) = fresh(b)
+      let b =
+        emit_line(b, "  " <> r <> " = load " <> ret_s <> ", " <> ret_s <> "* " <> slot)
+      let b = store_local(ctx, dest, ret_s, r, b)
       #(b, Nil)
     }
     _ -> emit_builtin_call(ctx, dest, builtin, args, ret_ty, b)
@@ -5047,7 +5155,10 @@ fn runtime_declared(name: String) -> Bool {
     | "Gleamc_process_ffi_name_of_int"
     | "Gleamc_process_ffi_selector_merge"
     | "Gleamc_process_ffi_send_exit"
-    | "Gleamc_process_ffi_send_abnormal_exit"
+    | "Gleamc_process_ffi_send_exit_message"
+    | "Gleamc_dynamic_new"
+    | "Gleamc_dynamic_ffi_classify"
+    | "Gleamc_dynamic_bits"
     | "Gleamc_process_ffi_monitor_eq"
     | "Gleamc_process_ffi_cancel_timer"
     | "Gleamc_buffer_new"
@@ -5374,7 +5485,14 @@ fn special_builtin(name: String) -> Bool {
     | "gleamc.hash"
     | "process_ffi.send"
     | "process_ffi.send_after"
+    | "process_ffi.send_exit_message"
     | "process_ffi.unreceive"
+    | "dynamic_ffi.from"
+    | "dynamic_ffi.unsafe_coerce"
+    | "dynamic_ffi.as_int"
+    | "dynamic_ffi.as_float"
+    | "dynamic_ffi.as_string"
+    | "dynamic_ffi.as_bool"
     | "buffer.new"
     | "buffer.len"
     | "buffer.get"
@@ -5922,6 +6040,7 @@ fn is_handle_like(ty: Type) -> Bool {
     TNamed("Timer") -> True
     TNamed("Selector") -> True
     TNamed("Name") -> True
+    TNamed("Dynamic") -> True
     TNamed(name) ->
       case ast.subject_elem_name(name) {
         Ok(_) -> True
@@ -5940,6 +6059,30 @@ fn is_handle_like(ty: Type) -> Bool {
           }
       }
     _ -> False
+  }
+}
+
+/// The `gleam/dynamic` class tag for a static type (`Int` 0, `Float` 1,
+/// `String` 2, `Bool` 3, `Nil` 4, `List` 5, tuple 6, `BitArray` 7, closure 8,
+/// anything else 9).
+fn dynamic_tag_of(ty: Type) -> Int {
+  case ty {
+    ast.TInt -> 0
+    ast.TFloat -> 1
+    TString -> 2
+    ast.TBool -> 3
+    ast.TNil -> 4
+    TNamed("Nil") -> 4
+    TNamed("BitArray") -> 7
+    ast.TFun(_, _) -> 8
+    ast.TTuple(_) -> 6
+    ast.TApp("List", _) -> 5
+    TNamed(name) ->
+      case string.starts_with(name, "List_") {
+        True -> 5
+        False -> 9
+      }
+    _ -> 9
   }
 }
 
@@ -7108,6 +7251,8 @@ fn rc_expr(
     ast.TApp("Buffer", _) -> buffer_rc(which, reg, b)
     // `Subject(a)` is a refcounted mailbox handle (i64 pointer).
     ast.TApp("Subject", _) -> subject_rc(which, reg, b)
+    // `Dynamic` is an opaque boxed pointer: not refcounted.
+    TNamed("Dynamic") -> b
     TNamed(name) ->
       case ast.subject_elem_name(name) {
         Ok(_) -> subject_rc(which, reg, b)

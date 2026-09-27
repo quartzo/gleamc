@@ -439,7 +439,12 @@ bool Gleamc_process_ffi_link(int64_t pid);
 int32_t Gleamc_process_ffi_unlink(int64_t pid);
 int32_t Gleamc_process_ffi_kill(int64_t pid);
 int32_t Gleamc_process_ffi_send_exit(int64_t pid);
-int32_t Gleamc_process_ffi_send_abnormal_exit(int64_t pid);
+int32_t Gleamc_process_ffi_send_exit_message(int64_t pid, void* box);
+
+/* Dynamic values (`gleam/dynamic`): a class tag plus a boxed payload. */
+void* Gleamc_dynamic_new(int32_t tag, void* box);
+int64_t Gleamc_dynamic_ffi_classify(void* dynamic);
+void* Gleamc_dynamic_bits(void* dynamic);
 
 /* Selectors: wait for a message on any of several subjects. */
 int64_t Gleamc_process_ffi_selector_new(void);

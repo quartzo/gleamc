@@ -4,6 +4,8 @@
 //// signatures and labelled arguments match the original package. `Subject(a)`
 //// is a compiler-known handle type, not declared here.
 
+import gleam/dynamic
+
 /// Create a new `Subject` owned by the current process.
 pub fn new_subject() -> Subject(message) {
   process_ffi.new_subject()
@@ -49,6 +51,7 @@ pub type Down {
 pub type ExitReason {
   Normal
   Killed
+  Abnormal(reason: Dynamic)
 }
 
 /// A message received when a linked process exits and exits are trapped.
@@ -177,10 +180,12 @@ pub fn send_exit(to: Pid) -> Nil {
 }
 
 /// Send an abnormal exit signal to a process, terminating a non-trapping one.
-/// The reason is not carried, so a trapping process sees `Killed`.
+/// A trapping process receives `ExitMessage(self(), Abnormal(reason))`.
 pub fn send_abnormal_exit(pid: Pid, reason: a) -> Nil {
-  let _ = reason
-  process_ffi.send_abnormal_exit(pid)
+  process_ffi.send_exit_message(
+    pid,
+    ExitMessage(self(), Abnormal(dynamic.from(reason))),
+  )
 }
 
 /// Create a link between the current process and `pid`.

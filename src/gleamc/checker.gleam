@@ -2510,15 +2510,89 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         TNil,
         "process_ffi.send_exit",
       )
-    "process_ffi", "send_abnormal_exit" ->
+    "process_ffi", "send_exit_message" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      Ok(builtin_call(
+        "process_ffi",
+        "send_exit_message",
+        list.map(typed_args, tmono.type_of),
+        TNil,
+        typed_args,
+      ))
+    }
+    "dynamic_ffi", "from" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [value] ->
+          Ok(builtin_call(
+            "dynamic_ffi",
+            "from",
+            [tmono.type_of(value)],
+            TNamed("Dynamic"),
+            typed_args,
+          ))
+        _ -> Error(CheckError("dynamic_ffi.from expects one argument"))
+      }
+    }
+    "dynamic_ffi", "unsafe_coerce" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      Ok(builtin_call(
+        "dynamic_ffi",
+        "unsafe_coerce",
+        [TNamed("Dynamic")],
+        TVar("__coerce"),
+        typed_args,
+      ))
+    }
+    "dynamic_ffi", "classify" ->
       check_builtin(
         env,
         signatures,
         ctors,
         args,
-        [TNamed("Pid")],
-        TNil,
-        "process_ffi.send_abnormal_exit",
+        [TNamed("Dynamic")],
+        TInt,
+        "dynamic_ffi.classify",
+      )
+    "dynamic_ffi", "as_int" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("Dynamic")],
+        TInt,
+        "dynamic_ffi.as_int",
+      )
+    "dynamic_ffi", "as_float" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("Dynamic")],
+        TFloat,
+        "dynamic_ffi.as_float",
+      )
+    "dynamic_ffi", "as_string" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("Dynamic")],
+        TString,
+        "dynamic_ffi.as_string",
+      )
+    "dynamic_ffi", "as_bool" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TNamed("Dynamic")],
+        TBool,
+        "dynamic_ffi.as_bool",
       )
     "task_ffi", "pid" -> {
       use typed_args <- result.try(infer_all(env, signatures, ctors, args))

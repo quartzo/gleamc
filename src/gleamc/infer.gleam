@@ -1127,8 +1127,36 @@ fn builtins() -> Dict(String, Scheme) {
     Scheme(none, Fun([Con("Pid", [])], n)),
   )
   |> dict.insert(
-    "process_ffi.send_abnormal_exit",
-    Scheme(none, Fun([Con("Pid", [])], n)),
+    "process_ffi.send_exit_message",
+    Scheme([9192], Fun([Con("Pid", []), Var(9192)], n)),
+  )
+  |> dict.insert(
+    "dynamic_ffi.from",
+    Scheme([9190], Fun([Var(9190)], Con("Dynamic", []))),
+  )
+  |> dict.insert(
+    "dynamic_ffi.unsafe_coerce",
+    Scheme([9191], Fun([Con("Dynamic", [])], Var(9191))),
+  )
+  |> dict.insert(
+    "dynamic_ffi.classify",
+    Scheme(none, Fun([Con("Dynamic", [])], i)),
+  )
+  |> dict.insert(
+    "dynamic_ffi.as_int",
+    Scheme(none, Fun([Con("Dynamic", [])], i)),
+  )
+  |> dict.insert(
+    "dynamic_ffi.as_float",
+    Scheme(none, Fun([Con("Dynamic", [])], f)),
+  )
+  |> dict.insert(
+    "dynamic_ffi.as_string",
+    Scheme(none, Fun([Con("Dynamic", [])], s)),
+  )
+  |> dict.insert(
+    "dynamic_ffi.as_bool",
+    Scheme(none, Fun([Con("Dynamic", [])], b)),
   )
 }
 

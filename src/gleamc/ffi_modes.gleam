@@ -131,9 +131,16 @@ pub fn table() -> Dict(String, FfiSig) {
   |> dict.insert("process_ffi.name_of_int", FfiSig([Borrow], OwnedResult))
   |> dict.insert("process_ffi.send_exit", FfiSig([Borrow], OwnedResult))
   |> dict.insert(
-    "process_ffi.send_abnormal_exit",
-    FfiSig([Borrow], OwnedResult),
+    "process_ffi.send_exit_message",
+    FfiSig([Borrow, Owned], OwnedResult),
   )
+  |> dict.insert("dynamic_ffi.from", FfiSig([Owned], OwnedResult))
+  |> dict.insert("dynamic_ffi.unsafe_coerce", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("dynamic_ffi.classify", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("dynamic_ffi.as_int", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("dynamic_ffi.as_float", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("dynamic_ffi.as_string", FfiSig([Borrow], OwnedResult))
+  |> dict.insert("dynamic_ffi.as_bool", FfiSig([Borrow], OwnedResult))
   |> dict.insert("task.async", FfiSig([Borrow], OwnedResult))
   |> dict.insert("task_ffi.await", FfiSig([Borrow], OwnedResult))
   |> dict.insert("int.to_string", FfiSig([Borrow], OwnedResult))
