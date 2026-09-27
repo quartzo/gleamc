@@ -1002,6 +1002,36 @@ fn builtins() -> Dict(String, Scheme) {
     Scheme(none, Fun([Con("Timer", [])], i)),
   )
   |> dict.insert(
+    "process_ffi.new_name",
+    Scheme([9160], Fun([], Con("Name", [Var(9160)]))),
+  )
+  |> dict.insert(
+    "process_ffi.register",
+    Scheme(
+      [9161],
+      Fun([Con("Pid", []), Con("Name", [Var(9161)])], b),
+    ),
+  )
+  |> dict.insert(
+    "process_ffi.unregister",
+    Scheme([9162], Fun([Con("Name", [Var(9162)])], b)),
+  )
+  |> dict.insert(
+    "process_ffi.named",
+    Scheme([9163], Fun([Con("Name", [Var(9163)])], i)),
+  )
+  |> dict.insert(
+    "process_ffi.named_subject",
+    Scheme(
+      [9164],
+      Fun([Con("Name", [Var(9164)])], Con("Subject", [Var(9164)])),
+    ),
+  )
+  |> dict.insert(
+    "process_ffi.pid_of_int",
+    Scheme(none, Fun([i], Con("Pid", []))),
+  )
+  |> dict.insert(
     "process_ffi.kill",
     Scheme(none, Fun([Con("Pid", [])], n)),
   )

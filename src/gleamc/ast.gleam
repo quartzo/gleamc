@@ -54,6 +54,14 @@ pub fn selector_elem_name(type_name: String) -> Result(String, Nil) {
   }
 }
 
+/// Like `buffer_elem_name`, for the phantom `Name(a)` handle type.
+pub fn name_elem_name(type_name: String) -> Result(String, Nil) {
+  case string.starts_with(type_name, "Name_") {
+    True -> Ok(string.drop_start(type_name, 5))
+    False -> Error(Nil)
+  }
+}
+
 /// Rebuilds a type from its monomorphised mangled name: scalars map back to
 /// their primitive; anything else is a (specialised) named type.
 pub fn type_of_mangled(name: String) -> Type {

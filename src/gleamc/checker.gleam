@@ -18,8 +18,8 @@ import gleamc/ast.{
   ELambda, ENil, EPanic, EString, ETuple, EUnop, EUpdate, EVar, Function, Let,
   Module, PAs, PBitArray, PBool, PCtor, PFloat, PInt, PLabelled, PNil, PString,
   PTuple, PVar, PWildcard, Stmt, TApp, TBool, TFloat, TFun, TInt, TNamed, TNil,
-  TString, TTuple, TVar, Variant, buffer_elem_name, selector_elem_name,
-  subject_elem_name, task_elem_name, type_of_mangled,
+  TString, TTuple, TVar, Variant, buffer_elem_name, name_elem_name,
+  selector_elem_name, subject_elem_name, task_elem_name, type_of_mangled,
 }
 import gleamc/tmono
 
@@ -535,6 +535,19 @@ pub fn selector_elem_type(ty: Type) -> Result(Type, Nil) {
     TApp("Selector", [elem]) -> Ok(elem)
     TNamed(name) ->
       case selector_elem_name(name) {
+        Ok(mangled) -> Ok(type_of_mangled(mangled))
+        Error(_) -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
+}
+
+/// The message type of a `Name`, in either representation.
+pub fn name_elem_type(ty: Type) -> Result(Type, Nil) {
+  case ty {
+    TApp("Name", [elem]) -> Ok(elem)
+    TNamed(name) ->
+      case name_elem_name(name) {
         Ok(mangled) -> Ok(type_of_mangled(mangled))
         Error(_) -> Error(Nil)
       }
@@ -2531,6 +2544,100 @@ fn infer_builtin(env, signatures, ctors, module, name, args) {
         _ -> Error(CheckError("task_ffi.pid expects a Task(a)"))
       }
     }
+    "process_ffi", "new_name" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      Ok(builtin_call(
+        "process_ffi",
+        "new_name",
+        [],
+        TApp("Name", [TVar("__name_elem")]),
+        typed_args,
+      ))
+    }
+    "process_ffi", "register" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [pid, name] ->
+          case tmono.type_of(pid), name_elem_type(tmono.type_of(name)) {
+            TNamed("Pid"), Ok(_) ->
+              Ok(builtin_call(
+                "process_ffi",
+                "register",
+                [TNamed("Pid"), tmono.type_of(name)],
+                TBool,
+                typed_args,
+              ))
+            _, _ -> Error(CheckError("process_ffi.register expects (Pid, Name(a))"))
+          }
+        _ -> Error(CheckError("process_ffi.register expects (Pid, Name(a))"))
+      }
+    }
+    "process_ffi", "unregister" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [name] ->
+          case name_elem_type(tmono.type_of(name)) {
+            Ok(_) ->
+              Ok(builtin_call(
+                "process_ffi",
+                "unregister",
+                [tmono.type_of(name)],
+                TBool,
+                typed_args,
+              ))
+            Error(_) ->
+              Error(CheckError("process_ffi.unregister expects a Name(a)"))
+          }
+        _ -> Error(CheckError("process_ffi.unregister expects a Name(a)"))
+      }
+    }
+    "process_ffi", "named" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [name] ->
+          case name_elem_type(tmono.type_of(name)) {
+            Ok(_) ->
+              Ok(builtin_call(
+                "process_ffi",
+                "named",
+                [tmono.type_of(name)],
+                TInt,
+                typed_args,
+              ))
+            Error(_) -> Error(CheckError("process_ffi.named expects a Name(a)"))
+          }
+        _ -> Error(CheckError("process_ffi.named expects a Name(a)"))
+      }
+    }
+    "process_ffi", "named_subject" -> {
+      use typed_args <- result.try(infer_all(env, signatures, ctors, args))
+      case typed_args {
+        [name] ->
+          case name_elem_type(tmono.type_of(name)) {
+            Ok(elem) ->
+              Ok(builtin_call(
+                "process_ffi",
+                "named_subject",
+                [tmono.type_of(name)],
+                TApp("Subject", [elem]),
+                typed_args,
+              ))
+            Error(_) ->
+              Error(CheckError("process_ffi.named_subject expects a Name(a)"))
+          }
+        _ -> Error(CheckError("process_ffi.named_subject expects a Name(a)"))
+      }
+    }
+    "process_ffi", "pid_of_int" ->
+      check_builtin(
+        env,
+        signatures,
+        ctors,
+        args,
+        [TInt],
+        TNamed("Pid"),
+        "process_ffi.pid_of_int",
+      )
     "process_ffi", "kill" ->
       check_builtin(
         env,

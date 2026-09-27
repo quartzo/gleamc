@@ -407,11 +407,19 @@ int64_t gleamc_task_id(GleamcFuture* done);
 int64_t Gleamc_process_ffi_self(void);
 bool Gleamc_process_ffi_is_alive(int64_t pid);
 int64_t Gleamc_task_ffi_pid(GleamcFuture* task);
+int64_t Gleamc_process_ffi_pid_of_int(int64_t pid);
 
 /* Scheduled sends: `send_after` returns an opaque `Timer` handle; `cancel`
  * returns the remaining milliseconds, or -1 if it already fired. */
 int64_t Gleamc_process_ffi_send_after(int64_t subject, int64_t delay, void* box);
 int64_t Gleamc_process_ffi_cancel_timer(int64_t handle);
+
+/* Names: a `Name` is a subject handle bound to a registered task. */
+int64_t Gleamc_process_ffi_new_name(void);
+int32_t Gleamc_process_ffi_register(int64_t pid, int64_t name);
+int32_t Gleamc_process_ffi_unregister(int64_t name);
+int64_t Gleamc_process_ffi_named(int64_t name);
+int64_t Gleamc_process_ffi_named_subject(int64_t name);
 
 /* Monitors and links (`Down` / `ExitMessage` delivered to a task's inbox). */
 int64_t Gleamc_process_ffi_monitor(int64_t pid);

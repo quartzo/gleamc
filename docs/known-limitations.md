@@ -134,10 +134,13 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   `demonitor_process`, `select_monitors`, `link`, `unlink`, `trap_exits` and
   `select_trapped_exits`, plus `kill`. A non-trapping link **propagates the
   exit** (the linked task is terminated); a trapping link gets an
-  `ExitMessage`. Restrictions: `ExitReason` only has `Normal`/`Killed` (no
-  `Abnormal(Dynamic)`), `send_exit`/`send_abnormal_exit`,
-  `select_specific_monitor`/`select_other`/`select_record` and names are not
-  implemented, and `AwaitError` only has `Timeout`. A
+  `ExitMessage`. Names are supported (`new_name`, `register`, `unregister`,
+  `named`, `named_subject`); a `Name(a)` is a subject handle, so
+  `named_subject` returns it. Restrictions: `ExitReason` only has
+  `Normal`/`Killed` (no `Abnormal(Dynamic)`), `send_exit`/`send_abnormal_exit`
+  and `select_specific_monitor`/`select_other`/`select_record` are not
+  implemented, `subject_name`/`subject_owner` are missing, and `AwaitError`
+  only has `Timeout`. A
   `Subject(a)` handles are refcounted and their mailbox is freed when the last
   reference dies (queued boxes are freed too, but their payload references are
   abandoned — there is no per-message drop); subjects held by a live

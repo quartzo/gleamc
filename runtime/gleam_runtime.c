@@ -1172,6 +1172,10 @@ int64_t Gleamc_task_ffi_pid(GleamcFuture* task) {
     return gleamc_task_id(task);
 }
 
+int64_t Gleamc_process_ffi_pid_of_int(int64_t pid) {
+    return pid;
+}
+
 GleamcFuture* gleamc_task_start(bool (*step)(void*), void* frame,
                                 GleamcFuture** fut_slot,
                                 void (*copy_result)(void*, void*),
@@ -1658,6 +1662,62 @@ int64_t Gleamc_process_ffi_selector_ready(int64_t handle) {
     }
     gleamc_selector_clear_wait(sel);
     return index;
+}
+
+/* ------------------------------------------------------------------ */
+/* Names: a registered name is a subject handle bound to a task.       */
+/* ------------------------------------------------------------------ */
+
+#define GLEAMC_NAMES_MAX 1024
+static struct {
+    int64_t name;
+    int64_t pid;
+} gleamc_names[GLEAMC_NAMES_MAX];
+static int gleamc_names_n = 0;
+
+int64_t Gleamc_process_ffi_new_name(void) {
+    return (int64_t)(intptr_t)gleamc_mailbox_new();
+}
+
+int32_t Gleamc_process_ffi_register(int64_t pid, int64_t name) {
+    for (int i = 0; i < gleamc_names_n; i++) {
+        if (gleamc_names[i].name == name) {
+            gleamc_names[i].pid = pid;
+            return 1;
+        }
+    }
+    if (gleamc_names_n >= GLEAMC_NAMES_MAX) return 0;
+    gleamc_names[gleamc_names_n].name = name;
+    gleamc_names[gleamc_names_n].pid = pid;
+    gleamc_names_n++;
+    return 1;
+}
+
+int32_t Gleamc_process_ffi_unregister(int64_t name) {
+    for (int i = 0; i < gleamc_names_n; i++) {
+        if (gleamc_names[i].name == name) {
+            for (int j = i + 1; j < gleamc_names_n; j++)
+                gleamc_names[j - 1] = gleamc_names[j];
+            gleamc_names_n--;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* The registered task id, or -1 if the name is not registered. */
+int64_t Gleamc_process_ffi_named(int64_t name) {
+    for (int i = 0; i < gleamc_names_n; i++) {
+        if (gleamc_names[i].name == name) return gleamc_names[i].pid;
+    }
+    return -1;
+}
+
+/* `named_subject` returns the name's subject handle; the caller owns the
+ * returned reference, so take one. */
+int64_t Gleamc_process_ffi_named_subject(int64_t name) {
+    Gleamc_subject_retain(name);
+    return name;
 }
 
 /* ------------------------------------------------------------------ */

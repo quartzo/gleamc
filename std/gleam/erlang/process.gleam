@@ -70,6 +70,43 @@ pub fn select(
   process_ffi.selector_add(selector, for)
 }
 
+/// Generate a new name that a process can register itself with using
+/// `register`, and others can send messages to with `named_subject`.
+pub fn new_name(prefix: String) -> Name(message) {
+  let _ = prefix
+  process_ffi.new_name()
+}
+
+/// Register a process under a name.
+pub fn register(pid: Pid, name: Name(message)) -> Result(Nil, Nil) {
+  case process_ffi.register(pid, name) {
+    True -> Ok(Nil)
+    False -> Error(Nil)
+  }
+}
+
+/// Un-register a name.
+pub fn unregister(name: Name(message)) -> Result(Nil, Nil) {
+  case process_ffi.unregister(name) {
+    True -> Ok(Nil)
+    False -> Error(Nil)
+  }
+}
+
+/// Look up the process registered under a name.
+pub fn named(name: Name(message)) -> Result(Pid, Nil) {
+  let pid = process_ffi.named(name)
+  case pid < 0 {
+    True -> Error(Nil)
+    False -> Ok(process_ffi.pid_of_int(pid))
+  }
+}
+
+/// Create a subject for a name, used to send and receive messages.
+pub fn named_subject(name: Name(message)) -> Subject(message) {
+  process_ffi.named_subject(name)
+}
+
 /// Monitor a process, so that a `Down` message is sent to the current process
 /// when it exits. Remove it with `demonitor`.
 pub fn monitor(pid: Pid) -> Monitor {

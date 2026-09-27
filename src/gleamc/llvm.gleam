@@ -674,12 +674,13 @@ fn llvm_ty(ty: Type, recursive: Dict(String, Bool)) -> String {
     TNamed("FileResult") -> "%GleamcFileResult"
     // Internal async handle (`GleamcFuture*`); never visible to Gleam.
     TNamed("Future") -> "i8*"
-    // A process identifier (a stable task id), a scheduled-send timer and a
-    // selector handle.
+    // A process identifier (a stable task id), a scheduled-send timer, a
+    // selector handle and a name (a subject handle).
     TNamed("Pid") -> "i64"
     TNamed("Monitor") -> "i64"
     TNamed("Timer") -> "i64"
     TNamed("Selector") -> "i64"
+    TNamed("Name") -> "i64"
     // Async I/O handle (a file descriptor); opaque scalar.
     TNamed("Handle") -> "i64"
     ast.TNil -> "i32"
@@ -699,9 +700,14 @@ fn llvm_ty(ty: Type, recursive: Dict(String, Bool)) -> String {
                 // `Selector(a)` is a handle (i64).
                 Ok(_) -> "i64"
                 Error(_) ->
-                  case is_recursive(recursive, name) {
-                    True -> "%" <> name <> "*"
-                    False -> "%" <> name
+                  case ast.name_elem_name(name) {
+                    // `Name(a)` is a subject handle (i64).
+                    Ok(_) -> "i64"
+                    Error(_) ->
+                      case is_recursive(recursive, name) {
+                        True -> "%" <> name <> "*"
+                        False -> "%" <> name
+                      }
                   }
               }
           }
@@ -714,6 +720,7 @@ fn llvm_ty(ty: Type, recursive: Dict(String, Bool)) -> String {
     ast.TApp("Task", _) -> "i8*"
     ast.TApp("Timer", _) -> "i64"
     ast.TApp("Selector", _) -> "i64"
+    ast.TApp("Name", _) -> "i64"
     ast.TApp(name, args) ->
       "%" <> name <> "_" <> string.join(list.map(args, mangle_type), "_")
     ast.TTuple(types) ->
@@ -5283,10 +5290,12 @@ fn is_handle_like(ty: Type) -> Bool {
     ast.TApp("Subject", _) | ast.TApp("Task", _) | ast.TApp("Pid", _) -> True
     ast.TApp("Timer", _) -> True
     ast.TApp("Selector", _) -> True
+    ast.TApp("Name", _) -> True
     TNamed("Pid") -> True
     TNamed("Monitor") -> True
     TNamed("Timer") -> True
     TNamed("Selector") -> True
+    TNamed("Name") -> True
     TNamed(name) ->
       case ast.subject_elem_name(name), ast.task_elem_name(name) {
         Ok(_), _ -> True
