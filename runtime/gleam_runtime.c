@@ -1110,6 +1110,8 @@ typedef struct {
     /* `task_run` tasks: boxes the result when the machine finishes, instead of
      * copying it to a caller slot. */
     void* (*box_copy)(void*);
+    /* The future a suspended step returned; the driver parks on it. */
+    GleamcFuture* pending;
 } GleamcTask2;
 
 static GleamcTask2* gleamc_task_by_id(int64_t id);
@@ -1296,6 +1298,7 @@ static GleamcFuture* gleamc_task_push(void* (*step)(void*), void* frame,
     t->nowned = 0;
     t->ocap = 0;
     t->box_copy = NULL;
+    t->pending = NULL;
     t->step = step;
     t->frame = frame;
     t->fut_slot = fut_slot;
@@ -2702,8 +2705,10 @@ void gleamc_run_until(GleamcFuture* target) {
             }
             if (t->running) continue;
             /* A suspended task is only re-stepped once its pending future is
-             * done. */
-            GleamcFuture* pending = t->fut_slot != NULL ? *t->fut_slot : NULL;
+             * done. The step hands back the future it waits on. */
+            GleamcFuture* pending = t->pending != NULL
+                ? t->pending
+                : (t->fut_slot != NULL ? *t->fut_slot : NULL);
             if (pending != NULL && !pending->done) {
                 if (pending->uv_armed) {
                     have_uv = 1;
@@ -2737,11 +2742,16 @@ void gleamc_run_until(GleamcFuture* target) {
                 t->copy_result = gleamc_delegate.copy_result;
                 t->fut_slot = gleamc_delegate.fut_slot;
                 t->frame_drop = gleamc_delegate.frame_drop;
+                t->pending = NULL;
                 gleamc_delegated = false;
             } else {
-                /* It suspended: note the future it is now waiting on. */
-                pending = t->fut_slot != NULL ? *t->fut_slot : NULL;
-                if (pending == NULL || pending->done) {
+                /* It suspended: park on the future it handed back. */
+                t->pending = ret;
+                pending = ret;
+                if (pending == NULL) {
+                    /* A tail window with no pending future: step again. */
+                    progressed = 1;
+                } else if (pending->done) {
                     /* Already runnable again: keep the driver going. */
                     progressed = 1;
                 } else if (pending->uv_armed) {
