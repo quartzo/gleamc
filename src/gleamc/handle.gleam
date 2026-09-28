@@ -59,6 +59,10 @@ pub fn nullary(name: String) -> Option(Info) {
     "void*" -> Some(Info(Borrow, Ptr, NoDrop, False))
     // Internal async handle (`GleamcFuture*`); the await machinery releases it.
     "Future" -> Some(Info(Resource, Ptr, Runtime, False))
+    // The internal async frame handle (a refcounted state cell passed to a
+    // `step`). The concrete struct type is backend metadata, derived from the
+    // step function name; the value itself is an opaque pointer.
+    "Opaque" -> Some(Info(Resource, Ptr, Release, False))
     // Async I/O file descriptor, an opaque scalar.
     "Handle" -> Some(Info(Copy, Word, NoDrop, False))
     // A boxed dynamic value (`GleamcDynamic*`), refcounted.
