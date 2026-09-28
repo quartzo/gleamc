@@ -3309,9 +3309,10 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) -> #(Builder, Nil) {
       emit_op_closure_env(ctx, dest, closure, ty, b)
     ir.OpBitArray(dest, elems, _) -> emit_op_bit_array(ctx, dest, elems, b)
     ir.OpFrameNew(_, _) -> emit_op_frame_new(ctx, b)
-    ir.OpFrameGet(dest, _, index, ty) ->
-      emit_op_frame_get(ctx, dest, index, ty, b)
-    ir.OpFrameSet(_, index, value) -> emit_op_frame_set(ctx, index, value, b)
+    ir.OpFrameGet(dest, frame, index, ty) ->
+      emit_op_frame_get(ctx, dest, frame, index, ty, b)
+    ir.OpFrameSet(frame, index, value) ->
+      emit_op_frame_set(ctx, frame, index, value, b)
   }
 }
 
@@ -5116,50 +5117,72 @@ fn emit_op_frame_new(_ctx: Ctx, b: Builder) -> #(Builder, Nil) {
   #(b, Nil)
 }
 
+/// The base register and frame struct type for a frame operand: the function's
+/// own `%__fr` when the operand is its frame local, otherwise the operand's
+/// value (a frame passed by parameter).
+fn frame_ptr(
+  ctx: Ctx,
+  frame_op: ir.Operand,
+  b: Builder,
+) -> #(String, String, Builder) {
+  case frame_op {
+    ir.Var(name) ->
+      case ctx.frame {
+        Some(FrameInfo(fr_ty, fr_reg, _, _, _, _, _)) ->
+          case name == frame.frame_local {
+            True -> #(fr_reg, fr_ty, b)
+            False -> frame_ptr_external(ctx, frame_op, b)
+          }
+        None -> frame_ptr_external(ctx, frame_op, b)
+      }
+    ir.Lit(_) -> frame_ptr_external(ctx, frame_op, b)
+  }
+}
+
+fn frame_ptr_external(ctx, frame_op, b) {
+  let #(_, v, b) = read_val(ctx, frame_op, b)
+  let ptr_s = llvm_ty(operand_type(ctx.by_name, frame_op), ctx.recursive)
+  #(v, drop_star(ptr_s), b)
+}
+
+fn drop_star(s: String) -> String {
+  case string.ends_with(s, "*") {
+    True -> string.drop_end(s, 1)
+    False -> s
+  }
+}
+
 fn emit_op_frame_get(
   ctx: Ctx,
   dest: String,
+  frame_op: ir.Operand,
   index: Int,
   ty: Type,
   b: Builder,
 ) -> #(Builder, Nil) {
-  case ctx.frame {
-    Some(FrameInfo(fr_ty, fr_reg, _, _, _, _, _)) -> {
-      let ty_s = llvm_ty(ty, ctx.recursive)
-      let #(ptr, b) = frame_gep(fr_reg, fr_ty, index, b)
-      let #(v, b) = fresh(b)
-      let b =
-        emit_line(
-          b,
-          "  " <> v <> " = load " <> ty_s <> ", " <> ty_s <> "* " <> ptr,
-        )
-      let b = store_local(ctx, dest, ty_s, v, b)
-      #(b, Nil)
-    }
-    None -> #(b, Nil)
-  }
+  let #(reg, fr_ty, b) = frame_ptr(ctx, frame_op, b)
+  let ty_s = llvm_ty(ty, ctx.recursive)
+  let #(ptr, b) = frame_gep(reg, fr_ty, index, b)
+  let #(v, b) = fresh(b)
+  let b =
+    emit_line(b, "  " <> v <> " = load " <> ty_s <> ", " <> ty_s <> "* " <> ptr)
+  #(store_local(ctx, dest, ty_s, v, b), Nil)
 }
 
 fn emit_op_frame_set(
   ctx: Ctx,
+  frame_op: ir.Operand,
   index: Int,
   value: ir.Operand,
   b: Builder,
 ) -> #(Builder, Nil) {
-  case ctx.frame {
-    Some(FrameInfo(fr_ty, fr_reg, _, _, _, _, _)) -> {
-      let #(ty_s, v, b) = read_val(ctx, value, b)
-      let #(ptr, b) = frame_gep(fr_reg, fr_ty, index, b)
-      #(
-        emit_line(
-          b,
-          "  store " <> ty_s <> " " <> v <> ", " <> ty_s <> "* " <> ptr,
-        ),
-        Nil,
-      )
-    }
-    None -> #(b, Nil)
-  }
+  let #(reg, fr_ty, b) = frame_ptr(ctx, frame_op, b)
+  let #(ty_s, v, b) = read_val(ctx, value, b)
+  let #(ptr, b) = frame_gep(reg, fr_ty, index, b)
+  #(
+    emit_line(b, "  store " <> ty_s <> " " <> v <> ", " <> ty_s <> "* " <> ptr),
+    Nil,
+  )
 }
 
 fn emit_term(ctx: Ctx, term: ir.Terminator, b: Builder) {
