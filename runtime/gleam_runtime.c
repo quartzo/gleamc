@@ -1192,9 +1192,43 @@ void gleamc_future_then(GleamcFuture* fut, void* (*step)(void*), void* frame) {
     if (frame != NULL) gleamc_retain(frame);
 }
 
-/* Complete `fut` (once) and invoke its continuation, releasing the frame
- * reference afterwards. A machine that keeps awaiting registers a new
- * continuation on the next future, retaining the frame again. */
+static void gleamc_wake(void);
+
+/* Ready continuations: a completed future enqueues its `(step, frame)` and the
+ * driver runs them, so a completion callback never re-enters a machine. */
+#define GLEAMC_READY_MAX 8192
+static struct {
+    void* (*step)(void*);
+    void* frame;
+} gleamc_ready[GLEAMC_READY_MAX];
+static int gleamc_ready_head = 0;
+static int gleamc_ready_n = 0;
+
+static void gleamc_ready_push(void* (*step)(void*), void* frame) {
+    if (gleamc_ready_n >= GLEAMC_READY_MAX) return;
+    int i = (gleamc_ready_head + gleamc_ready_n) % GLEAMC_READY_MAX;
+    gleamc_ready[i].step = step;
+    gleamc_ready[i].frame = frame;
+    gleamc_ready_n++;
+    gleamc_wake();
+}
+
+static void gleamc_ready_drain(void) {
+    while (gleamc_ready_n > 0) {
+        void* (*step)(void*) = gleamc_ready[gleamc_ready_head].step;
+        void* frame = gleamc_ready[gleamc_ready_head].frame;
+        gleamc_ready_head = (gleamc_ready_head + 1) % GLEAMC_READY_MAX;
+        gleamc_ready_n--;
+        if (step != NULL) step(frame);
+        /* The step may have re-registered the frame on the next future
+         * (retaining it); this reference is ours to drop. */
+        if (frame != NULL) gleamc_release(frame);
+    }
+}
+
+/* Complete `fut` (once) and enqueue its continuation, if any. The driver runs
+ * it; a machine that keeps awaiting registers a new continuation on the next
+ * future, retaining the frame again. */
 void gleamc_future_resolve(GleamcFuture* fut) {
     if (fut == NULL || fut->done) return;
     fut->done = true;
@@ -1203,8 +1237,7 @@ void gleamc_future_resolve(GleamcFuture* fut) {
         void* frame = fut->cont_frame;
         fut->cont = NULL;
         fut->cont_frame = NULL;
-        step(frame);
-        if (frame != NULL) gleamc_release(frame);
+        gleamc_ready_push(step, frame);
     }
 }
 
@@ -2617,6 +2650,8 @@ void gleamc_run_until(GleamcFuture* target) {
     void* loop = gleamc_uv_loop();
     int nested = gleamc_run_depth++;
     for (;;) {
+        /* Resume any machines woken by a completed future. */
+        gleamc_ready_drain();
         if (target != NULL && target->done) break;
         if (target == NULL && gleamc_tasks2_n == 0) break;
         int progressed = 0;
