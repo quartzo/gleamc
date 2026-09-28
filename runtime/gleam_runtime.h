@@ -341,6 +341,7 @@ void gleamc_sleep_ms(int64_t ms);
 GleamcFuture* Gleamc_std_time_timer(int64_t ms);
 
 void gleamc_sched_poll(void);
+GleamcFuture* gleamc_future_done(void);
 void* gleamc_uv_loop(void);
 void* gleamc_uv_timer_init(void* loop);
 GleamcFuture* gleamc_uv_timer_start(void* timer, int64_t ms);
@@ -353,14 +354,14 @@ GleamcFuture* gleamc_uv_fs_close(void* loop, void* fd);
 /* Cooperative driver: starts a machine as a task and returns a future that
  * completes when it finishes; `copy_result` moves the result out of the frame
  * into `result_dst`, and `frame_drop` releases the frame's owned fields. */
-GleamcFuture* gleamc_task_start(bool (*step)(void*), void* frame,
+GleamcFuture* gleamc_task_start(void* (*step)(void*), void* frame,
                                 GleamcFuture** fut_slot,
                                 void (*copy_result)(void*, void*),
                                 void* result_dst,
                                 void (*frame_drop)(void*));
 /* Delegates the running task to `step` (async tail call); the driver retargets
  * the task's step/frame/copy_result/fut_slot/frame_drop. */
-void gleamc_task_tail(bool (*step)(void*), void* frame,
+void gleamc_task_tail(void* (*step)(void*), void* frame,
                       void (*copy_result)(void*, void*),
                       GleamcFuture** fut_slot,
                       void (*frame_drop)(void*));
@@ -374,13 +375,13 @@ void gleamc_shutdown(void);
 /* Starts a task for `task.async`: the worker's result is copied into `box`
  * (an owned heap cell of the result's size) and `box` is published on the
  * completion future as `value_p`, so `task.await` can move it out. */
-GleamcFuture* gleamc_task_async(bool (*step)(void*), void* frame,
+GleamcFuture* gleamc_task_async(void* (*step)(void*), void* frame,
                                 GleamcFuture** fut_slot,
                                 void (*copy_result)(void*, void*),
                                 void (*frame_drop)(void*), void* box);
 /* Starts a fire-and-forget task (`process.spawn`): its completion future is
  * owned by the driver and released when the task finishes. */
-GleamcFuture* gleamc_task_spawn(bool (*step)(void*), void* frame,
+GleamcFuture* gleamc_task_spawn(void* (*step)(void*), void* frame,
                                 GleamcFuture** fut_slot,
                                 void (*frame_drop)(void*));
 

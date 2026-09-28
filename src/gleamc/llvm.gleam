@@ -550,10 +550,11 @@ fn header(audit: Bool) -> String {
   <> "declare i64 @Gleamc_process_ffi_send_after(i64, i64, i8*)\n"
   <> "declare i64 @Gleamc_process_ffi_cancel_timer(i64)\n"
   <> "declare i64 @gleamc_task_id(i8*)\n"
-  <> "declare i8* @gleamc_task_start(i1 (i8*)*, i8*, i8**, void (i8*, i8*)*, i8*, void (i8*)*)\n"
-  <> "declare i8* @gleamc_task_async(i1 (i8*)*, i8*, i8**, void (i8*, i8*)*, void (i8*)*, i8*)\n"
-  <> "declare i8* @gleamc_task_spawn(i1 (i8*)*, i8*, i8**, void (i8*)*)\n"
-  <> "declare void @gleamc_task_tail(i1 (i8*)*, i8*, void (i8*, i8*)*, i8**, void (i8*)*)\n"
+  <> "declare i8* @gleamc_future_done()\n"
+  <> "declare i8* @gleamc_task_start(i8* (i8*)*, i8*, i8**, void (i8*, i8*)*, i8*, void (i8*)*)\n"
+  <> "declare i8* @gleamc_task_async(i8* (i8*)*, i8*, i8**, void (i8*, i8*)*, void (i8*)*, i8*)\n"
+  <> "declare i8* @gleamc_task_spawn(i8* (i8*)*, i8*, i8**, void (i8*)*)\n"
+  <> "declare void @gleamc_task_tail(i8* (i8*)*, i8*, void (i8*, i8*)*, i8**, void (i8*)*)\n"
   <> "declare void @gleamc_run_until(i8*)\n"
   <> "declare void @gleamc_shutdown()\n"
   <> "declare %GleamcString @gleamc_string_lit(i8*, i64)\n"
@@ -1871,7 +1872,8 @@ fn emit_machine_blocks(
                   b,
                   "  store i32 " <> int.to_string(resume_idx) <> ", i32* " <> sp,
                 )
-              emit_line(b, "  ret i1 false")
+              // The machine hands back the future it is waiting on.
+              emit_line(b, "  ret i8* " <> fv)
             }
             _ -> emit_machine_term(ctx, info, term, b)
           }
@@ -1893,7 +1895,7 @@ fn emit_machine_term(
   case term {
     ir.Ret(value) ->
       case is_nil_type(ctx.ret) {
-        True -> emit_line(b, "  ret i1 true")
+        True -> emit_return_done(b)
         False -> {
           let #(_, v, b) = read_val(ctx, value, b)
           let #(rp, b) = frame_gep("%__fr", fr_ty, result_idx, b)
@@ -1902,7 +1904,8 @@ fn emit_machine_term(
               b,
               "  store " <> ret_ty <> " " <> v <> ", " <> ret_ty <> "* " <> rp,
             )
-          emit_line(b, "  ret i1 true")
+          // A completed future signals the end; the result is in the frame.
+          emit_return_done(b)
         }
       }
     ir.Jmp(label) -> emit_line(b, "  br label %" <> block_name(ctx, label))
@@ -2049,7 +2052,7 @@ fn emit_machine_finish(
       )
     }
   }
-  emit_line(b, "  ret i1 true")
+  emit_return_done(b)
 }
 
 /// Lowers a tail async call: build the callee's frame with the arguments,
@@ -2064,7 +2067,7 @@ fn emit_machine_tail(
   b: Builder,
 ) -> Builder {
   case dict.get(ctx.machine_fns, fun) {
-    Error(_) -> emit_line(b, "  ret i1 false")
+    Error(_) -> emit_line(b, "  ret i8* null")
     Ok(callee) -> {
       let cinfo = frame_info(callee, ctx.recursive)
       let FrameInfo(cfr_ty, _creg, cfields, cstate, cfut, _cresult, _) = cinfo
@@ -2175,11 +2178,11 @@ fn emit_machine_tail(
           <> " to void (i8*, i8*)*)"
       }
       let step =
-        "i1 (i8*)* bitcast (i1 ("
+        "i8* (i8*)* bitcast (i8* ("
         <> cfr_ty
         <> "*)* @Gleamc_"
         <> fun
-        <> "_step to i1 (i8*)*)"
+        <> "_step to i8* (i8*)*)"
       let fd =
         "void (i8*)* bitcast (void ("
         <> cfr_ty
@@ -2201,7 +2204,7 @@ fn emit_machine_tail(
             <> fd
             <> ")",
         )
-      emit_line(b, "  ret i1 false")
+      emit_line(b, "  ret i8* null")
     }
   }
 }
@@ -2285,7 +2288,7 @@ fn emit_machine_function(
   let b =
     emit_line(
       b,
-      "define i1 @Gleamc_" <> name <> "_step(" <> fr_ty <> "* %__fr) {",
+      "define i8* @Gleamc_" <> name <> "_step(" <> fr_ty <> "* %__fr) {",
     )
   let b = emit_frame_locals(ctx, fr_ty, locals, b)
   let #(sp, b) = frame_gep("%__fr", fr_ty, state_idx, b)
@@ -2421,11 +2424,11 @@ fn emit_machine_wrapper(
       <> " to void (i8*, i8*)*)"
   }
   let step =
-    "i1 (i8*)* bitcast (i1 ("
+    "i8* (i8*)* bitcast (i8* ("
     <> fr_ty
     <> "*)* @Gleamc_"
     <> name
-    <> "_step to i1 (i8*)*)"
+    <> "_step to i8* (i8*)*)"
   let fd =
     "void (i8*)* bitcast (void ("
     <> fr_ty
@@ -2577,11 +2580,11 @@ fn emit_start_thunk(
       <> " to void (i8*, i8*)*)"
   }
   let step =
-    "i1 (i8*)* bitcast (i1 ("
+    "i8* (i8*)* bitcast (i8* ("
     <> fr_ty
     <> "*)* @Gleamc_"
     <> name
-    <> "_step to i1 (i8*)*)"
+    <> "_step to i8* (i8*)*)"
   let fd =
     "void (i8*)* bitcast (void ("
     <> fr_ty
@@ -3485,11 +3488,11 @@ fn emit_op_machine_start(
         }
       }
       let step =
-        "i1 (i8*)* bitcast (i1 ("
+        "i8* (i8*)* bitcast (i8* ("
         <> fr_ty
         <> "*)* @Gleamc_"
         <> fun
-        <> "_step to i1 (i8*)*)"
+        <> "_step to i8* (i8*)*)"
       let fd =
         "void (i8*)* bitcast (void ("
         <> fr_ty
@@ -3607,11 +3610,11 @@ fn emit_op_task_start(
           <> " to void (i8*, i8*)*)"
       }
       let step =
-        "i1 (i8*)* bitcast (i1 ("
+        "i8* (i8*)* bitcast (i8* ("
         <> fr_ty
         <> "*)* @Gleamc_"
         <> fun
-        <> "_step to i1 (i8*)*)"
+        <> "_step to i8* (i8*)*)"
       let fd =
         "void (i8*)* bitcast (void ("
         <> fr_ty
@@ -3766,11 +3769,11 @@ fn emit_op_task_start_closure(
           <> " to void (i8*, i8*)*)"
       }
       let step =
-        "i1 (i8*)* bitcast (i1 ("
+        "i8* (i8*)* bitcast (i8* ("
         <> fr_ty
         <> "*)* @Gleamc_"
         <> fun
-        <> "_step to i1 (i8*)*)"
+        <> "_step to i8* (i8*)*)"
       let fd =
         "void (i8*)* bitcast (void ("
         <> fr_ty
@@ -8153,6 +8156,14 @@ fn fresh(b: Builder) -> #(String, Builder) {
     "%t" <> int.to_string(next),
     Builder(next: next + 1, lines: lines, values: values),
   )
+}
+
+/// Emits a machine return that hands back a completed future, signalling the
+/// driver that the machine finished (the result is in the frame).
+fn emit_return_done(b: Builder) -> Builder {
+  let #(d, b) = fresh(b)
+  let b = emit_line(b, "  " <> d <> " = call i8* @gleamc_future_done()")
+  emit_line(b, "  ret i8* " <> d)
 }
 
 fn emit_line(b: Builder, text: String) -> Builder {

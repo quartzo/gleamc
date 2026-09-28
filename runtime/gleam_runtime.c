@@ -1063,7 +1063,7 @@ extern void* Gleamc_make_process_ExitMessage_ExitMessage(int64_t, int64_t)
     __attribute__((weak));
 
 typedef struct {
-    bool (*step)(void*);
+    void* (*step)(void*); /* returns the Future it waits on, or a done one */
     void* frame;
     GleamcFuture** fut_slot;
     /* Copies the machine's result out of its frame into the caller's slot
@@ -1129,7 +1129,7 @@ static int gleamc_run_depth = 0;
 static GleamcTask2 gleamc_delegate;
 static bool gleamc_delegated = false;
 
-void gleamc_task_tail(bool (*step)(void*), void* frame,
+void gleamc_task_tail(void* (*step)(void*), void* frame,
                       void (*copy_result)(void*, void*),
                       GleamcFuture** fut_slot,
                       void (*frame_drop)(void*)) {
@@ -1154,7 +1154,21 @@ static GleamcFuture* gleamc_future_new(void) {
     return f;
 }
 
-static GleamcFuture* gleamc_task_push(bool (*step)(void*), void* frame,
+/* A future that is already complete: the synchronous path of an indirect
+ * await uses it so the driver resumes the caller immediately. Static, so a
+ * release is a no-op. */
+GleamcFuture* gleamc_future_done(void) {
+    static GleamcFuture f;
+    static bool init = false;
+    if (!init) {
+        f.hdr.refcount = GLEAMC_RC_STATIC;
+        f.done = true;
+        init = true;
+    }
+    return &f;
+}
+
+static GleamcFuture* gleamc_task_push(void* (*step)(void*), void* frame,
                                       GleamcFuture** fut_slot,
                                       void (*copy_result)(void*, void*),
                                       void* result_dst,
@@ -1249,7 +1263,7 @@ int64_t Gleamc_process_ffi_pid_of_int(int64_t pid) {
     return pid;
 }
 
-GleamcFuture* gleamc_task_start(bool (*step)(void*), void* frame,
+GleamcFuture* gleamc_task_start(void* (*step)(void*), void* frame,
                                 GleamcFuture** fut_slot,
                                 void (*copy_result)(void*, void*),
                                 void* result_dst,
@@ -1263,7 +1277,7 @@ GleamcFuture* gleamc_task_start(bool (*step)(void*), void* frame,
     return done;
 }
 
-GleamcFuture* gleamc_task_async(bool (*step)(void*), void* frame,
+GleamcFuture* gleamc_task_async(void* (*step)(void*), void* frame,
                                 GleamcFuture** fut_slot,
                                 void (*copy_result)(void*, void*),
                                 void (*frame_drop)(void*), void* box) {
@@ -1279,7 +1293,7 @@ GleamcFuture* gleamc_task_async(bool (*step)(void*), void* frame,
     return done;
 }
 
-GleamcFuture* gleamc_task_spawn(bool (*step)(void*), void* frame,
+GleamcFuture* gleamc_task_spawn(void* (*step)(void*), void* frame,
                                 GleamcFuture** fut_slot,
                                 void (*frame_drop)(void*)) {
     return gleamc_task_push(
@@ -2581,7 +2595,11 @@ void gleamc_run_until(GleamcFuture* target) {
             t->running = true;
             int64_t saved_id = gleamc_current_task_id;
             gleamc_current_task_id = t->id;
-            int done = t->step(t->frame);
+            GleamcFuture* ret = (GleamcFuture*)t->step(t->frame);
+            /* The step hands back the future it waits on, or the distinguished
+             * completed-future sentinel when it has finished. A suspension on an
+             * already-complete future is not the end. */
+            int done = ret == gleamc_future_done();
             gleamc_current_task_id = saved_id;
             t->running = false;
             if (done) {
