@@ -1196,6 +1196,7 @@ fn op_types(op: ir.Op) -> List(Type) {
     ir.OpCopy(_, _, ty) -> [ty]
     ir.OpEnvGet(_, _, _, ty) -> [ty]
     ir.OpCallIndirect(_, _, _, ret_ty) -> [ret_ty]
+    ir.OpClosureEnv(_, _, ty) -> [ty]
     ir.OpRetain(src, ty) ->
       case src == frame.frame_local {
         True -> []
@@ -2104,6 +2105,22 @@ fn emit_machine_tail(
                     "machine_tail",
                     b,
                   )
+                False -> b
+              }
+              // A capturing callee owns a reference to its environment for the
+              // life of its frame (released by the frame drop).
+              let b = case pname == "__env" {
+                True ->
+                  case frame.env_capture(callee) {
+                    Ok(_) ->
+                      emit_line(
+                        b,
+                        "  call void @Gleamc_rc_retain(i8* "
+                          <> v
+                          <> ", i8* null)",
+                      )
+                    Error(_) -> b
+                  }
                 False -> b
               }
               let slot = case dict.get(cfields, pname) {
@@ -3073,6 +3090,8 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) -> #(Builder, Nil) {
       emit_op_env_get(ctx, dest, env_ty, index, ty, b)
     ir.OpCallIndirect(dest, fval, args, ret_ty) ->
       emit_op_call_indirect(ctx, dest, fval, args, ret_ty, b)
+    ir.OpClosureEnv(dest, closure, ty) ->
+      emit_op_closure_env(ctx, dest, closure, ty, b)
     ir.OpBitArray(dest, elems, _) -> emit_op_bit_array(ctx, dest, elems, b)
     ir.OpFrameNew(_, _) -> emit_op_frame_new(ctx, b)
     ir.OpFrameGet(dest, _, index, ty) ->
@@ -3276,6 +3295,22 @@ fn emit_op_machine_start(
                     "machine_start",
                     b,
                   )
+                False -> b
+              }
+              // A capturing callee owns a reference to its environment for the
+              // life of its frame (released by the frame drop).
+              let b = case pname == "__env" {
+                True ->
+                  case frame.env_capture(callee) {
+                    Ok(_) ->
+                      emit_line(
+                        b,
+                        "  call void @Gleamc_rc_retain(i8* "
+                          <> v
+                          <> ", i8* null)",
+                      )
+                    Error(_) -> b
+                  }
                 False -> b
               }
               let slot = case dict.get(fields, pname) {
@@ -4714,6 +4749,22 @@ fn emit_op_call_indirect(
       #(b, Nil)
     }
   }
+}
+
+/// Reads the environment pointer (field 1) of a closure value. Used when a
+/// known closure code is called directly and needs its env.
+fn emit_op_closure_env(
+  ctx: Ctx,
+  dest: String,
+  closure: ir.Operand,
+  _ty: Type,
+  b: Builder,
+) -> #(Builder, Nil) {
+  let clo_ty = operand_type(ctx.by_name, closure)
+  let clo_s = llvm_ty(clo_ty, ctx.recursive)
+  let #(_, fv, b) = read_val(ctx, closure, b)
+  let #(env, b) = extract_value(clo_s, fv, [1], b)
+  #(store_local(ctx, dest, "i8*", env, b), Nil)
 }
 
 fn emit_op_bit_array(

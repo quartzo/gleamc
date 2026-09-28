@@ -61,6 +61,9 @@ pub type Op {
   OpEnvGet(dest: String, env_ty: String, index: Int, ty: Type)
   /// Call through a function value.
   OpCallIndirect(dest: String, fval: Operand, args: List(Operand), ret_ty: Type)
+  /// Reads the environment pointer of a closure value (`void*`, a borrow).
+  /// Used when a known closure code is called directly and needs its env.
+  OpClosureEnv(dest: String, closure: Operand, ty: Type)
   /// +1 on the local before an owning use that is not the last one.
   OpRetain(src: String, ty: Type)
   /// -1 on the local at its death.
@@ -187,6 +190,7 @@ pub fn op_dest(op: Op) -> Result(String, Nil) {
     OpClosure(dest, _, _, _, _) -> Ok(dest)
     OpEnvGet(dest, _, _, _) -> Ok(dest)
     OpCallIndirect(dest, _, _, _) -> Ok(dest)
+    OpClosureEnv(dest, _, _) -> Ok(dest)
     OpRetain(_, _) -> Error(Nil)
     OpDrop(_, _) -> Error(Nil)
     OpMachineStart(fut, _, _, _) -> Ok(fut)
@@ -228,6 +232,7 @@ pub fn op_reads(op: Op) -> List(Operand) {
       }
     OpEnvGet(_, _, _, _) -> []
     OpCallIndirect(_, fval, args, _) -> [fval, ..args]
+    OpClosureEnv(_, closure, _) -> [closure]
     OpRetain(src, _) -> [Var(src)]
     OpDrop(src, _) -> [Var(src)]
     OpMachineStart(_, _, args, _) -> args
@@ -560,6 +565,13 @@ fn op_text(op: Op) -> String {
       <> "("
       <> string.join(list.map(args, operand_text), ", ")
       <> ") : "
+      <> describe_type(ty)
+    OpClosureEnv(dest, closure, ty) ->
+      "    "
+      <> dest
+      <> " = closureenv "
+      <> operand_text(closure)
+      <> " : "
       <> describe_type(ty)
     OpRetain(src, ty) -> "    retain " <> src <> " : " <> describe_type(ty)
     OpDrop(src, ty) -> "    drop " <> src <> " : " <> describe_type(ty)

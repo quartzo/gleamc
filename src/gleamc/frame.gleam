@@ -399,6 +399,8 @@ fn rewrite_op(op: ir.Op, repl) -> ir.Op {
     ir.OpCopy(d, s, ty) -> ir.OpCopy(d, sub(s, repl), ty)
     ir.OpCallIndirect(d, f, args, rt) ->
       ir.OpCallIndirect(d, sub(f, repl), subs(args, repl), rt)
+    ir.OpClosureEnv(d, closure, ty) ->
+      ir.OpClosureEnv(d, sub(closure, repl), ty)
     // A machine start reads frame-field arguments too; substitute them with the
     // `OpFrameGet` temps so the original local is dead after its frame store
     // (otherwise ownership retains it a second time). `fut`/`dest` are names.
