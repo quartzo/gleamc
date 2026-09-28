@@ -385,6 +385,13 @@ GleamcFuture* gleamc_task_spawn(void* (*step)(void*), void* frame,
                                 GleamcFuture** fut_slot,
                                 void (*frame_drop)(void*));
 
+/* Starts `step(frame)` (which returns the future it waits on, or the completed
+ * sentinel) and returns its completion future; `box_copy(frame)` boxes the
+ * result at completion. */
+GleamcFuture* gleamc_task_run(void* (*step)(void*), void* frame,
+                              void* (*box_copy)(void*),
+                              void (*frame_drop)(void*));
+
 /* A box is a refcounted heap cell whose payload is an arbitrary Gleam value
  * (moved in when sent, moved out when received). */
 void* gleamc_box_alloc(int64_t size);

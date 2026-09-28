@@ -1105,6 +1105,9 @@ typedef struct {
     GleamcMailbox** owned;
     int nowned;
     int ocap;
+    /* `task_run` tasks: boxes the result when the machine finishes, instead of
+     * copying it to a caller slot. */
+    void* (*box_copy)(void*);
 } GleamcTask2;
 
 static GleamcTask2* gleamc_task_by_id(int64_t id);
@@ -1200,6 +1203,7 @@ static GleamcFuture* gleamc_task_push(void* (*step)(void*), void* frame,
     t->owned = NULL;
     t->nowned = 0;
     t->ocap = 0;
+    t->box_copy = NULL;
     t->step = step;
     t->frame = frame;
     t->fut_slot = fut_slot;
@@ -1299,6 +1303,23 @@ GleamcFuture* gleamc_task_spawn(void* (*step)(void*), void* frame,
     return gleamc_task_push(
         step, frame, fut_slot, NULL, NULL, frame_drop, true
     );
+}
+
+/* Starts `step(frame)` as a task and returns its completion future. `step`
+ * returns the future it waits on, or the completed-future sentinel when it is
+ * done; `box_copy(frame)` boxes the result at completion and `frame_drop`
+ * releases the frame. */
+GleamcFuture* gleamc_task_run(void* (*step)(void*), void* frame,
+                              void* (*box_copy)(void*),
+                              void (*frame_drop)(void*)) {
+    int before = gleamc_tasks2_n;
+    GleamcFuture* done = gleamc_task_push(
+        step, frame, NULL, NULL, NULL, frame_drop, false
+    );
+    if (gleamc_tasks2_n > before) {
+        gleamc_tasks2[gleamc_tasks2_n - 1].box_copy = box_copy;
+    }
+    return done;
 }
 
 /* A box is a small refcounted cell holding an arbitrary Gleam value, plus an
@@ -2312,8 +2333,12 @@ static void gleamc_task_notify_exit(GleamcTask2* t, int64_t reason) {
 /* Final bookkeeping for a task that ends (normally, `copy` true, or because it
  * was killed, `copy` false and the result discarded). */
 static void gleamc_task_finish(GleamcTask2* t, int64_t reason, bool copy) {
-    if (copy && t->copy_result != NULL && t->result_dst != NULL)
+    if (copy && t->box_copy != NULL) {
+        void* box = t->box_copy(t->frame);
+        if (t->done != NULL) t->done->value_p = box;
+    } else if (copy && t->copy_result != NULL && t->result_dst != NULL) {
         t->copy_result(t->frame, t->result_dst);
+    }
     if (t->done != NULL) {
         t->done->done = true;
         t->done->crashed = !copy;
