@@ -23,7 +23,26 @@ silently unavailable.
 
 ## Known bugs
 
-None open right now. Bugs found and fixed in this area:
+- `process.spawn(fn() { ... })` **blocks the caller** until the spawned closure
+  first suspends on a libuv timer (e.g. `process.sleep` / `time.timer`) rather
+  than returning immediately. A spawned task is started with
+  `gleamc_task_spawn` (fire-and-forget) and the driver only blocks on the child
+  because the child's `uv_armed` pending future makes the parent's driver call
+  `uv_run(UV_RUN_ONCE)` while it is still driving the spawn call. Suspending on a
+  non-libuv future (a message receive) yields back correctly. This is
+  pre-existing and outside the actor surface, but it means an actor whose
+  initialiser sleeps never reaches the parent's `initialisation_timeout`, so
+  `actor.start`'s `InitTimeout` path is currently unreachable (a slow
+  initialiser reports `Started` once it finishes). Not covered by a diff yet.
+- Chained **async tail-call delegation** can leave the delegating task with a
+  stale `fut_slot`: when a function that is async only by a tail call
+  (`TailMachine`, no suspension of its own) tail-calls a self-recursive async
+  loop, the task can be parked on memory that is not its pending future. Worked
+  around in `std/gleam/otp/actor.gleam` by making `initialise_actor`'s call to
+  `loop` non-tail (`let reason = loop(self)` then `reason`). A compiler fix is
+  still wanted.
+
+Bugs found and fixed in this area:
 
 - A `let`-bound lambda with no expected function type was given the
   unzonked inferred type, leaving its parameter/return types as unresolved
@@ -149,9 +168,11 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   `send_abnormal_exit` now carries the reason. `gleam/dynamic` is a subset:
   `from`, `unsafe_coerce`, `classify` and the `Int`/`Float`/`String`/`Bool`
   accessors (no `list`/tuple reification or decoders).
-  `select_other` is a catch-all over the subjects the process owns — a process
-  receives only subjects it owns, so this is faithful — but a subject created
-  *after* `select_other` is not watched (register it first). `select_record`
+  `select_other` is a catch-all over the subjects the process owns that have no
+  explicit handler in the same selector — a process receives only subjects it
+  owns, so this is faithful; messages on a subject with an explicit handler are
+  never stolen by the catch-all — but a subject created *after* `select_other`
+  is not watched (register it first). `select_record`
   is intentionally **not** implemented: it exists to match *foreign* Erlang
   tuples `{tag_atom, fields...}` (and by design does **not** match messages sent
   through a `Subject`). This runtime has exactly one message kind — a
@@ -173,6 +194,13 @@ adding list support, and are now covered by `diffs/lists.gleam`:
   terminates every still-pending task (freeing its frame, completion future,
   queued messages and monitor/link/inbox bookkeeping) and closes every pending
   libuv timer, so a short-lived program does not leak what it left running.
+  `gleam/otp/actor` provides the OTP actor MVP: `new` /
+  `new_with_initialiser`, `on_message`, `named`, `start`, `send`, `call`,
+  `Next` (`continue` / `stop` / `stop_abnormal` / `with_selector`),
+  `Initialised` (`initialised` / `selecting` / `returning`) and
+  `Started` / `StartError` (`InitFailed` / `InitExited` / `InitTimeout`). The
+  `InitTimeout` path is blocked by the spawn bug above; supervision, debug
+  tracing and system messages are not implemented yet.
   Draining a mailbox does not join the spawned senders.
 
 ## Standard library coverage

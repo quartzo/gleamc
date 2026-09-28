@@ -991,6 +991,25 @@ fn read_ty(
   expr: Expr,
   typed: texpr.TExpr,
 ) -> #(types.Ty, State) {
+  case expr {
+    EVar(name) ->
+      case dict.get(locals, name) {
+        // A lambda parameter or local binding: the monomorphised `locals`
+        // holds its concrete type, whereas the typed tree may still carry a
+        // rigid type variable (e.g. a return-only function type parameter).
+        Ok(Scheme(_, ty)) -> #(types.zonk(ty, state.subst), state)
+        Error(_) -> read_ty_annotated(state, locals, expr, typed)
+      }
+    _ -> read_ty_annotated(state, locals, expr, typed)
+  }
+}
+
+fn read_ty_annotated(
+  state: State,
+  locals: Dict(String, Scheme),
+  expr: Expr,
+  typed: texpr.TExpr,
+) -> #(types.Ty, State) {
   let annotated = node_ty(state, typed)
   case ffi.get_env("GLEAMC_MONO_VERIFY") {
     Ok(_) -> {

@@ -152,6 +152,72 @@ process.call_forever(inbox, sending: fn(reply) { Ping(reply) })
 
 Both monitor the callee so a crash surfaces instead of hanging.
 
+## Actors (`gleam/otp/actor`)
+
+The OTP actor MVP mirrors the original module's `Builder`/`Next` API.
+
+```gleam
+import gleam/erlang/process
+import gleam/otp/actor
+
+pub type Message(element) {
+  Push(element)
+  Pop(reply_with: Subject(Result(element, Nil)))
+  Shutdown
+}
+
+fn handle_message(
+  stack: List(e),
+  message: Message(e),
+) -> actor.Next(List(e), Message(e)) {
+  case message {
+    Shutdown -> actor.stop()
+    Push(value) -> actor.continue([value, ..stack])
+    Pop(client) -> {
+      case stack {
+        [first, ..rest] -> {
+          process.send(client, Ok(first))
+          actor.continue(rest)
+        }
+        [] -> {
+          process.send(client, Error(Nil))
+          actor.continue([])
+        }
+      }
+    }
+  }
+}
+
+pub fn main() {
+  let assert Ok(a) =
+    actor.new([]) |> actor.on_message(handle_message) |> actor.start
+  let subject = a.data
+  process.send(subject, Push("Joe"))
+  let assert Ok("Joe") =
+    process.call(subject, waiting: 100, sending: fn(reply) { Pop(reply) })
+  process.send(subject, Shutdown)
+}
+```
+
+- `actor.new(state)` returns a `Builder`; `on_message(builder, handler)` sets the
+  handler and `named(builder, name)` registers the actor with `start`.
+- `actor.start(builder)` spawns the actor and returns
+  `Result(Started(pid:, data:), StartError)`. The initialiser runs before the
+  first message; a failure is `InitFailed(String)`, an init crash is
+  `InitExited(ExitReason)` and exceeding `initialisation_timeout` is
+  `InitTimeout`.
+- A handler returns `Next`: `actor.continue(state)`, `actor.stop()` or
+  `actor.stop_abnormal(reason)`. `actor.with_selector(next, selector)` swaps the
+  selector the actor receives with.
+- `new_with_initialiser(timeout, initialise)` builds an actor with a custom
+  initialiser returning `Result(Initialised(state, message, return), String)`,
+  built with `actor.initialised(state)`, `actor.selecting(...)` and
+  `actor.returning(...)`.
+- `actor.send` / `actor.call` are re-exports of the process primitives.
+
+`InitTimeout` is currently unreachable because of a pre-existing
+`process.spawn` bug (see [known-limitations](../known-limitations.md)).
+
 ## Housekeeping
 
 - `flush_messages()` discards every message queued for the current task's

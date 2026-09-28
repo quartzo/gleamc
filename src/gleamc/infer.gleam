@@ -946,7 +946,7 @@ fn builtins() -> Dict(String, Scheme) {
   )
   |> dict.insert(
     "process.spawn",
-    Scheme([9103], Fun([Fun([], n)], Con("Pid", []))),
+    Scheme([9103], Fun([Fun([], Var(9103))], Con("Pid", []))),
   )
   |> dict.insert(
     "task.async",
@@ -976,7 +976,7 @@ fn builtins() -> Dict(String, Scheme) {
   )
   |> dict.insert(
     "process.spawn_unlinked",
-    Scheme([9103], Fun([Fun([], n)], Con("Pid", []))),
+    Scheme([9103], Fun([Fun([], Var(9103))], Con("Pid", []))),
   )
   |> dict.insert(
     "process_ffi.send_after",

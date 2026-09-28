@@ -247,7 +247,10 @@ pub fn deselect_specific_monitor(
 ) -> Selector(payload) {
   Selector(
     handle: selector.handle,
-    handlers: remove_handler(selector.handlers, process_ffi.monitor_to_int(monitor)),
+    handlers: remove_handler(
+      selector.handlers,
+      process_ffi.monitor_to_int(monitor),
+    ),
   )
 }
 
@@ -296,7 +299,10 @@ pub fn merge_selector(
   )
 }
 
-fn append_handlers(x: Handlers(payload), y: Handlers(payload)) -> Handlers(payload) {
+fn append_handlers(
+  x: Handlers(payload),
+  y: Handlers(payload),
+) -> Handlers(payload) {
   case x {
     Done -> y
     More(handle, run, rest) -> More(handle, run, append_handlers(rest, y))
@@ -321,13 +327,20 @@ pub fn select_other(
   let handle = process_ffi.selector_watch_owned(selector.handle)
   Selector(
     handle: handle,
-    handlers: append_handler(selector.handlers, More(-1, fn() {
-      let raw = process_ffi.selector_other_raw(handle)
-      case dynamic_ffi.classify(raw) < 0 {
-        True -> Error(Nil)
-        False -> Ok(mapping(raw))
-      }
-    }, Done)),
+    handlers: append_handler(
+      selector.handlers,
+      More(
+        -1,
+        fn() {
+          let raw = process_ffi.selector_other_raw(handle)
+          case dynamic_ffi.classify(raw) < 0 {
+            True -> Error(Nil)
+            False -> Ok(mapping(raw))
+          }
+        },
+        Done,
+      ),
+    ),
   )
 }
 
@@ -336,7 +349,12 @@ fn add_handler(
   subject: Subject(message),
   decide: fn(message) -> Result(payload, Nil),
 ) -> Selector(payload) {
-  add_handler_keyed(selector, subject, process_ffi.subject_handle(subject), decide)
+  add_handler_keyed(
+    selector,
+    subject,
+    process_ffi.subject_handle(subject),
+    decide,
+  )
 }
 
 fn add_handler_keyed(
@@ -358,14 +376,20 @@ fn add_handler_keyed(
   )
 }
 
-fn append_handler(handlers: Handlers(payload), item: Handlers(payload)) -> Handlers(payload) {
+fn append_handler(
+  handlers: Handlers(payload),
+  item: Handlers(payload),
+) -> Handlers(payload) {
   case handlers {
     Done -> item
     More(handle, run, rest) -> More(handle, run, append_handler(rest, item))
   }
 }
 
-fn remove_handler(handlers: Handlers(payload), target: Int) -> Handlers(payload) {
+fn remove_handler(
+  handlers: Handlers(payload),
+  target: Int,
+) -> Handlers(payload) {
   case handlers {
     Done -> Done
     More(handle, run, rest) ->

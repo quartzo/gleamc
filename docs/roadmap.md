@@ -92,9 +92,14 @@ and supervision trees, idiomatic on top of the existing primitives.
 
 **Scope.**
 
-1. `gleam/otp/actor`: an actor loop built from `receive` + `Selector`; an initial
-   message; `Message` dispatchers; `actor.send`/`actor.call`/`actor.call_forever`;
-   `actor.new`/`actor.start_spec` returning an `Actor` handle and a `StartResult`.
+1. `gleam/otp/actor` — **started**: a loop built from a `Selector` + `receive`;
+   `Builder` (`new` / `new_with_initialiser` / `on_message` / `named`),
+   `Next` (`continue` / `stop` / `stop_abnormal` / `with_selector`),
+   `Initialised` (`initialised` / `selecting` / `returning`), `start` (with
+   `initialisation_timeout`), `send` and `call`, and `Started` / `StartError`
+   (`InitFailed` / `InitExited` / `InitTimeout`). The init-timeout path is
+   currently blocked by the pre-existing spawn bug in
+   [known-limitations.md](known-limitations.md).
 2. Optional supervision: specs, restart strategies (one-for-one, rest-for-one,
    one-for-all), and a supervisor process that monitors children and restarts.
 3. `gleam/otp/static_supervisor` if desired.
@@ -102,7 +107,9 @@ and supervision trees, idiomatic on top of the existing primitives.
 **Depends on.** Phase 1 only if `select_record`/raw messages are needed; the
 typed actor API works without it.
 
-**Tests.** Actor echo/server e2e; crash/restart; supervision restart counts.
+**Tests.** Actor echo/server e2e (stack actor with `send`/`call`/`Shutdown`,
+`InitFailed`, named actor) in `test/actor_test.gleam`; crash/restart and
+supervision restart counts still to come.
 
 ---
 

@@ -1170,6 +1170,22 @@ static GleamcFuture* gleamc_task_push(bool (*step)(void*), void* frame,
         return done;
     }
     GleamcTask2* t = &gleamc_tasks2[gleamc_tasks2_n++];
+    /* The slot may be recycled from a finished task (see the compaction in
+     * `gleamc_run_until`), so reset every field the driver or teardown reads. */
+    t->inbox_down = NULL;
+    t->inbox_exit = NULL;
+    t->monitors = NULL;
+    t->nmon = 0;
+    t->moncap = 0;
+    t->links = NULL;
+    t->nlink = 0;
+    t->linkcap = 0;
+    t->trap_exit = false;
+    t->kill_requested = false;
+    t->kill_reason = 0;
+    t->owned = NULL;
+    t->nowned = 0;
+    t->ocap = 0;
     t->step = step;
     t->frame = frame;
     t->fut_slot = fut_slot;
@@ -1450,6 +1466,17 @@ static GleamcMailbox* gleamc_mailbox_new(void) {
     return (GleamcMailbox*)gleamc_alloc0_site(sizeof(GleamcMailbox), "mailbox");
 }
 
+/* Wake the scheduler's libuv loop so `uv_run(UV_RUN_ONCE)` returns promptly
+ * when a future is resolved by a plain message send (a non-libuv event). */
+static uv_async_t gleamc_wake_handle;
+static int gleamc_wake_init = 0;
+
+static void gleamc_wake_cb(uv_async_t* h) { (void)h; }
+
+static void gleamc_wake(void) {
+    if (gleamc_wake_init) uv_async_send(&gleamc_wake_handle);
+}
+
 /* Enqueue a box, handing it to a waiting `receive` or signalling a `wait_any`.
  * Takes ownership of `box` either way. */
 static void gleamc_mailbox_send_box(GleamcMailbox* mb, void* box) {
@@ -1464,6 +1491,7 @@ static void gleamc_mailbox_send_box(GleamcMailbox* mb, void* box) {
         mb->nwait--;
         f->value_p = box;
         f->done = true;
+        gleamc_wake();
         return;
     }
     if (mb->nmsg == mb->mcap) {
@@ -1485,6 +1513,7 @@ static void gleamc_mailbox_send_box(GleamcMailbox* mb, void* box) {
         mb->nnotify--;
         f->value_i = 1;
         f->done = true;
+        gleamc_wake();
     }
 }
 
@@ -1721,16 +1750,38 @@ int64_t Gleamc_process_ffi_cancel_timer(int64_t handle) {
 
 typedef struct {
     GleamcHdr hdr;
+    /* Subjects with an explicit handler. */
     int64_t* subjects;
     int nsub, cap;
+    /* Subjects only watched by a `select_other` catch-all (owned subjects with
+     * no explicit handler). Messages on these are delivered to the catch-all,
+     * never stealing from an explicitly-handled subject. */
+    int64_t* others;
+    int nother, ocap;
     GleamcFuture* wait_fut;
 } GleamcSelector;
+
+static void gleamc_selector_remove_other(GleamcSelector* sel, int64_t subject) {
+    for (int i = 0; i < sel->nother; i++) {
+        if (sel->others[i] == subject) {
+            for (int j = i + 1; j < sel->nother; j++)
+                sel->others[j - 1] = sel->others[j];
+            sel->nother--;
+            Gleamc_subject_release(subject);
+            return;
+        }
+    }
+}
 
 static void gleamc_selector_clear_wait(GleamcSelector* sel) {
     if (sel == NULL || sel->wait_fut == NULL) return;
     GleamcFuture* f = sel->wait_fut;
     for (int i = 0; i < sel->nsub; i++) {
         GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)sel->subjects[i];
+        if (mb != NULL) gleamc_mailbox_remove_notifier(mb, f);
+    }
+    for (int i = 0; i < sel->nother; i++) {
+        GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)sel->others[i];
         if (mb != NULL) gleamc_mailbox_remove_notifier(mb, f);
     }
     sel->wait_fut = NULL;
@@ -1743,8 +1794,13 @@ typedef struct {
 } GleamcSelectorTimer;
 
 static void gleamc_selector_timer_close_cb(uv_handle_t* h) {
+    GleamcSelectorTimer* st = (GleamcSelectorTimer*)h->data;
     gleamc_timer_unregister((uv_timer_t*)h);
-    free((GleamcSelectorTimer*)h->data);
+    if (st->sel != NULL) {
+        Gleamc_selector_release((int64_t)(intptr_t)st->sel);
+        st->sel = NULL;
+    }
+    free(st);
 }
 
 static void gleamc_selector_timer_cb(uv_timer_t* t) {
@@ -1753,7 +1809,11 @@ static void gleamc_selector_timer_cb(uv_timer_t* t) {
         st->fut->value_i = 0;
         st->fut->done = true;
     }
-    gleamc_selector_clear_wait(st->sel);
+    /* Only detach the wait this timer belongs to: a later `selector_wait` may
+     * have replaced it, and clearing that one would drop a live notifier. */
+    if (st->sel != NULL && st->sel->wait_fut == st->fut) {
+        gleamc_selector_clear_wait(st->sel);
+    }
     gleamc_release(st->fut);
     st->fut = NULL;
     uv_close((uv_handle_t*)t, gleamc_selector_timer_close_cb);
@@ -1775,6 +1835,10 @@ static void gleamc_send_timer_free(void* p) {
 static void gleamc_selector_timer_free(void* p) {
     GleamcSelectorTimer* st = (GleamcSelectorTimer*)p;
     if (st->fut != NULL) gleamc_release(st->fut);
+    if (st->sel != NULL) {
+        Gleamc_selector_release((int64_t)(intptr_t)st->sel);
+        st->sel = NULL;
+    }
     free(st);
 }
 
@@ -1806,6 +1870,9 @@ static void gleamc_selector_dtor(void* p) {
     for (int i = 0; i < sel->nsub; i++)
         Gleamc_subject_release(sel->subjects[i]);
     free(sel->subjects);
+    for (int i = 0; i < sel->nother; i++)
+        Gleamc_subject_release(sel->others[i]);
+    free(sel->others);
 }
 
 void Gleamc_selector_retain(int64_t handle) {
@@ -1827,6 +1894,8 @@ static void gleamc_selector_add_subject(GleamcSelector* sel, int64_t subject) {
     for (int i = 0; i < sel->nsub; i++) {
         if (sel->subjects[i] == subject) return;
     }
+    /* An explicitly-handled subject must not also be a catch-all subject. */
+    gleamc_selector_remove_other(sel, subject);
     if (sel->nsub == sel->cap) {
         int cap = sel->cap == 0 ? 4 : sel->cap * 2;
         int64_t* grown =
@@ -1836,6 +1905,27 @@ static void gleamc_selector_add_subject(GleamcSelector* sel, int64_t subject) {
         sel->cap = cap;
     }
     sel->subjects[sel->nsub++] = subject;
+    Gleamc_subject_retain(subject);
+}
+
+/* Watch an owned subject without an explicit handler, for `select_other`. */
+static void gleamc_selector_add_other(GleamcSelector* sel, int64_t subject) {
+    if (sel == NULL) return;
+    for (int i = 0; i < sel->nsub; i++) {
+        if (sel->subjects[i] == subject) return;
+    }
+    for (int i = 0; i < sel->nother; i++) {
+        if (sel->others[i] == subject) return;
+    }
+    if (sel->nother == sel->ocap) {
+        int cap = sel->ocap == 0 ? 4 : sel->ocap * 2;
+        int64_t* grown =
+            (int64_t*)realloc(sel->others, (size_t)cap * sizeof(int64_t));
+        if (grown == NULL) return;
+        sel->others = grown;
+        sel->ocap = cap;
+    }
+    sel->others[sel->nother++] = subject;
     Gleamc_subject_retain(subject);
 }
 
@@ -1859,6 +1949,7 @@ int64_t Gleamc_process_ffi_selector_remove(int64_t handle, int64_t subject) {
                 break;
             }
         }
+        gleamc_selector_remove_other(sel, subject);
     }
     Gleamc_selector_retain(handle);
     return handle;
@@ -1883,7 +1974,7 @@ int64_t Gleamc_process_ffi_selector_watch_owned(int64_t handle) {
     GleamcSelector* sel = (GleamcSelector*)(intptr_t)handle;
     if (me != NULL) {
         for (int i = 0; i < me->nowned; i++)
-            gleamc_selector_add_subject(sel, (int64_t)(intptr_t)me->owned[i]);
+            gleamc_selector_add_other(sel, (int64_t)(intptr_t)me->owned[i]);
     }
     Gleamc_selector_retain(handle);
     return handle;
@@ -1894,8 +1985,10 @@ int64_t Gleamc_process_ffi_selector_watch_owned(int64_t handle) {
 int64_t Gleamc_process_ffi_selector_other_raw(int64_t handle) {
     GleamcSelector* sel = (GleamcSelector*)(intptr_t)handle;
     if (sel == NULL) return 0;
-    for (int i = 0; i < sel->nsub; i++) {
-        GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)sel->subjects[i];
+    /* Only subjects without an explicit handler: the catch-all must not steal a
+     * message another handler in this selector would have matched. */
+    for (int i = 0; i < sel->nother; i++) {
+        GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)sel->others[i];
         if (mb == NULL) continue;
         void* box = gleamc_mailbox_take(mb);
         if (box != NULL) return (int64_t)(intptr_t)Gleamc_dynamic_new(9, box, NULL);
@@ -1921,7 +2014,15 @@ GleamcFuture* Gleamc_process_ffi_selector_wait(int64_t handle, int64_t ms) {
     }
     for (int i = 0; i < sel->nsub; i++) {
         GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)sel->subjects[i];
-        if (mb != NULL && (mb->nmsg > 0 || mb->ndef > 0)) {
+        if (mb != NULL && mb->nmsg > 0) {
+            f->value_i = 1;
+            f->done = true;
+            return f;
+        }
+    }
+    for (int i = 0; i < sel->nother; i++) {
+        GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)sel->others[i];
+        if (mb != NULL && mb->nmsg > 0) {
             f->value_i = 1;
             f->done = true;
             return f;
@@ -1932,6 +2033,10 @@ GleamcFuture* Gleamc_process_ffi_selector_wait(int64_t handle, int64_t ms) {
         GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)sel->subjects[i];
         if (mb != NULL) gleamc_mailbox_add_notifier(mb, f);
     }
+    for (int i = 0; i < sel->nother; i++) {
+        GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)sel->others[i];
+        if (mb != NULL) gleamc_mailbox_add_notifier(mb, f);
+    }
     if (ms >= 0) {
         GleamcSelectorTimer* st =
             (GleamcSelectorTimer*)calloc(1, sizeof(GleamcSelectorTimer));
@@ -1939,6 +2044,9 @@ GleamcFuture* Gleamc_process_ffi_selector_wait(int64_t handle, int64_t ms) {
             st->fut = f;
             st->sel = sel;
             gleamc_retain(f);
+            /* Keep the selector alive until the timer fires or is cancelled;
+             * otherwise the callback would touch freed memory. */
+            Gleamc_selector_retain((int64_t)(intptr_t)sel);
             uv_timer_init((uv_loop_t*)gleamc_uv_loop(), &st->timer);
             st->timer.data = st;
             uv_timer_start(&st->timer, gleamc_selector_timer_cb, (uint64_t)ms, 0);
@@ -1960,6 +2068,15 @@ int64_t Gleamc_process_ffi_selector_ready(int64_t handle) {
         if (mb != NULL && mb->nmsg > 0) {
             index = i;
             break;
+        }
+    }
+    if (index < 0) {
+        for (int i = 0; i < sel->nother; i++) {
+            GleamcMailbox* mb = (GleamcMailbox*)(intptr_t)sel->others[i];
+            if (mb != NULL && mb->nmsg > 0) {
+                index = sel->nsub + i;
+                break;
+            }
         }
     }
     gleamc_selector_clear_wait(sel);
@@ -2193,6 +2310,17 @@ static void gleamc_task_finish(GleamcTask2* t, int64_t reason, bool copy) {
         }
     }
     gleamc_task_notify_exit(t, reason);
+    /* Drop the task's own reference to its monitor/exit inboxes *before*
+     * freeing the owned-subject list: releasing a subject calls
+     * `gleamc_task_remove_owned`, which walks `t->owned`. */
+    if (t->inbox_down != NULL) {
+        Gleamc_subject_release((int64_t)(intptr_t)t->inbox_down);
+        t->inbox_down = NULL;
+    }
+    if (t->inbox_exit != NULL) {
+        Gleamc_subject_release((int64_t)(intptr_t)t->inbox_exit);
+        t->inbox_exit = NULL;
+    }
     /* The subject list is only used by the owning task's `select_other`. */
     free(t->owned);
     t->owned = NULL;
@@ -2206,15 +2334,6 @@ static void gleamc_task_finish(GleamcTask2* t, int64_t reason, bool copy) {
     t->links = NULL;
     t->nlink = 0;
     t->linkcap = 0;
-    /* Drop the task's own reference to its monitor/exit inboxes. */
-    if (t->inbox_down != NULL) {
-        Gleamc_subject_release((int64_t)(intptr_t)t->inbox_down);
-        t->inbox_down = NULL;
-    }
-    if (t->inbox_exit != NULL) {
-        Gleamc_subject_release((int64_t)(intptr_t)t->inbox_exit);
-        t->inbox_exit = NULL;
-    }
     if (t->frame_drop != NULL) t->frame_drop(t->frame);
     else gleamc_release(t->frame);
     if (t->done != NULL) gleamc_release(t->done);
@@ -2529,7 +2648,13 @@ void gleamc_sched_poll(void) {
 void* gleamc_uv_loop(void) {
     static uv_loop_t loop;
     static bool init = false;
-    if (!init) { uv_loop_init(&loop); init = true; }
+    if (!init) {
+        uv_loop_init(&loop);
+        if (uv_async_init(&loop, &gleamc_wake_handle, gleamc_wake_cb) == 0) {
+            gleamc_wake_init = 1;
+        }
+        init = true;
+    }
     return &loop;
 }
 
