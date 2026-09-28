@@ -114,6 +114,9 @@ pub fn has_frame_param(function: ir.Function) -> Bool {
     })
   list.any(params, fn(param) {
     case dict.get(by_name, param) {
+      // The async lowering's state cell: either the explicit frame type or the
+      // generic opaque handle it is transported as.
+      Ok(TNamed("Opaque")) -> True
       Ok(TNamed(name)) -> string.starts_with(name, "__frame_")
       _ -> False
     }

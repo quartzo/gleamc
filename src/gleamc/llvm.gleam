@@ -1377,9 +1377,15 @@ fn passed_frame(function, by_name, recursive) -> Option(FrameInfo) {
         result_idx,
         block_index,
       ) = frame_info(function, recursive)
+      // A frame passed as the generic `Opaque` handle arrives as `i8*`; the
+      // entry bitcasts it to the concrete struct into `%__fr`.
+      let reg = case dict.get(by_name, param) {
+        Ok(TNamed("Opaque")) -> "%__fr"
+        _ -> "%arg." <> safe(param)
+      }
       Some(FrameInfo(
         fr_ty,
-        "%arg." <> safe(param),
+        reg,
         fields,
         state_idx,
         fut_idx,
@@ -1388,6 +1394,35 @@ fn passed_frame(function, by_name, recursive) -> Option(FrameInfo) {
       ))
     }
     Error(_) -> None
+  }
+}
+
+/// When a function receives its frame as the generic `Opaque` handle (`i8*`),
+/// bitcast it to the concrete `%__frame_<fn>*` into `%__fr` at entry.
+fn emit_opaque_frame_bitcast(
+  ctx: Ctx,
+  function: ir.Function,
+  by_name: Dict(String, Type),
+  b: Builder,
+) -> Builder {
+  let ir.Function(_, params, _, _, _) = function
+  let found =
+    list.find_map(params, fn(param) {
+      case dict.get(by_name, param) {
+        Ok(TNamed("Opaque")) -> Ok(param)
+        _ -> Error(Nil)
+      }
+    })
+  case found {
+    Ok(param) -> {
+      let FrameInfo(fr_ty, _, _, _, _, _, _) =
+        frame_info(function, ctx.recursive)
+      emit_line(
+        b,
+        "  %__fr = bitcast i8* %arg." <> safe(param) <> " to " <> fr_ty <> "*",
+      )
+    }
+    Error(_) -> b
   }
 }
 
@@ -1429,6 +1464,7 @@ fn emit_function(
       reg_locals: reg_locals_map(locals),
     )
   let b = new_builder()
+  let b = emit_opaque_frame_bitcast(ctx, function, by_name, b)
   let b = seed_reg_params(ctx, params, b)
   let b = emit_allocas(ctx, params, locals, b)
   let b = case blocks {

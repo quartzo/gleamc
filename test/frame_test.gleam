@@ -1,6 +1,10 @@
+import gleam/dict
 import gleam/list
+import gleam/string
+import gleamc/ast
 import gleamc/frame
 import gleamc/ir
+import gleamc/llvm
 import gleamc/pipeline
 
 const capture_source = "import gleam/io
@@ -33,4 +37,33 @@ pub fn frame_machine_test() {
   let assert Ok(module) = pipeline.compile_to_ir(capture_source)
   let machines = frame.machine_functions(module)
   assert list.contains(machines, "make")
+}
+
+/// A `step` receiving its frame as the generic `Opaque` handle (`i8*`) is
+/// compiled as ordinary code: the backend bitcasts the parameter to the
+/// concrete frame struct at entry.
+pub fn opaque_frame_param_test() {
+  let step =
+    ir.Function(
+      "f__step",
+      ["__frame"],
+      ast.TNamed("Future"),
+      [
+        ir.Block(
+          "entry",
+          [ir.OpFrameSet(ir.Var("__frame"), 0, ir.Lit(ir.LInt(0)))],
+          ir.Ret(ir.Var("__frame")),
+        ),
+      ],
+      [
+        ir.Local("__frame", ast.TNamed("Opaque"), ir.Slot),
+        ir.Local("x", ast.TInt, ir.Slot),
+      ],
+    )
+  let ll = llvm.emit(ir.Module([step]), [], dict.new())
+  assert string.contains(ll, "define i8* @Gleamc_f__step(i8* %arg.__frame)")
+  assert string.contains(
+    ll,
+    "%__fr = bitcast i8* %arg.__frame to %__frame_f__step*",
+  )
 }
