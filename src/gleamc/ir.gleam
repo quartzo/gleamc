@@ -102,6 +102,10 @@ pub type Op {
   OpFrameGet(dest: String, frame: Operand, index: Int, ty: Type)
   /// Writes `value` into field `index` of a frame value.
   OpFrameSet(frame: Operand, index: Int, value: Operand)
+  /// Starts `step` (a `(frame) -> Future` state machine) as a task with `frame`
+  /// and binds its completion future to `fut`. Emitted by the async lowering:
+  /// the function's entry starts the machine.
+  OpRunMachine(fut: String, step: String, frame: Operand)
 }
 
 /// How a suspended machine resumes: `Host` reads the awaited value out of a
@@ -199,6 +203,7 @@ pub fn op_dest(op: Op) -> Result(String, Nil) {
     OpFrameNew(dest, _) -> Ok(dest)
     OpFrameGet(dest, _, _, _) -> Ok(dest)
     OpFrameSet(_, _, _) -> Error(Nil)
+    OpRunMachine(fut, _, _) -> Ok(fut)
   }
 }
 
@@ -241,6 +246,7 @@ pub fn op_reads(op: Op) -> List(Operand) {
     OpFrameNew(_, _) -> []
     OpFrameGet(_, frame, _, _) -> [frame]
     OpFrameSet(frame, _, value) -> [frame, value]
+    OpRunMachine(_, _, frame) -> [frame]
   }
 }
 
@@ -323,6 +329,7 @@ pub fn op_owning_modes(
       }
     // Storing into a frame field hands the value to the frame.
     OpFrameSet(_, _, value) -> [value]
+    OpRunMachine(_, _, frame) -> [frame]
     _ -> []
   }
 }
@@ -625,6 +632,14 @@ fn op_text(op: Op) -> String {
       <> int.to_string(index)
       <> " = "
       <> operand_text(value)
+    OpRunMachine(fut, step, frame) ->
+      "    "
+      <> fut
+      <> " = runmachine "
+      <> step
+      <> "("
+      <> operand_text(frame)
+      <> ")"
   }
 }
 

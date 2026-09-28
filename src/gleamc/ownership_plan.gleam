@@ -11,12 +11,14 @@
 
 import gleam/dict.{type Dict}
 import gleam/list
+import gleam/option.{None, Some}
 import gleamc/ast.{
   type Type, TApp, TBool, TFloat, TFun, TInt, TNamed, TNil, TString, TTuple,
-  TVar, buffer_elem_name, subject_elem_name, task_elem_name,
+  TVar,
 }
 import gleamc/checker
 import gleamc/ffi_modes
+import gleamc/handle
 import gleamc/ir
 
 /// The refcount plan for one function: the filtered handle locals and, per
@@ -307,52 +309,41 @@ fn needs_drop_seen(ty, fields_of, recursive, seen) -> Bool {
     TFloat -> False
     TBool -> False
     TNil -> False
-    // `Dynamic` is a refcounted boxed value.
-    TNamed("Dynamic") -> True
-    // A refcounted selector handle.
-    TNamed("SelectorHandle") -> True
     TTuple(types) ->
       list.any(types, fn(inner) {
         needs_drop_seen(inner, fields_of, recursive, seen)
       })
     TFun(_, _) -> True
     TVar(_) -> False
-    // `Buffer(a)` is a refcounted cell that must be released even when its
-    // element type is trivial (e.g. `Buffer(Int)`).
-    TApp("Buffer", _) -> True
-    // `Subject(a)`/`Task(a)` are refcounted handles.
-    TApp("Subject", _) -> True
-    TApp("Task", _) -> True
-    TApp(_, args) ->
-      list.any(args, fn(inner) {
-        needs_drop_seen(inner, fields_of, recursive, seen)
-      })
+    // A parameterised opaque handle: only released resources need a drop.
+    TApp(name, args) ->
+      case handle.templated(name) {
+        Some(info) -> handle.needs_release(info)
+        None ->
+          list.any(args, fn(inner) {
+            needs_drop_seen(inner, fields_of, recursive, seen)
+          })
+      }
+    // An opaque runtime handle: only a released `Resource` needs a drop.
     TNamed(name) ->
-      case buffer_elem_name(name) {
-        // A monomorphised `Buffer(a)` (`TNamed("Buffer_<elem>")`).
-        Ok(_) -> True
-        Error(_) ->
-          case subject_elem_name(name), task_elem_name(name) {
-            // Monomorphised `Subject(a)`/`Task(a)` are refcounted.
-            Ok(_), _ -> True
-            _, Ok(_) -> True
-            _, Error(_) ->
-              case dict.get(recursive, name) {
-                Ok(True) -> True
-                _ ->
-                  case list.contains(seen, name) {
-                    True -> False
-                    False ->
-                      case dict.get(fields_of, name) {
-                        Error(_) -> False
-                        Ok(fields) ->
-                          list.any(fields, fn(inner) {
-                            needs_drop_seen(inner, fields_of, recursive, [
-                              name,
-                              ..seen
-                            ])
-                          })
-                      }
+      case handle.of_name(name) {
+        Some(info) -> handle.needs_release(info)
+        None ->
+          case dict.get(recursive, name) {
+            Ok(True) -> True
+            _ ->
+              case list.contains(seen, name) {
+                True -> False
+                False ->
+                  case dict.get(fields_of, name) {
+                    Error(_) -> False
+                    Ok(fields) ->
+                      list.any(fields, fn(inner) {
+                        needs_drop_seen(inner, fields_of, recursive, [
+                          name,
+                          ..seen
+                        ])
+                      })
                   }
               }
           }

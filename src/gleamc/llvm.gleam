@@ -20,6 +20,7 @@ import gleamc/ast.{type Type, TNamed, TString}
 import gleamc/checker
 import gleamc/ffi
 import gleamc/frame
+import gleamc/handle.{Info}
 import gleamc/ir
 import gleamc/ownership
 
@@ -572,6 +573,7 @@ fn header(audit: Bool) -> String {
   <> "declare i8* @gleamc_task_async(i8* (i8*)*, i8*, i8**, void (i8*, i8*)*, void (i8*)*, i8*)\n"
   <> "declare i8* @gleamc_task_spawn(i8* (i8*)*, i8*, i8**, void (i8*)*)\n"
   <> "declare void @gleamc_task_tail(i8* (i8*)*, i8*, void (i8*, i8*)*, i8**, void (i8*)*)\n"
+  <> "declare i8* @gleamc_task_run(i8* (i8*)*, i8*)\n"
   <> "declare void @gleamc_run_until(i8*)\n"
   <> "declare void @gleamc_shutdown()\n"
   <> "declare %GleamcString @gleamc_string_lit(i8*, i64)\n"
@@ -737,70 +739,34 @@ fn llvm_ty(ty: Type, recursive: Dict(String, Bool)) -> String {
     ast.TFloat -> "double"
     ast.TBool -> "i1"
     TString -> "%GleamcString"
-    TNamed("void*") -> "i8*"
     TNamed("BitArray") -> "%GleamcBitArray"
     TNamed("FileResult") -> "%GleamcFileResult"
-    // Internal async handle (`GleamcFuture*`); never visible to Gleam.
-    TNamed("Future") -> "i8*"
-    // A process identifier (a stable task id), a scheduled-send timer, a
-    // selector handle and a name (a subject handle).
-    TNamed("Pid") -> "i64"
-    TNamed("Monitor") -> "i64"
-    TNamed("Timer") -> "i64"
-    TNamed("Selector") -> "i64"
-    TNamed("Name") -> "i64"
-    // A refcounted selector handle (`GleamcSelector*` as i64).
-    TNamed("SelectorHandle") -> "i64"
-    // A boxed dynamic value (`GleamcDynamic*`).
-    TNamed("Dynamic") -> "i8*"
-    // Async I/O handle (a file descriptor); opaque scalar.
-    TNamed("Handle") -> "i64"
     ast.TNil -> "i32"
     ast.TVar(name) -> name
     TNamed("Nil") -> "i32"
+    // Opaque runtime handles (`Pid`, `Future`, `Dynamic`, `Task(a)`, ...): the
+    // descriptor decides the register representation.
     TNamed(name) ->
-      case is_frame_type_name(name) {
-        // A frame passed by parameter (the async lowering's state cell): a
-        // pointer to the frame struct.
-        True -> "%" <> name <> "*"
-        False ->
-          case ast.buffer_elem_name(name) {
-            // `Buffer(a)` is an opaque refcounted cell.
-            Ok(_) -> "i8*"
-            Error(_) ->
-              case ast.subject_elem_name(name), ast.task_elem_name(name) {
-                // `Subject(a)` is a handle (i64); `Task(a)` is a future (`i8*`).
-                Ok(_), _ -> "i64"
-                _, Ok(_) -> "i8*"
-                _, Error(_) ->
-                  case ast.selector_elem_name(name) {
-                    // `Selector(a)` is a handle (i64).
-                    Ok(_) -> "i64"
-                    Error(_) ->
-                      case ast.name_elem_name(name) {
-                        // `Name(a)` is a subject handle (i64).
-                        Ok(_) -> "i64"
-                        Error(_) ->
-                          case is_recursive(recursive, name) {
-                            True -> "%" <> name <> "*"
-                            False -> "%" <> name
-                          }
-                      }
-                  }
+      case handle.of_name(name) {
+        Some(Info(rep: rep, ..)) -> handle.rep_llvm(rep)
+        None ->
+          case is_frame_type_name(name) {
+            // A frame passed by parameter (the async lowering's state cell): a
+            // pointer to the frame struct.
+            True -> "%" <> name <> "*"
+            False ->
+              case is_recursive(recursive, name) {
+                True -> "%" <> name <> "*"
+                False -> "%" <> name
               }
           }
       }
-    // `Buffer(a)` is a type-erased refcounted cell (opaque `void*`).
-    ast.TApp("Buffer", _) -> "i8*"
-    // `Subject(a)` is an opaque mailbox handle (pointer as i64); `Task(a)` is
-    // the completion future itself (`i8*`).
-    ast.TApp("Subject", _) -> "i64"
-    ast.TApp("Task", _) -> "i8*"
-    ast.TApp("Timer", _) -> "i64"
-    ast.TApp("Selector", _) -> "i64"
-    ast.TApp("Name", _) -> "i64"
     ast.TApp(name, args) ->
-      "%" <> name <> "_" <> string.join(list.map(args, mangle_type), "_")
+      case handle.templated(name) {
+        Some(Info(rep: rep, ..)) -> handle.rep_llvm(rep)
+        None ->
+          "%" <> name <> "_" <> string.join(list.map(args, mangle_type), "_")
+      }
     ast.TTuple(types) ->
       "%GleamcTuple_" <> string.join(list.map(types, mangle_type), "_")
     ast.TFun(_, _) -> "%GleamFn_" <> mangle_type(ty)
@@ -3313,7 +3279,46 @@ fn emit_op(ctx: Ctx, op: ir.Op, b: Builder) -> #(Builder, Nil) {
       emit_op_frame_get(ctx, dest, frame, index, ty, b)
     ir.OpFrameSet(frame, index, value) ->
       emit_op_frame_set(ctx, frame, index, value, b)
+    ir.OpRunMachine(fut, step, frame) ->
+      emit_op_run_machine(ctx, fut, step, frame, b)
   }
+}
+
+/// Lowers `OpRunMachine` to `gleamc_task_run(@Gleamc_<step>, frame)`.
+fn emit_op_run_machine(
+  ctx: Ctx,
+  fut: String,
+  step: String,
+  frame_op: ir.Operand,
+  b: Builder,
+) -> #(Builder, Nil) {
+  let fr_ty = frame.frame_type_name(step)
+  let #(_, fv, b) = read_val(ctx, frame_op, b)
+  let #(fraw, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  " <> fraw <> " = bitcast " <> fr_ty <> "* " <> fv <> " to i8*",
+    )
+  let step_arg =
+    "i8* (i8*)* bitcast (i8* ("
+    <> fr_ty
+    <> "*)* @Gleamc_"
+    <> step
+    <> " to i8* (i8*)*)"
+  let #(done, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  "
+        <> done
+        <> " = call i8* @gleamc_task_run("
+        <> step_arg
+        <> ", i8* "
+        <> fraw
+        <> ")",
+    )
+  #(store_local(ctx, fut, "i8*", done, b), Nil)
 }
 
 fn emit_op_const(

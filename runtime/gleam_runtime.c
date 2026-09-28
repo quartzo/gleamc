@@ -1112,6 +1112,9 @@ typedef struct {
     void* (*box_copy)(void*);
     /* The future a suspended step returned; the driver parks on it. */
     GleamcFuture* pending;
+    /* `task_run`: leave the frame on the completion future (ownership owns
+     * it); do not drop it at finish. */
+    bool keep_frame;
 } GleamcTask2;
 
 static GleamcTask2* gleamc_task_by_id(int64_t id);
@@ -1299,6 +1302,7 @@ static GleamcFuture* gleamc_task_push(void* (*step)(void*), void* frame,
     t->ocap = 0;
     t->box_copy = NULL;
     t->pending = NULL;
+    t->keep_frame = false;
     t->step = step;
     t->frame = frame;
     t->fut_slot = fut_slot;
@@ -1402,17 +1406,15 @@ GleamcFuture* gleamc_task_spawn(void* (*step)(void*), void* frame,
 
 /* Starts `step(frame)` as a task and returns its completion future. `step`
  * returns the future it waits on, or the completed-future sentinel when it is
- * done; `box_copy(frame)` boxes the result at completion and `frame_drop`
- * releases the frame. */
-GleamcFuture* gleamc_task_run(void* (*step)(void*), void* frame,
-                              void* (*box_copy)(void*),
-                              void (*frame_drop)(void*)) {
+ * done. The frame is kept alive on the completion future's `value_p` so the
+ * starter reads the result from it; ownership releases it (no runtime drop). */
+GleamcFuture* gleamc_task_run(void* (*step)(void*), void* frame) {
     int before = gleamc_tasks2_n;
     GleamcFuture* done = gleamc_task_push(
-        step, frame, NULL, NULL, NULL, frame_drop, false
+        step, frame, NULL, NULL, NULL, NULL, false
     );
     if (gleamc_tasks2_n > before) {
-        gleamc_tasks2[gleamc_tasks2_n - 1].box_copy = box_copy;
+        gleamc_tasks2[gleamc_tasks2_n - 1].keep_frame = true;
     }
     return done;
 }
@@ -2428,7 +2430,10 @@ static void gleamc_task_notify_exit(GleamcTask2* t, int64_t reason) {
 /* Final bookkeeping for a task that ends (normally, `copy` true, or because it
  * was killed, `copy` false and the result discarded). */
 static void gleamc_task_finish(GleamcTask2* t, int64_t reason, bool copy) {
-    if (copy && t->box_copy != NULL) {
+    if (copy && t->keep_frame) {
+        /* Leave the frame on the completion future; ownership releases it. */
+        if (t->done != NULL) t->done->value_p = t->frame;
+    } else if (copy && t->box_copy != NULL) {
         void* box = t->box_copy(t->frame);
         if (t->done != NULL) t->done->value_p = box;
     } else if (copy && t->copy_result != NULL && t->result_dst != NULL) {
@@ -2470,8 +2475,10 @@ static void gleamc_task_finish(GleamcTask2* t, int64_t reason, bool copy) {
     t->links = NULL;
     t->nlink = 0;
     t->linkcap = 0;
-    if (t->frame_drop != NULL) t->frame_drop(t->frame);
-    else gleamc_release(t->frame);
+    if (!t->keep_frame) {
+        if (t->frame_drop != NULL) t->frame_drop(t->frame);
+        else if (t->frame != NULL) gleamc_release(t->frame);
+    }
     if (t->done != NULL) gleamc_release(t->done);
     t->finished = true;
 }

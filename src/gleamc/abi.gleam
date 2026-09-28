@@ -7,7 +7,9 @@
 //// the call. Keeping it in one place stops the two from drifting.
 
 import gleam/dict.{type Dict}
+import gleam/option.{None, Some}
 import gleamc/ast.{type Type, TNamed, TString}
+import gleamc/handle
 
 fn is_recursive(recursive: Dict(String, Bool), name: String) -> Bool {
   case dict.get(recursive, name) {
@@ -24,17 +26,17 @@ pub fn ret_needs_sret(ty: Type, recursive: Dict(String, Bool)) -> Bool {
     TString -> False
     TNamed("Nil") -> False
     TNamed("BitArray") -> False
-    TNamed("void*")
-    | TNamed("Future")
-    | TNamed("Handle")
-    | TNamed("Dynamic")
-    | TNamed("SelectorHandle") -> False
     ast.TFun(_, _) -> False
-    ast.TApp("Task", _) -> False
+    // Opaque handles are register-sized; never returned through `sret`.
     TNamed(name) ->
-      case ast.task_elem_name(name) {
-        Ok(_) -> False
-        Error(_) -> !is_recursive(recursive, name)
+      case handle.of_name(name) {
+        Some(_) -> False
+        None -> !is_recursive(recursive, name)
+      }
+    ast.TApp(name, _) ->
+      case handle.templated(name) {
+        Some(_) -> False
+        None -> True
       }
     _ -> True
   }

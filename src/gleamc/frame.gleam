@@ -276,7 +276,9 @@ fn demote_module(module: ir.Module) -> ir.Module {
   let machines = machine_functions(module)
   ir.Module(
     list.map(functions, fn(function) {
-      case list.contains(machines, function.name) {
+      case
+        list.contains(machines, function.name) && !has_frame_param(function)
+      {
         True -> demote_function(function)
         False -> function
       }
