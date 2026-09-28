@@ -212,20 +212,10 @@ pub fn emit_chunks(
             machine_fns,
           )
         False ->
-          case dict.has_key(machines, function.name) {
+          case frame.has_frame_param(function) {
+            // A function receiving a frame by parameter is compiled as ordinary
+            // synchronous code; its frame ops use that parameter.
             True ->
-              emit_frame_function(
-                function,
-                recursive,
-                lits,
-                custom_types,
-                custom_by_name,
-                ctors,
-                tuples,
-                signatures,
-                machine_fns,
-              )
-            False ->
               emit_function(
                 function,
                 recursive,
@@ -237,6 +227,33 @@ pub fn emit_chunks(
                 signatures,
                 machine_fns,
               )
+            False ->
+              case dict.has_key(machines, function.name) {
+                True ->
+                  emit_frame_function(
+                    function,
+                    recursive,
+                    lits,
+                    custom_types,
+                    custom_by_name,
+                    ctors,
+                    tuples,
+                    signatures,
+                    machine_fns,
+                  )
+                False ->
+                  emit_function(
+                    function,
+                    recursive,
+                    lits,
+                    custom_types,
+                    custom_by_name,
+                    ctors,
+                    tuples,
+                    signatures,
+                    machine_fns,
+                  )
+              }
           }
       }
     })
@@ -742,26 +759,32 @@ fn llvm_ty(ty: Type, recursive: Dict(String, Bool)) -> String {
     ast.TVar(name) -> name
     TNamed("Nil") -> "i32"
     TNamed(name) ->
-      case ast.buffer_elem_name(name) {
-        // `Buffer(a)` is an opaque refcounted cell.
-        Ok(_) -> "i8*"
-        Error(_) ->
-          case ast.subject_elem_name(name), ast.task_elem_name(name) {
-            // `Subject(a)` is a handle (i64); `Task(a)` is a future (`i8*`).
-            Ok(_), _ -> "i64"
-            _, Ok(_) -> "i8*"
-            _, Error(_) ->
-              case ast.selector_elem_name(name) {
-                // `Selector(a)` is a handle (i64).
-                Ok(_) -> "i64"
-                Error(_) ->
-                  case ast.name_elem_name(name) {
-                    // `Name(a)` is a subject handle (i64).
+      case is_frame_type_name(name) {
+        // A frame passed by parameter (the async lowering's state cell): a
+        // pointer to the frame struct.
+        True -> "%" <> name <> "*"
+        False ->
+          case ast.buffer_elem_name(name) {
+            // `Buffer(a)` is an opaque refcounted cell.
+            Ok(_) -> "i8*"
+            Error(_) ->
+              case ast.subject_elem_name(name), ast.task_elem_name(name) {
+                // `Subject(a)` is a handle (i64); `Task(a)` is a future (`i8*`).
+                Ok(_), _ -> "i64"
+                _, Ok(_) -> "i8*"
+                _, Error(_) ->
+                  case ast.selector_elem_name(name) {
+                    // `Selector(a)` is a handle (i64).
                     Ok(_) -> "i64"
                     Error(_) ->
-                      case is_recursive(recursive, name) {
-                        True -> "%" <> name <> "*"
-                        False -> "%" <> name
+                      case ast.name_elem_name(name) {
+                        // `Name(a)` is a subject handle (i64).
+                        Ok(_) -> "i64"
+                        Error(_) ->
+                          case is_recursive(recursive, name) {
+                            True -> "%" <> name <> "*"
+                            False -> "%" <> name
+                          }
                       }
                   }
               }
@@ -1358,6 +1381,50 @@ fn function_signatures(
   })
 }
 
+/// When a function receives a frame by parameter, its `OpFrameGet`/`OpFrameSet`
+/// operate on that frame (the register is `%arg.<param>`).
+fn passed_frame(function, by_name, recursive) -> Option(FrameInfo) {
+  let ir.Function(_, params, _, _, _) = function
+  let found =
+    list.fold(params, Error(Nil), fn(acc, param) {
+      case acc {
+        Ok(_) -> acc
+        Error(_) ->
+          case dict.get(by_name, param) {
+            Ok(TNamed(name)) ->
+              case is_frame_type_name(name) {
+                True -> Ok(param)
+                False -> Error(Nil)
+              }
+            _ -> Error(Nil)
+          }
+      }
+    })
+  case found {
+    Ok(param) -> {
+      let FrameInfo(
+        fr_ty,
+        _reg,
+        fields,
+        state_idx,
+        fut_idx,
+        result_idx,
+        block_index,
+      ) = frame_info(function, recursive)
+      Some(FrameInfo(
+        fr_ty,
+        "%arg." <> safe(param),
+        fields,
+        state_idx,
+        fut_idx,
+        result_idx,
+        block_index,
+      ))
+    }
+    Error(_) -> None
+  }
+}
+
 fn emit_function(
   function: ir.Function,
   recursive: Dict(String, Bool),
@@ -1391,8 +1458,8 @@ fn emit_function(
       prefix: "",
       signatures: signatures,
       machine_fns: machine_fns,
-      frame: None,
-      frame_fields: dict.new(),
+      frame: passed_frame(function, by_name, recursive),
+      frame_fields: frame_field_set(function),
       reg_locals: reg_locals_map(locals),
     )
   let b = new_builder()
@@ -1456,6 +1523,10 @@ fn unique_locals(locals: List(ir.Local)) -> List(ir.Local) {
       }
     })
   list.reverse(rev)
+}
+
+fn is_frame_type_name(name: String) -> Bool {
+  string.starts_with(name, "__frame_")
 }
 
 fn is_nil_type(ty: Type) -> Bool {

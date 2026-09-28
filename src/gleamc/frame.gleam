@@ -10,7 +10,7 @@ import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/string
-import gleamc/ast.{TNil}
+import gleamc/ast.{TNamed, TNil}
 import gleamc/ir
 
 /// The synthetic local that holds the frame handle.
@@ -41,6 +41,7 @@ pub fn machine_functions(module: ir.Module) -> List(String) {
     has_capture(function)
     || has_suspend(function)
     || has_tail_machine(function)
+    || has_frame_param(function)
     || list.contains(targets, function.name)
   })
   |> list.map(fn(function) { function.name })
@@ -96,6 +97,24 @@ pub fn has_suspend(function: ir.Function) -> Bool {
   list.any(blocks, fn(block) {
     case block.term {
       ir.Suspend(_, _, _, _) -> True
+      _ -> False
+    }
+  })
+}
+
+/// A function that receives a frame by parameter (the async lowering's state
+/// cell): its `OpFrameGet`/`OpFrameSet` access that frame, so the backend must
+/// know its layout but compile the body as ordinary synchronous code.
+pub fn has_frame_param(function: ir.Function) -> Bool {
+  let ir.Function(_, params, _, _, locals) = function
+  let by_name =
+    list.fold(locals, dict.new(), fn(acc, local) {
+      let ir.Local(name, ty, _) = local
+      dict.insert(acc, name, ty)
+    })
+  list.any(params, fn(param) {
+    case dict.get(by_name, param) {
+      Ok(TNamed(name)) -> string.starts_with(name, "__frame_")
       _ -> False
     }
   })
