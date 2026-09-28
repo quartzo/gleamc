@@ -334,6 +334,11 @@ typedef struct GleamcFuture {
     /* Single observer to complete when this future completes (a `try_await`
      * wait racing a task against a timeout). */
     struct GleamcFuture* notify;
+    /* CPS continuation: when this future completes, `cont(cont_frame)` is
+     * invoked and the frame reference released. The frame is retained while
+     * the continuation is registered. */
+    void* (*cont)(void*);
+    void* cont_frame;
 } GleamcFuture;
 
 uint64_t gleamc_now_ms(void);
@@ -342,6 +347,13 @@ GleamcFuture* Gleamc_std_time_timer(int64_t ms);
 
 void gleamc_sched_poll(void);
 GleamcFuture* gleamc_future_done(void);
+
+/* Register a CPS continuation on `fut`: when it completes, `step(frame)` runs
+ * and the frame reference is released. If `fut` is already complete the step
+ * runs immediately. The frame is retained while pending. */
+void gleamc_future_then(GleamcFuture* fut, void* (*step)(void*), void* frame);
+/* Complete `fut` and, if a continuation is registered, invoke it. */
+void gleamc_future_resolve(GleamcFuture* fut);
 void* gleamc_uv_loop(void);
 void* gleamc_uv_timer_init(void* loop);
 GleamcFuture* gleamc_uv_timer_start(void* timer, int64_t ms);
