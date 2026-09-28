@@ -232,12 +232,23 @@ fn specialize(functions: List(ir.Function)) -> List(ir.Function) {
   case dict.size(indirect) {
     0 -> functions
     _ -> {
+      // Only an *async* callback needs the call specialised: a sync callback is
+      // fine as an indirect call, and specialising it would force its closure
+      // through the env-owning call path for no benefit.
+      let asyncs = async_functions(functions)
       let by_name = dict.from_list(list.map(functions, fn(f) { #(f.name, f) }))
       let #(rewritten, clones, _) =
         list.fold(functions, #([], dict.new(), 0), fn(acc, function) {
           let #(out, clones, counter) = acc
           let #(function, clones, counter) =
-            specialize_function(function, by_name, indirect, clones, counter)
+            specialize_function(
+              function,
+              by_name,
+              indirect,
+              asyncs,
+              clones,
+              counter,
+            )
           #([function, ..out], clones, counter)
         })
       let clones =
@@ -295,14 +306,22 @@ fn param_index_loop(params, name, i) {
   }
 }
 
-fn specialize_function(function, by_name, indirect, clones, counter) {
+fn specialize_function(function, by_name, indirect, asyncs, clones, counter) {
   let ir.Function(name, params, ret, blocks, locals) = function
   let closures = resolve_closures(blocks)
   let #(blocks, clones, counter, extras) =
     list.fold(blocks, #([], clones, counter, []), fn(acc, block) {
       let #(out, clones, counter, extras) = acc
       let #(block, clones, counter, extra) =
-        specialize_block(block, closures, by_name, indirect, clones, counter)
+        specialize_block(
+          block,
+          closures,
+          by_name,
+          indirect,
+          asyncs,
+          clones,
+          counter,
+        )
       #([block, ..out], clones, counter, list.append(extra, extras))
     })
   #(
@@ -318,37 +337,116 @@ fn specialize_function(function, by_name, indirect, clones, counter) {
   )
 }
 
-fn specialize_block(block, closures, by_name, indirect, clones, counter) {
+fn specialize_block(
+  block,
+  closures,
+  by_name,
+  indirect,
+  asyncs,
+  clones,
+  counter,
+) {
   let ir.Block(label, ops, term) = block
   let #(ops, clones, counter, extras) =
     list.fold(ops, #([], clones, counter, []), fn(acc, op) {
       let #(out, clones, counter, extras) = acc
       let #(op, extras2, clones, counter) =
-        specialize_op(op, closures, by_name, indirect, clones, counter)
+        specialize_op(op, closures, by_name, indirect, asyncs, clones, counter)
       #(list.append(out, [op]), clones, counter, list.append(extras, extras2))
     })
+  let #(term, clones, counter) =
+    specialize_term(term, closures, by_name, indirect, asyncs, clones, counter)
   #(ir.Block(label, ops, term), clones, counter, extras)
 }
 
-/// A direct call to a known higher-order function with a known closure argument
-/// becomes a call to a specialized clone.
-fn specialize_op(op, closures, by_name, indirect, clones, counter) {
+/// A direct call to a known higher-order function with a known async closure
+/// argument becomes a call to a specialized clone.
+fn specialize_op(op, closures, by_name, indirect, asyncs, clones, counter) {
   case op {
-    ir.OpCall(dest, g, args, ret) ->
-      case dict.get(indirect, g) {
-        Ok(indices) ->
-          case find_specializable(args, indices, closures) {
-            Ok(#(index, code)) -> {
-              let #(clone_name, clones, counter) =
-                get_clone(g, index, code, by_name, clones, counter)
-              #(ir.OpCall(dest, clone_name, args, ret), [], clones, counter)
-            }
-            Error(_) -> #(op, [], clones, counter)
-          }
+    ir.OpCall(dest, g, args, ret) -> {
+      let #(maybe, clones, counter) =
+        specialize_target(
+          g,
+          args,
+          closures,
+          by_name,
+          indirect,
+          asyncs,
+          clones,
+          counter,
+        )
+      case maybe {
+        Ok(clone_name) -> #(
+          ir.OpCall(dest, clone_name, args, ret),
+          [],
+          clones,
+          counter,
+        )
         Error(_) -> #(op, [], clones, counter)
       }
+    }
     _ -> #(op, [], clones, counter)
   }
+}
+
+/// A tail call to a known higher-order function with a known async closure
+/// argument becomes a tail call to its specialized clone.
+fn specialize_term(term, closures, by_name, indirect, asyncs, clones, counter) {
+  case term {
+    ir.Tailcall(g, args) -> {
+      let #(maybe, clones, counter) =
+        specialize_target(
+          g,
+          args,
+          closures,
+          by_name,
+          indirect,
+          asyncs,
+          clones,
+          counter,
+        )
+      case maybe {
+        Ok(clone_name) -> #(ir.Tailcall(clone_name, args), clones, counter)
+        Error(_) -> #(term, clones, counter)
+      }
+    }
+    _ -> #(term, clones, counter)
+  }
+}
+
+/// The clone to call for a higher-order function `g`, if an argument resolves to
+/// a known *async* closure.
+fn specialize_target(
+  g,
+  args,
+  closures,
+  by_name,
+  indirect,
+  asyncs,
+  clones,
+  counter,
+) -> #(Result(String, Nil), Dict(String, #(String, ir.Function)), Int) {
+  case dict.get(indirect, g) {
+    Ok(indices) ->
+      case find_specializable(args, indices, closures) {
+        Ok(#(index, code)) ->
+          case is_async_code(code, asyncs) {
+            True -> {
+              let #(clone_name, clones, counter) =
+                get_clone(g, index, code, by_name, clones, counter)
+              #(Ok(clone_name), clones, counter)
+            }
+            False -> #(Error(Nil), clones, counter)
+          }
+        Error(_) -> #(Error(Nil), clones, counter)
+      }
+    Error(_) -> #(Error(Nil), clones, counter)
+  }
+}
+
+fn is_async_code(code, asyncs) -> Bool {
+  let #(name, _bare) = closure_code_name(code)
+  dict.has_key(asyncs, name)
 }
 
 /// The first callback argument that is a known closure.
