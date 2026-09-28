@@ -354,6 +354,13 @@ GleamcFuture* gleamc_future_done(void);
 void gleamc_future_then(GleamcFuture* fut, void* (*step)(void*), void* frame);
 /* Complete `fut` and, if a continuation is registered, invoke it. */
 void gleamc_future_resolve(GleamcFuture* fut);
+
+/* A fresh pending future (the engine fabricates these for async composition). */
+GleamcFuture* gleamc_future_make(void);
+/* Complete `fut` with an owned box payload (the result). */
+void gleamc_future_finish(GleamcFuture* fut, void* box);
+/* The box payload of a completed future, moved out (freed without dropping). */
+void* gleamc_future_take(GleamcFuture* fut);
 void* gleamc_uv_loop(void);
 void* gleamc_uv_timer_init(void* loop);
 GleamcFuture* gleamc_uv_timer_start(void* timer, int64_t ms);

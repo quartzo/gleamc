@@ -1194,6 +1194,28 @@ void gleamc_future_then(GleamcFuture* fut, void* (*step)(void*), void* frame) {
 
 static void gleamc_wake(void);
 
+/* A fresh pending future, fabricated by the async lowering for composition. */
+GleamcFuture* gleamc_future_make(void) { return gleamc_future_new(); }
+
+/* Complete `fut` with an owned box payload (the machine's result). */
+void gleamc_future_finish(GleamcFuture* fut, void* box) {
+    if (fut == NULL) {
+        if (box != NULL) gleamc_box_free(box);
+        return;
+    }
+    fut->value_p = box;
+    gleamc_future_resolve(fut);
+}
+
+/* Move the box payload out of a completed future (without dropping it); the
+ * caller owns the box. */
+void* gleamc_future_take(GleamcFuture* fut) {
+    if (fut == NULL) return NULL;
+    void* box = fut->value_p;
+    fut->value_p = NULL;
+    return box;
+}
+
 /* Ready continuations: a completed future enqueues its `(step, frame)` and the
  * driver runs them, so a completion callback never re-enters a machine. */
 #define GLEAMC_READY_MAX 8192
