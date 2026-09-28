@@ -4645,7 +4645,16 @@ fn emit_op_closure(
         <> env_drop
         <> ", 2",
     )
-  let b = store_local(ctx, dest, fn_s, c2, b)
+  // Field 3 is the machine-start entry for an async function (the "coroutine
+  // function" descriptor); null for a synchronous function. Populated once the
+  // start thunks exist.
+  let #(c3, b) = fresh(b)
+  let b =
+    emit_line(
+      b,
+      "  " <> c3 <> " = insertvalue " <> fn_s <> " " <> c2 <> ", i8* null, 3",
+    )
+  let b = store_local(ctx, dest, fn_s, c3, b)
   #(b, Nil)
 }
 
@@ -5784,7 +5793,7 @@ fn fn_type_decl(fn_ty: Type, recursive: Dict(String, Bool)) -> String {
       <> mangle_type(fn_ty)
       <> " = type { "
       <> code_ty(fn_ty, recursive)
-      <> ", i8*, void (i8*)* }"
+      <> ", i8*, void (i8*)*, i8* }"
     _ -> ""
   }
 }
