@@ -327,6 +327,16 @@ pub fn emit_chunks(
       }),
       "\n\n",
     )
+  // Machine-start entries for async functions, stored in closures so a
+  // function value can be started as a coroutine at an indirect call.
+  let start_thunks =
+    string.join(
+      list.map(
+        list.filter(functions, fn(f) { dict.has_key(suspends, f.name) }),
+        fn(f) { emit_start_thunk(f, recursive, lits) },
+      ),
+      "\n\n",
+    )
   let chunks =
     list.flatten([
       [header(audit)],
@@ -334,6 +344,7 @@ pub fn emit_chunks(
       ["\n\n", type_code, "\n\n", builtins, "\n\n"],
       [make_helpers, "\n\n"],
       intersperse(defs_bodies, "\n\n"),
+      ["\n\n", start_thunks, "\n\n"],
       ["\n\n", frame_drops, "\n\n", wrappers, "\n\n"],
       intersperse(eq_glue_fns, "\n\n"),
       ["\n\n"],
@@ -2462,6 +2473,136 @@ fn emit_machine_wrapper(
         }
       }
   }
+  string.join(list.reverse(b.lines), "\n") <> "\n}\n"
+}
+
+/// The machine-start entry of an async function, stored in a closure's async
+/// slot: `(env, args..., dest) -> Future`. It allocates the frame, adopts the
+/// environment, starts the machine as a task and returns its completion future,
+/// which is what makes a closure value behave like a coroutine function.
+fn emit_start_thunk(
+  function: ir.Function,
+  recursive: Dict(String, Bool),
+  lits,
+) -> String {
+  let ir.Function(name, params, ret, _, locals) = function
+  let info = frame_info(function, recursive)
+  let FrameInfo(fr_ty, _reg, fields, state_idx, fut_idx, _result_idx, _) = info
+  let by_name = locals_map(locals)
+  // The environment is adopted only when the callee reads it.
+  let captures = case frame.env_capture(function) {
+    Ok(_) -> True
+    Error(_) -> False
+  }
+  // The closure's surface parameters are the callee's, minus a leading `__env`.
+  let plain = case params {
+    ["__env", ..rest] -> rest
+    _ -> params
+  }
+  let arg_decls =
+    list.index_map(plain, fn(param, index) {
+      llvm_ty(local_type(by_name, param), recursive)
+      <> " %a"
+      <> int.to_string(index)
+    })
+  let b = new_builder()
+  let b =
+    emit_line(
+      b,
+      "define i8* @Gleamc_"
+        <> name
+        <> "__start(i8* %env"
+        <> case arg_decls {
+        [] -> ""
+        _ -> ", " <> string.join(arg_decls, ", ")
+      }
+        <> ", i8* %dest) {",
+    )
+  let b =
+    emit_line(
+      b,
+      "  %__raw = call i8* @gleamc_alloc0(i64 ptrtoint ("
+        <> fr_ty
+        <> "* getelementptr ("
+        <> fr_ty
+        <> ", "
+        <> fr_ty
+        <> "* null, i32 1) to i64))",
+    )
+  let b = emit_line(b, "  %__fr = bitcast i8* %__raw to " <> fr_ty <> "*")
+  let #(sp, b) = frame_gep("%__fr", fr_ty, state_idx, b)
+  let b = emit_line(b, "  store i32 0, i32* " <> sp)
+  let #(fp, b) = frame_gep("%__fr", fr_ty, fut_idx, b)
+  let b = emit_line(b, "  store i8* null, i8** " <> fp)
+  let b = case captures {
+    True -> {
+      let b = emit_line(b, "  call void @Gleamc_rc_retain(i8* %env, i8* null)")
+      let slot = case dict.get(fields, "__env") {
+        Ok(found) -> found
+        Error(_) -> 0
+      }
+      let #(ptr, b) = frame_gep("%__fr", fr_ty, slot, b)
+      emit_line(b, "  store i8* %env, i8** " <> ptr)
+    }
+    False -> b
+  }
+  let b =
+    list.index_fold(plain, b, fn(b, param, index) {
+      let pty = llvm_ty(local_type(by_name, param), recursive)
+      let slot = case dict.get(fields, param) {
+        Ok(found) -> found
+        Error(_) -> 0
+      }
+      let #(ptr, b) = frame_gep("%__fr", fr_ty, slot, b)
+      emit_line(
+        b,
+        "  store "
+          <> pty
+          <> " %a"
+          <> int.to_string(index)
+          <> ", "
+          <> pty
+          <> "* "
+          <> ptr,
+      )
+    })
+  let #(futp, b) = frame_gep("%__fr", fr_ty, fut_idx, b)
+  let copy = case is_nil_type(ret) {
+    True -> "void (i8*, i8*)* null"
+    False ->
+      "void (i8*, i8*)* bitcast (void ("
+      <> fr_ty
+      <> "*, i8*)* @"
+      <> copy_sym(fr_ty)
+      <> " to void (i8*, i8*)*)"
+  }
+  let step =
+    "i1 (i8*)* bitcast (i1 ("
+    <> fr_ty
+    <> "*)* @Gleamc_"
+    <> name
+    <> "_step to i1 (i8*)*)"
+  let fd =
+    "void (i8*)* bitcast (void ("
+    <> fr_ty
+    <> "*)* @"
+    <> frame_drop_sym(fr_ty)
+    <> " to void (i8*)*)"
+  let b =
+    emit_line(
+      b,
+      "  %__fut = call i8* @gleamc_task_start("
+        <> step
+        <> ", i8* %__raw, i8** "
+        <> futp
+        <> ", "
+        <> copy
+        <> ", i8* %dest, "
+        <> fd
+        <> ")",
+    )
+  let b = emit_line(b, "  ret i8* %__fut")
+  let _ = lits
   string.join(list.reverse(b.lines), "\n") <> "\n}\n"
 }
 
@@ -4646,16 +4787,64 @@ fn emit_op_closure(
         <> ", 2",
     )
   // Field 3 is the machine-start entry for an async function (the "coroutine
-  // function" descriptor); null for a synchronous function. Populated once the
-  // start thunks exist.
+  // function" descriptor); null for a synchronous function.
   let #(c3, b) = fresh(b)
+  let start = async_start_ref(ctx, code)
   let b =
     emit_line(
       b,
-      "  " <> c3 <> " = insertvalue " <> fn_s <> " " <> c2 <> ", i8* null, 3",
+      "  "
+        <> c3
+        <> " = insertvalue "
+        <> fn_s
+        <> " "
+        <> c2
+        <> ", i8* "
+        <> start
+        <> ", 3",
     )
   let b = store_local(ctx, dest, fn_s, c3, b)
   #(b, Nil)
+}
+
+/// The LLVM operand for the async-start slot of a closure with code `code`:
+/// a reference to the machine-start thunk, or `null` for a sync target.
+fn async_start_ref(ctx: Ctx, code: String) -> String {
+  let target = closure_target(code)
+  case dict.get(ctx.machine_fns, target) {
+    Error(_) -> "null"
+    Ok(callee) -> {
+      let ir.Function(_, params, _, _, locals) = callee
+      let by_name = locals_map(locals)
+      let plain = case params {
+        ["__env", ..rest] -> rest
+        _ -> params
+      }
+      let arg_tys =
+        list.map(plain, fn(param) {
+          llvm_ty(local_type(by_name, param), ctx.recursive)
+        })
+      let sig =
+        "i8* (i8*"
+        <> case arg_tys {
+          [] -> ""
+          _ -> ", " <> string.join(arg_tys, ", ")
+        }
+        <> ", i8*)*"
+      "bitcast (" <> sig <> " @Gleamc_" <> target <> "__start to i8*)"
+    }
+  }
+}
+
+fn closure_target(code: String) -> String {
+  case string.starts_with(code, "__gv_") {
+    True -> string.drop_start(code, 5)
+    False ->
+      case string.starts_with(code, "Gleamc_") {
+        True -> string.drop_start(code, 7)
+        False -> code
+      }
+  }
 }
 
 fn emit_op_env_get(
