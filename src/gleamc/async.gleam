@@ -387,7 +387,7 @@ fn get_clone(g, index, code, by_name, clones, counter) {
 /// A copy of `function` with indirect calls through parameter `index` replaced
 /// by direct calls to `code` (carrying the closure's environment).
 fn make_clone(function, index, code, name, counter) {
-  let ir.Function(_, params, ret, blocks, locals) = function
+  let ir.Function(original, params, ret, blocks, locals) = function
   let target = case list_nth(params, index) {
     Ok(t) -> t
     Error(_) -> ""
@@ -398,7 +398,7 @@ fn make_clone(function, index, code, name, counter) {
       let #(out, extras, counter) = acc
       let ir.Block(label, ops, term) = block
       let #(ops, term, extra, counter) =
-        clone_block(ops, term, target, code_name, bare, counter)
+        clone_block(ops, term, target, code_name, bare, original, name, counter)
       #(
         [ir.Block(label, ops, term), ..out],
         list.append(extra, extras),
@@ -414,11 +414,27 @@ fn make_clone(function, index, code, name, counter) {
   )
 }
 
-fn clone_block(ops, term, target, code_name, bare, counter) {
+fn clone_block(
+  ops,
+  term,
+  target,
+  code_name,
+  bare,
+  original,
+  clone_name,
+  counter,
+) {
   let #(ops, extra, counter) =
     list.fold(ops, #([], [], counter), fn(acc, op) {
       let #(out, extra, counter) = acc
       case op {
+        // A self-call inside the specialised clone recurses into the clone, so
+        // every iteration keeps the callback direct.
+        ir.OpCall(dest, g, args, ret) if g == original -> #(
+          list.append(out, [ir.OpCall(dest, clone_name, args, ret)]),
+          extra,
+          counter,
+        )
         ir.OpCallIndirect(dest, ir.Var(p), args, ret) if p == target -> {
           case bare {
             True -> #(
@@ -443,6 +459,12 @@ fn clone_block(ops, term, target, code_name, bare, counter) {
       }
     })
   case term {
+    ir.Tailcall(g, args) if g == original -> #(
+      ops,
+      ir.Tailcall(clone_name, args),
+      extra,
+      counter,
+    )
     ir.TailcallIndirect(ir.Var(p), args) if p == target ->
       case bare {
         True -> #(ops, ir.Tailcall(code_name, args), extra, counter)

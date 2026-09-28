@@ -9,6 +9,7 @@ import gleamc/toolchain
 // asyncness fixpoint sees it and the caller becomes async too.
 const source = "import gleam/int
 import gleam/io
+import gleam/list
 import gleam/result
 
 fn wait_and(v: Int) -> Int {
@@ -39,6 +40,11 @@ pub fn main() {
     Error(_) -> io.println(\"error\")
   }
 
+  list.map([1, 2, 3], wait_and)
+  |> list.fold(0, fn(acc, v) { acc + v })
+  |> int.to_string
+  |> io.println
+
   time.timer(1)
 }
 "
@@ -68,4 +74,5 @@ pub fn first_class_async_test() {
   assert string.contains(output, "41") as output
   assert string.contains(output, "42") as output
   assert string.contains(output, "43") as output
+  assert string.contains(output, "6") as output
 }
